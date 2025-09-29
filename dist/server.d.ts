@@ -1,22 +1,26 @@
 /**
  * KiCAD MCP Server implementation
  */
+export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
+export interface KiCadServerOptions {
+    kicadScriptPath: string;
+    logLevel?: LogLevel;
+    pythonExecutable?: string;
+    pythonPath?: string;
+    extraEnv?: Record<string, string>;
+    responseTimeoutMs?: number;
+}
 /**
  * KiCAD MCP Server class
  */
 export declare class KiCADMcpServer {
-    private server;
+    private readonly server;
     private pythonProcess;
-    private kicadScriptPath;
-    private stdioTransport;
-    private requestQueue;
-    private processingRequest;
-    /**
-     * Constructor for the KiCAD MCP Server
-     * @param kicadScriptPath Path to the Python KiCAD interface script
-     * @param logLevel Log level for the server
-     */
-    constructor(kicadScriptPath: string, logLevel?: 'error' | 'warn' | 'info' | 'debug');
+    private lineReader;
+    private readonly stdioTransport;
+    private readonly options;
+    private readonly pendingRequests;
+    constructor(options: KiCadServerOptions);
     /**
      * Register all tools, resources, and prompts
      */
@@ -31,14 +35,11 @@ export declare class KiCADMcpServer {
     stop(): Promise<void>;
     /**
      * Call the KiCAD scripting interface to execute commands
-     *
-     * @param command The command to execute
-     * @param params The parameters for the command
-     * @returns The result of the command execution
      */
     private callKicadScript;
-    /**
-     * Process the next request in the queue
-     */
-    private processNextRequest;
+    private startPythonProcess;
+    private handlePythonResponse;
+    private removePendingRequest;
+    private failPendingRequests;
+    private detectPythonExecutable;
 }

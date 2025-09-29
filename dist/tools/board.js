@@ -5,6 +5,7 @@
  */
 import { z } from 'zod';
 import { logger } from '../logger.js';
+import { formatToolResult } from './shared.js';
 /**
  * Register board management tools with the MCP server
  *
@@ -27,12 +28,7 @@ export function registerBoardTools(server, callKicadScript) {
             height,
             unit
         });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     // ------------------------------------------------------
     // Add Layer Tool
@@ -54,12 +50,7 @@ export function registerBoardTools(server, callKicadScript) {
             position,
             number
         });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     // ------------------------------------------------------
     // Set Active Layer Tool
@@ -69,12 +60,7 @@ export function registerBoardTools(server, callKicadScript) {
     }, async ({ layer }) => {
         logger.debug(`Setting active layer to: ${layer}`);
         const result = await callKicadScript("set_active_layer", { layer });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     // ------------------------------------------------------
     // Get Board Info Tool
@@ -82,12 +68,7 @@ export function registerBoardTools(server, callKicadScript) {
     server.tool("get_board_info", {}, async () => {
         logger.debug('Getting board information');
         const result = await callKicadScript("get_board_info", {});
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     // ------------------------------------------------------
     // Get Layer List Tool
@@ -95,12 +76,7 @@ export function registerBoardTools(server, callKicadScript) {
     server.tool("get_layer_list", {}, async () => {
         logger.debug('Getting layer list');
         const result = await callKicadScript("get_layer_list", {});
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     // ------------------------------------------------------
     // Add Board Outline Tool
@@ -129,12 +105,7 @@ export function registerBoardTools(server, callKicadScript) {
             shape,
             params
         });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     // ------------------------------------------------------
     // Add Mounting Hole Tool
@@ -154,12 +125,7 @@ export function registerBoardTools(server, callKicadScript) {
             diameter,
             padDiameter
         });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     // ------------------------------------------------------
     // Add Text Tool
@@ -187,12 +153,7 @@ export function registerBoardTools(server, callKicadScript) {
             rotation,
             style
         });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     // ------------------------------------------------------
     // Add Zone Tool
@@ -219,12 +180,7 @@ export function registerBoardTools(server, callKicadScript) {
             minWidth,
             padConnection
         });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     // ------------------------------------------------------
     // Get Board Extents Tool
@@ -234,12 +190,7 @@ export function registerBoardTools(server, callKicadScript) {
     }, async ({ unit }) => {
         logger.debug('Getting board extents');
         const result = await callKicadScript("get_board_extents", { unit });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     // ------------------------------------------------------
     // Get Board 2D View Tool
@@ -257,12 +208,7 @@ export function registerBoardTools(server, callKicadScript) {
             height,
             format
         });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     logger.info('Board management tools registered');
 }

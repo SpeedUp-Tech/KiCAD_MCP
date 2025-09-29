@@ -24,9 +24,11 @@ const ConfigSchema = z.object({
   version: z.string().default('1.0.0'),
   description: z.string().default('MCP server for KiCAD PCB design operations'),
   pythonPath: z.string().optional(),
+  pythonExecutable: z.string().optional(),
   kicadPath: z.string().optional(),
   logLevel: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
-  logDir: z.string().optional()
+  logDir: z.string().optional(),
+  responseTimeoutMs: z.number().positive().optional()
 });
 
 /**

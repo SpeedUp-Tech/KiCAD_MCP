@@ -1,251 +1,137 @@
 /**
  * Routing tools for KiCAD MCP server
- *
- * These tools handle trace routing, via placement, and net management
  */
 import { z } from 'zod';
 import { logger } from '../logger.js';
-/**
- * Register routing tools with the MCP server
- *
- * @param server MCP server instance
- * @param callKicadScript Function to call KiCAD script commands
- */
+import { formatToolResult } from './shared.js';
+const coordinatePointSchema = z.object({
+    x: z.number().describe('X coordinate'),
+    y: z.number().describe('Y coordinate'),
+    unit: z.enum(['mm', 'inch']).default('mm').describe('Unit of measurement').optional(),
+});
+const padPointSchema = z.object({
+    componentRef: z.string().describe('Component reference designator'),
+    pad: z.string().describe('Pad name or number'),
+});
+const pointSchema = z.union([coordinatePointSchema, padPointSchema]);
 export function registerRoutingTools(server, callKicadScript) {
     logger.info('Registering routing tools');
-    // ------------------------------------------------------
-    // Add Net Tool
-    // ------------------------------------------------------
-    server.tool("add_net", {
-        name: z.string().describe("Name of the net"),
-        class: z.string().optional().describe("Optional net class")
+    server.tool('add_net', {
+        name: z.string().describe('Net name'),
+        class: z.string().optional().describe('Optional net class name'),
     }, async ({ name, class: netClass }) => {
-        logger.debug(`Adding net: ${name}`);
-        const result = await callKicadScript("add_net", { name, class: netClass });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        logger.debug(`Adding net ${name}`);
+        const result = await callKicadScript('add_net', { name, class: netClass });
+        return formatToolResult(result);
     });
-    // ------------------------------------------------------
-    // Route Trace Tool
-    // ------------------------------------------------------
-    server.tool("route_trace", {
-        start: z.object({
-            x: z.number().optional(),
-            y: z.number().optional(),
-            unit: z.enum(["mm", "inch"]).optional(),
-            pad: z.string().optional(),
-            componentRef: z.string().optional()
-        }).describe("Start point (can be coordinates or pad)"),
-        end: z.object({
-            x: z.number().optional(),
-            y: z.number().optional(),
-            unit: z.enum(["mm", "inch"]).optional(),
-            pad: z.string().optional(),
-            componentRef: z.string().optional()
-        }).describe("End point (can be coordinates or pad)"),
-        layer: z.string().describe("Layer to route on (e.g., 'F.Cu')"),
-        width: z.number().optional().describe("Optional trace width"),
-        net: z.string().optional().describe("Optional net name"),
-        via: z.boolean().optional().describe("Whether to add vias if needed")
+    server.tool('route_trace', {
+        start: pointSchema.describe('Start point (coordinates or component/pad)'),
+        end: pointSchema.describe('End point (coordinates or component/pad)'),
+        layer: z.string().optional().describe('Layer to route on (default F.Cu)'),
+        width: z.number().optional().describe('Track width (mm)'),
+        net: z.string().optional().describe('Net name to assign to the track'),
+        via: z.boolean().optional().describe('Add a via at the end point'),
     }, async ({ start, end, layer, width, net, via }) => {
-        logger.debug(`Routing trace on layer ${layer}`);
-        const result = await callKicadScript("route_trace", {
+        logger.debug('Routing trace between points');
+        const result = await callKicadScript('route_trace', {
             start,
             end,
             layer,
             width,
             net,
-            via
+            via,
         });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
-    // ------------------------------------------------------
-    // Add Via Tool
-    // ------------------------------------------------------
-    server.tool("add_via", {
-        position: z.object({
-            x: z.number().describe("X coordinate"),
-            y: z.number().describe("Y coordinate"),
-            unit: z.enum(["mm", "inch"]).describe("Unit of measurement")
-        }).describe("Position coordinates and unit"),
-        size: z.number().optional().describe("Optional via diameter"),
-        drill: z.number().optional().describe("Optional drill hole diameter"),
-        net: z.string().optional().describe("Optional net name"),
-        from_layer: z.string().optional().describe("Starting layer for the via"),
-        to_layer: z.string().optional().describe("Ending layer for the via")
+    server.tool('add_via', {
+        position: coordinatePointSchema.describe('Via position'),
+        size: z.number().optional().describe('Via diameter (mm)'),
+        drill: z.number().optional().describe('Via drill size (mm)'),
+        net: z.string().optional().describe('Net to assign'),
+        from_layer: z.string().optional().describe('Start layer (default F.Cu)'),
+        to_layer: z.string().optional().describe('End layer (default B.Cu)'),
     }, async ({ position, size, drill, net, from_layer, to_layer }) => {
-        logger.debug(`Adding via at (${position.x},${position.y}) ${position.unit}`);
-        const result = await callKicadScript("add_via", {
+        logger.debug('Adding via');
+        const result = await callKicadScript('add_via', {
             position,
             size,
             drill,
             net,
             from_layer,
-            to_layer
+            to_layer,
         });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
-    // ------------------------------------------------------
-    // Delete Trace Tool
-    // ------------------------------------------------------
-    server.tool("delete_trace", {
-        traceUuid: z.string().optional().describe("UUID of the trace to delete"),
-        position: z.object({
-            x: z.number().optional(),
-            y: z.number().optional(),
-            unit: z.enum(["mm", "inch"]).optional()
-        }).optional().describe("Position to look for trace (if UUID not provided)")
+    server.tool('delete_trace', {
+        traceUuid: z.string().optional().describe('UUID of the trace to delete'),
+        position: coordinatePointSchema.optional().describe('Position near the trace to delete'),
     }, async ({ traceUuid, position }) => {
-        if (traceUuid) {
-            logger.debug(`Deleting trace with UUID: ${traceUuid}`);
-        }
-        else {
-            logger.debug(`Deleting trace at position: (${position?.x},${position?.y}) ${position?.unit}`);
-        }
-        const result = await callKicadScript("delete_trace", { traceUuid, position });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        logger.debug('Deleting trace');
+        const result = await callKicadScript('delete_trace', { traceUuid, position });
+        return formatToolResult(result);
     });
-    // ------------------------------------------------------
-    // Auto-Route Net Tool
-    // ------------------------------------------------------
-    server.tool("auto_route_net", {
-        net: z.string().describe("Name of the net to auto-route"),
-        layer: z.string().optional().describe("Optional preferred layer"),
-        width: z.number().optional().describe("Optional trace width")
-    }, async ({ net, layer, width }) => {
-        logger.debug(`Auto-routing net: ${net}`);
-        const result = await callKicadScript("auto_route_net", {
-            net,
+    server.tool('get_nets_list', {}, async () => {
+        logger.debug('Fetching nets list');
+        const result = await callKicadScript('get_nets_list', {});
+        return formatToolResult(result);
+    });
+    server.tool('create_netclass', {
+        name: z.string().describe('Net class name'),
+        clearance: z.number().optional().describe('Clearance (mm)'),
+        trackWidth: z.number().optional().describe('Track width (mm)'),
+        viaDiameter: z.number().optional().describe('Via diameter (mm)'),
+        viaDrill: z.number().optional().describe('Via drill size (mm)'),
+        uviaDiameter: z.number().optional().describe('Micro via diameter (mm)'),
+        uviaDrill: z.number().optional().describe('Micro via drill size (mm)'),
+        diffPairWidth: z.number().optional().describe('Differential pair trace width (mm)'),
+        diffPairGap: z.number().optional().describe('Differential pair gap (mm)'),
+        nets: z.array(z.string()).optional().describe('Net names to assign'),
+    }, async (params) => {
+        logger.debug(`Creating net class ${params.name}`);
+        const result = await callKicadScript('create_netclass', params);
+        return formatToolResult(result);
+    });
+    server.tool('add_copper_pour', {
+        layer: z.string().optional().describe('Layer for the pour (default F.Cu)'),
+        net: z.string().optional().describe('Net to associate with the pour'),
+        clearance: z.number().optional().describe('Clearance (mm)'),
+        minWidth: z.number().optional().describe('Minimum track width (mm)'),
+        points: z.array(coordinatePointSchema).describe('Polygon points defining the pour'),
+        priority: z.number().optional().describe('Zone priority'),
+        fillType: z.enum(['solid', 'hatched']).optional().describe('Fill type'),
+    }, async ({ layer, net, clearance, minWidth, points, priority, fillType }) => {
+        logger.debug('Adding copper pour');
+        const result = await callKicadScript('add_copper_pour', {
             layer,
-            width
+            net,
+            clearance,
+            minWidth,
+            points,
+            priority,
+            fillType,
         });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
-    // ------------------------------------------------------
-    // Add Differential Pair Tool
-    // ------------------------------------------------------
-    server.tool("route_differential_pair", {
-        positive_net: z.string().describe("Name of the positive net"),
-        negative_net: z.string().describe("Name of the negative net"),
-        start: z.object({
-            x: z.number().optional(),
-            y: z.number().optional(),
-            unit: z.enum(["mm", "inch"]).optional(),
-            pad_pos: z.string().optional(),
-            pad_neg: z.string().optional(),
-            componentRef: z.string().optional()
-        }).describe("Start point for differential pair"),
-        end: z.object({
-            x: z.number().optional(),
-            y: z.number().optional(),
-            unit: z.enum(["mm", "inch"]).optional(),
-            pad_pos: z.string().optional(),
-            pad_neg: z.string().optional(),
-            componentRef: z.string().optional()
-        }).describe("End point for differential pair"),
-        layer: z.string().describe("Layer to route on"),
-        width: z.number().optional().describe("Trace width"),
-        gap: z.number().optional().describe("Gap between the pair traces"),
-        impedance: z.number().optional().describe("Target differential impedance (ohms)")
-    }, async ({ positive_net, negative_net, start, end, layer, width, gap, impedance }) => {
-        logger.debug(`Routing differential pair: ${positive_net}/${negative_net}`);
-        const result = await callKicadScript("route_differential_pair", {
-            positive_net,
-            negative_net,
-            start,
-            end,
+    server.tool('route_differential_pair', {
+        startPos: pointSchema.describe('Start point of the pair'),
+        endPos: pointSchema.describe('End point of the pair'),
+        netPos: z.string().describe('Positive net name'),
+        netNeg: z.string().describe('Negative net name'),
+        layer: z.string().optional().describe('Layer to route on (default F.Cu)'),
+        width: z.number().optional().describe('Trace width (mm)'),
+        gap: z.number().optional().describe('Pair gap (mm)'),
+    }, async ({ startPos, endPos, netPos, netNeg, layer, width, gap }) => {
+        logger.debug(`Routing differential pair ${netPos}/${netNeg}`);
+        const result = await callKicadScript('route_differential_pair', {
+            startPos,
+            endPos,
+            netPos,
+            netNeg,
             layer,
             width,
             gap,
-            impedance
         });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
-    });
-    // ------------------------------------------------------
-    // Import Netlist Tool
-    // ------------------------------------------------------
-    server.tool("import_netlist", {
-        filename: z.string().describe("Path to the netlist file"),
-        replace_all: z.boolean().optional().describe("Whether to replace all existing connections")
-    }, async ({ filename, replace_all }) => {
-        logger.debug(`Importing netlist from file: ${filename}`);
-        const result = await callKicadScript("import_netlist", {
-            filename,
-            replace_all
-        });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
-    });
-    // ------------------------------------------------------
-    // Calculate Trace Width Tool
-    // ------------------------------------------------------
-    server.tool("calculate_trace_width", {
-        current: z.number().describe("Current in amperes"),
-        temperature_rise: z.number().describe("Allowable temperature rise in degrees Celsius"),
-        copper_thickness: z.number().optional().describe("Copper thickness in oz/ft² (default: 1oz)"),
-        ambient_temperature: z.number().optional().describe("Ambient temperature in degrees Celsius")
-    }, async ({ current, temperature_rise, copper_thickness, ambient_temperature }) => {
-        logger.debug(`Calculating trace width for ${current}A with ${temperature_rise}°C rise`);
-        const result = await callKicadScript("calculate_trace_width", {
-            current,
-            temperature_rise,
-            copper_thickness,
-            ambient_temperature
-        });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
-    });
-    // ------------------------------------------------------
-    // Get Net Information Tool
-    // ------------------------------------------------------
-    server.tool("get_net_info", {
-        net: z.string().describe("Name of the net")
-    }, async ({ net }) => {
-        logger.debug(`Getting information for net: ${net}`);
-        const result = await callKicadScript("get_net_info", { net });
-        return {
-            content: [{
-                    type: "text",
-                    text: JSON.stringify(result)
-                }]
-        };
+        return formatToolResult(result);
     });
     logger.info('Routing tools registered');
 }

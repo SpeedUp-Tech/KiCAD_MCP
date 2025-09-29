@@ -10,25 +10,31 @@ declare const ConfigSchema: z.ZodObject<{
     version: z.ZodDefault<z.ZodString>;
     description: z.ZodDefault<z.ZodString>;
     pythonPath: z.ZodOptional<z.ZodString>;
+    pythonExecutable: z.ZodOptional<z.ZodString>;
     kicadPath: z.ZodOptional<z.ZodString>;
     logLevel: z.ZodDefault<z.ZodEnum<["error", "warn", "info", "debug"]>>;
     logDir: z.ZodOptional<z.ZodString>;
+    responseTimeoutMs: z.ZodOptional<z.ZodNumber>;
 }, "strip", z.ZodTypeAny, {
     name: string;
     description: string;
     version: string;
     logLevel: "error" | "warn" | "info" | "debug";
     pythonPath?: string | undefined;
+    pythonExecutable?: string | undefined;
     kicadPath?: string | undefined;
     logDir?: string | undefined;
+    responseTimeoutMs?: number | undefined;
 }, {
     name?: string | undefined;
     description?: string | undefined;
     version?: string | undefined;
     pythonPath?: string | undefined;
+    pythonExecutable?: string | undefined;
     kicadPath?: string | undefined;
     logLevel?: "error" | "warn" | "info" | "debug" | undefined;
     logDir?: string | undefined;
+    responseTimeoutMs?: number | undefined;
 }>;
 /**
  * Server configuration type

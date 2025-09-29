@@ -12,7 +12,10 @@ import json
 import traceback
 import logging
 import os
-from typing import Dict, Any, Optional
+import subprocess
+import shutil
+from pathlib import Path
+from typing import Dict, Any, Optional, List, Tuple
 
 # Configure logging
 log_dir = os.path.join(os.path.expanduser('~'), '.kicad-mcp', 'logs')
@@ -84,6 +87,7 @@ try:
     from commands.component_schematic import ComponentManager
     from commands.connection_schematic import ConnectionManager
     from commands.library_schematic import LibraryManager
+    from commands.footprint import FootprintManager
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -94,6 +98,34 @@ except ImportError as e:
     }
     print(json.dumps(error_response))
     sys.exit(1)
+
+def _resolve_kicad_cli() -> str:
+    """Locate the kicad-cli executable."""
+    env_candidate = os.environ.get("KICAD_CLI")
+    if env_candidate:
+        candidate_path = Path(env_candidate)
+        if candidate_path.exists():
+            return str(candidate_path)
+        resolved = shutil.which(env_candidate)
+        if resolved:
+            return resolved
+
+    which_candidate = shutil.which("kicad-cli")
+    if which_candidate:
+        return which_candidate
+    raise FileNotFoundError(
+        "kicad-cli executable not found. Set KICAD_CLI environment variable or ensure it is in PATH."
+    )
+
+
+def _run_kicad_cli(args: List[str], cwd: Optional[str] = None) -> Tuple[subprocess.CompletedProcess[str], str]:
+    """Run a kicad-cli command and return the completed process and executable path."""
+    executable = _resolve_kicad_cli()
+    command = [executable, *args]
+    logger.debug(f"Running kicad-cli command: {' '.join(command)}")
+    completed = subprocess.run(command, capture_output=True, text=True, cwd=cwd)
+    return completed, executable
+
 
 class KiCADInterface:
     """Main interface class to handle KiCAD operations"""
@@ -112,6 +144,8 @@ class KiCADInterface:
         self.routing_commands = RoutingCommands(self.board)
         self.design_rule_commands = DesignRuleCommands(self.board)
         self.export_commands = ExportCommands(self.board)
+        self.symbol_library = LibraryManager()
+        self.footprint_manager = FootprintManager()
         
         # Schematic-related classes don't need board reference
         # as they operate directly on schematic files
@@ -123,6 +157,10 @@ class KiCADInterface:
             "open_project": self.project_commands.open_project,
             "save_project": self.project_commands.save_project,
             "get_project_info": self.project_commands.get_project_info,
+            "set_project_properties": self.project_commands.set_project_properties,
+            "create_backup": self.project_commands.create_backup,
+            "archive_project": self.project_commands.archive_project,
+            "import_project": self.project_commands.import_project,
             
             # Board commands
             "set_board_size": self.board_commands.set_board_size,
@@ -169,14 +207,21 @@ class KiCADInterface:
             "export_svg": self.export_commands.export_svg,
             "export_3d": self.export_commands.export_3d,
             "export_bom": self.export_commands.export_bom,
-            
+
+            # Library commands
+            "create_symbol": self.symbol_library.create_symbol,
+            "create_footprint": self.footprint_manager.create_footprint,
+
             # Schematic commands
             "create_schematic": self._handle_create_schematic,
             "load_schematic": self._handle_load_schematic,
             "add_schematic_component": self._handle_add_schematic_component,
             "add_schematic_wire": self._handle_add_schematic_wire,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
-            "export_schematic_pdf": self._handle_export_schematic_pdf
+            "export_schematic_pdf": self._handle_export_schematic_pdf,
+            "run_erc": self._handle_run_erc,
+            "export_schematic_netlist": self._handle_export_netlist,
+            "export_schematic_bom": self._handle_export_schematic_bom
         }
         
         logger.info("KiCAD interface initialized")
@@ -355,18 +400,144 @@ class KiCADInterface:
                 return {"success": False, "message": "Output path is required"}
             
             import subprocess
-            result = subprocess.run(
-                ["kicad-cli", "sch", "export", "pdf", "--output", output_path, schematic_path],
-                capture_output=True, 
-                text=True
-            )
-            
+            try:
+                result, executable = _run_kicad_cli(
+                    [
+                        "sch",
+                        "export",
+                        "pdf",
+                        schematic_path,
+                        "--output",
+                        output_path
+                    ]
+                )
+            except FileNotFoundError as exc:
+                logger.error(str(exc))
+                return {"success": False, "message": str(exc)}
+
             success = result.returncode == 0
-            message = result.stderr if not success else ""
-            
-            return {"success": success, "message": message}
+            message = result.stderr.strip() if result.stderr else ""
+
+            return {
+                "success": success,
+                "message": message,
+                "stdout": result.stdout.strip(),
+                "executable": executable,
+                "outputPath": output_path if success else None
+            }
         except Exception as e:
             logger.error(f"Error exporting schematic to PDF: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_run_erc(self, params):
+        """Run schematic electrical rules check headlessly."""
+        logger.info("Running ERC via kicad-cli")
+        try:
+            schematic_path = params.get("schematicPath")
+            output_path = params.get("reportPath")
+            extra_args = params.get("extraArgs", [])
+
+            if not schematic_path:
+                return {"success": False, "message": "schematicPath is required"}
+
+            args = ["sch", "erc", schematic_path]
+            if output_path:
+                args.extend(["--report", output_path])
+            args.extend(extra_args)
+
+            try:
+                result, executable = _run_kicad_cli(args)
+            except FileNotFoundError as exc:
+                logger.error(str(exc))
+                return {"success": False, "message": str(exc)}
+
+            success = result.returncode == 0
+            return {
+                "success": success,
+                "message": result.stderr.strip() if result.stderr else "",
+                "stdout": result.stdout.strip(),
+                "reportPath": output_path if output_path else None,
+                "executable": executable
+            }
+        except Exception as e:
+            logger.error(f"Error running ERC: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_export_netlist(self, params):
+        """Export schematic netlist headlessly."""
+        logger.info("Exporting schematic netlist via kicad-cli")
+        try:
+            schematic_path = params.get("schematicPath")
+            output_path = params.get("outputPath")
+            netlist_format = params.get("format")
+            extra_args = params.get("extraArgs", [])
+
+            if not schematic_path:
+                return {"success": False, "message": "schematicPath is required"}
+            if not output_path:
+                return {"success": False, "message": "outputPath is required"}
+
+            args = ["sch", "export", "netlist", schematic_path, "--output", output_path]
+            if netlist_format:
+                args.extend(["--format", netlist_format])
+            args.extend(extra_args)
+
+            try:
+                result, executable = _run_kicad_cli(args)
+            except FileNotFoundError as exc:
+                logger.error(str(exc))
+                return {"success": False, "message": str(exc)}
+
+            success = result.returncode == 0
+            return {
+                "success": success,
+                "message": result.stderr.strip() if result.stderr else "",
+                "stdout": result.stdout.strip(),
+                "outputPath": output_path if success else None,
+                "executable": executable
+            }
+        except Exception as e:
+            logger.error(f"Error exporting schematic netlist: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_export_schematic_bom(self, params):
+        """Export schematic BOM using kicad-cli."""
+        logger.info("Exporting schematic BOM via kicad-cli")
+        try:
+            schematic_path = params.get("schematicPath")
+            output_path = params.get("outputPath")
+            bom_format = params.get("format")
+            template = params.get("template")
+            extra_args = params.get("extraArgs", [])
+
+            if not schematic_path:
+                return {"success": False, "message": "schematicPath is required"}
+            if not output_path:
+                return {"success": False, "message": "outputPath is required"}
+
+            args = ["sch", "export", "bom", schematic_path, "--output", output_path]
+            if bom_format:
+                args.extend(["--format", bom_format])
+            if template:
+                args.extend(["--template", template])
+            args.extend(extra_args)
+
+            try:
+                result, executable = _run_kicad_cli(args)
+            except FileNotFoundError as exc:
+                logger.error(str(exc))
+                return {"success": False, "message": str(exc)}
+
+            success = result.returncode == 0
+            return {
+                "success": success,
+                "message": result.stderr.strip() if result.stderr else "",
+                "stdout": result.stdout.strip(),
+                "outputPath": output_path if success else None,
+                "executable": executable
+            }
+        except Exception as e:
+            logger.error(f"Error exporting schematic BOM: {str(e)}")
             return {"success": False, "message": str(e)}
 
 def main():

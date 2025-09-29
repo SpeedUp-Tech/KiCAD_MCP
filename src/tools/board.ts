@@ -7,6 +7,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { logger } from '../logger.js';
+import { formatToolResult } from './shared.js';
 
 // Command function type for KiCAD script calls
 type CommandFunction = (command: string, params: Record<string, unknown>) => Promise<any>;
@@ -38,12 +39,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
         unit
       });
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result)
-        }]
-      };
+      return formatToolResult(result);
     }
   );
 
@@ -71,12 +67,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
         number
       });
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result)
-        }]
-      };
+      return formatToolResult(result);
     }
   );
 
@@ -91,13 +82,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
     async ({ layer }) => {
       logger.debug(`Setting active layer to: ${layer}`);
       const result = await callKicadScript("set_active_layer", { layer });
-      
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result)
-        }]
-      };
+      return formatToolResult(result);
     }
   );
 
@@ -110,13 +95,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
     async () => {
       logger.debug('Getting board information');
       const result = await callKicadScript("get_board_info", {});
-      
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result)
-        }]
-      };
+      return formatToolResult(result);
     }
   );
 
@@ -129,13 +108,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
     async () => {
       logger.debug('Getting layer list');
       const result = await callKicadScript("get_layer_list", {});
-      
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result)
-        }]
-      };
+      return formatToolResult(result);
     }
   );
 
@@ -172,12 +145,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
         params
       });
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result)
-        }]
-      };
+      return formatToolResult(result);
     }
   );
 
@@ -203,12 +171,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
         padDiameter
       });
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result)
-        }]
-      };
+      return formatToolResult(result);
     }
   );
 
@@ -242,12 +205,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
         style
       });
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result)
-        }]
-      };
+      return formatToolResult(result);
     }
   );
 
@@ -282,12 +240,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
         padConnection
       });
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result)
-        }]
-      };
+      return formatToolResult(result);
     }
   );
 
@@ -302,13 +255,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
     async ({ unit }) => {
       logger.debug('Getting board extents');
       const result = await callKicadScript("get_board_extents", { unit });
-      
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result)
-        }]
-      };
+      return formatToolResult(result);
     }
   );
 
@@ -332,12 +279,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
         format
       });
       
-      return {
-        content: [{
-          type: "text",
-          text: JSON.stringify(result)
-        }]
-      };
+      return formatToolResult(result);
     }
   );
 

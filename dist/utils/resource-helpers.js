@@ -1,56 +1,51 @@
 /**
- * Create a JSON response for a resource
+ * Utility helpers for building MCP resource responses
  */
 export function createJsonResponse(uri, data) {
-    const content = {
-        uri,
-        text: JSON.stringify(data),
-        mimeType: "application/json"
-    };
     return {
-        contents: [content]
+        contents: [
+            {
+                uri,
+                text: JSON.stringify(data),
+                mimeType: 'application/json',
+            },
+        ],
     };
 }
-/**
- * Create a text response for a resource
- */
 export function createTextResponse(uri, text) {
-    const content = {
-        uri,
-        text,
-        mimeType: "text/plain"
-    };
     return {
-        contents: [content]
+        contents: [
+            {
+                uri,
+                text,
+                mimeType: 'text/plain',
+            },
+        ],
     };
 }
-/**
- * Create a binary response for a resource
- */
 export function createBinaryResponse(uri, data, mimeType) {
-    const content = {
-        uri,
-        blob: data,
-        mimeType
-    };
     return {
-        contents: [content]
+        contents: [
+            {
+                uri,
+                blob: data,
+                mimeType,
+            },
+        ],
     };
 }
-/**
- * Create a resource with a URI template
- */
 export function createResource(server, name, uri, callback) {
-    const readCallback = async (uri) => {
-        const response = await callback(uri);
+    const wrapped = async (url) => {
+        const response = await callback(url);
         return {
             ...response,
-            contents: response.contents.map(content => ({
+            contents: response.contents.map((content) => ({
                 ...content,
-                [content.hasOwnProperty('blob') ? 'blob' : 'text']: content.hasOwnProperty('blob') ? content.blob : content.text
-            }))
+                ...(content.blob ? { blob: content.blob } : {}),
+                ...(content.text ? { text: content.text } : {}),
+            })),
         };
     };
-    server.resource(name, uri, readCallback);
+    server.resource(name, uri, wrapped);
 }
 //# sourceMappingURL=resource-helpers.js.map

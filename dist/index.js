@@ -22,8 +22,19 @@ async function main() {
         const config = await loadConfig(options.configPath);
         // Path to the Python script that interfaces with KiCAD
         const kicadScriptPath = join(dirname(__dirname), 'python', 'kicad_interface.py');
+        // Configure logger output directory if provided
+        if (config.logDir) {
+            logger.setLogDir(config.logDir);
+        }
         // Create the server
-        const server = new KiCADMcpServer(kicadScriptPath, config.logLevel);
+        const server = new KiCADMcpServer({
+            kicadScriptPath,
+            logLevel: config.logLevel,
+            pythonPath: config.pythonPath || process.env.PYTHONPATH,
+            pythonExecutable: config.pythonExecutable || process.env.KICAD_PYTHON || process.env.PYTHON_EXECUTABLE,
+            extraEnv: config.kicadPath ? { KICAD_PATH: config.kicadPath } : {},
+            responseTimeoutMs: config.responseTimeoutMs,
+        });
         // Start the server
         await server.start();
         // Setup graceful shutdown

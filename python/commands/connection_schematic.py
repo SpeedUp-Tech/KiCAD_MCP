@@ -1,6 +1,9 @@
 from skip import Schematic
 # Wire and Net classes might not be directly importable in the current version
 import os
+import logging
+
+logger = logging.getLogger('kicad_interface')
 
 class ConnectionManager:
     """Manage connections between components"""
@@ -12,10 +15,10 @@ class ConnectionManager:
             wire = schematic.add_wire(start=start_point, end=end_point)
             # kicad-skip wire properties are limited, but we can potentially
             # add graphical properties if needed in the future.
-            print(f"Added wire from {start_point} to {end_point}.")
+            logger.info(f"Added wire from {start_point} to {end_point}.")
             return wire
         except Exception as e:
-            print(f"Error adding wire: {e}")
+            logger.error(f"Error adding wire: {e}")
             return None
 
     @staticmethod
@@ -36,7 +39,13 @@ class ConnectionManager:
         # A common approach is to add wires between graphical points and then
         # add net labels to define the net name.
 
-        print(f"Attempted to add connection between {source_ref}/{source_pin} and {target_ref}/{target_pin}. This requires advanced implementation.")
+        logger.warning(
+            "Attempted to add connection between %s/%s and %s/%s. This requires advanced implementation.",
+            source_ref,
+            source_pin,
+            target_ref,
+            target_pin,
+        )
         return False # Indicate not fully implemented yet
 
     @staticmethod
@@ -47,7 +56,7 @@ class ConnectionManager:
         # This method would need to identify the relevant graphical elements
         # based on a connection identifier (which we would need to define).
         # This is also an advanced implementation task.
-        print(f"Attempted to remove connection with ID {connection_id}. This requires advanced implementation.")
+        logger.warning("Attempted to remove connection with ID %s. This requires advanced implementation.", connection_id)
         return False # Indicate not fully implemented yet
 
     @staticmethod
@@ -58,7 +67,7 @@ class ConnectionManager:
         # and net labels to build a list of connected pins/points.
         # This requires traversing the schematic's graphical elements and understanding
         # how they form nets. This is an advanced implementation task.
-        print(f"Attempted to get connections for net '{net_name}'. This requires advanced implementation.")
+        logger.warning("Attempted to get connections for net '%s'. This requires advanced implementation.", net_name)
         return [] # Return empty list for now
 
 if __name__ == '__main__':
