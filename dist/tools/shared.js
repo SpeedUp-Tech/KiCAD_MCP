@@ -1,6 +1,14 @@
-/**
- * Convert a KiCAD JSON result into an MCP-compatible tool response structure.
- */
+import { z } from 'zod';
+export const sessionIdSchema = z
+    .string()
+    .min(1)
+    .describe('Session identifier returned by create_session');
+export function withSessionParams(shape) {
+    return {
+        sessionId: sessionIdSchema,
+        ...shape,
+    };
+}
 export function formatToolResult(result) {
     if (result && typeof result === 'object') {
         const typed = result;

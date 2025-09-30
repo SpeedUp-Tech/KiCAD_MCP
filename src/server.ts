@@ -1,15 +1,14 @@
 /**
- * KiCAD MCP Server implementation
+ * KiCAD MCP Server implementation with multi-session support
  */
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { spawn, ChildProcess, SpawnOptions } from 'child_process';
 import { existsSync } from 'fs';
-import readline from 'readline';
 import { logger } from './logger.js';
 
-// Import tool registration functions
+// Tool registrations
+import { registerSessionTools } from './tools/session.js';
 import { registerProjectTools } from './tools/project.js';
 import { registerBoardTools } from './tools/board.js';
 import { registerComponentTools } from './tools/component.js';
@@ -19,18 +18,13 @@ import { registerExportTools } from './tools/export.js';
 import { registerSchematicTools } from './tools/schematic.js';
 import { registerLibraryTools } from './tools/library.js';
 
-// Import resource registration functions
-import { registerProjectResources } from './resources/project.js';
-import { registerBoardResources } from './resources/board.js';
-import { registerComponentResources } from './resources/component.js';
-import { registerLibraryResources } from './resources/library.js';
-
-// Import prompt registration functions
+// Prompt registrations
 import { registerComponentPrompts } from './prompts/component.js';
 import { registerRoutingPrompts } from './prompts/routing.js';
 import { registerDesignPrompts } from './prompts/design.js';
 
-// Supported log levels
+import { SessionManager } from './session-manager.js';
+
 export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 
 export interface KiCadServerOptions {
@@ -42,26 +36,14 @@ export interface KiCadServerOptions {
   responseTimeoutMs?: number;
 }
 
-interface PendingRequest {
-  resolve: (value: unknown) => void;
-  reject: (err: Error) => void;
-  command: string;
-  timer: NodeJS.Timeout;
-}
-
-/**
- * KiCAD MCP Server class
- */
 export class KiCADMcpServer {
   private readonly server: McpServer;
-  private pythonProcess: ChildProcess | null = null;
-  private lineReader: readline.Interface | null = null;
   private readonly stdioTransport: StdioServerTransport;
   private readonly options: Required<Omit<KiCadServerOptions, 'extraEnv' | 'logLevel'>> & {
     logLevel: LogLevel;
     extraEnv: Record<string, string>;
   };
-  private readonly pendingRequests: PendingRequest[] = [];
+  private readonly sessionManager: SessionManager;
 
   constructor(options: KiCadServerOptions) {
     const {
@@ -89,8 +71,6 @@ export class KiCADMcpServer {
       responseTimeoutMs,
     };
 
-    logger.debug(`Using python executable: ${this.options.pythonExecutable}`);
-
     this.server = new McpServer({
       name: 'kicad-mcp-server',
       version: '1.0.0',
@@ -100,17 +80,23 @@ export class KiCADMcpServer {
     this.stdioTransport = new StdioServerTransport();
     logger.info('Using STDIO transport for local communication');
 
+    this.sessionManager = new SessionManager({
+      kicadScriptPath: kicadScriptPath,
+      pythonExecutable: this.options.pythonExecutable,
+      pythonPath: this.options.pythonPath,
+      extraEnv: this.options.extraEnv,
+      responseTimeoutMs: this.options.responseTimeoutMs,
+    });
+
     this.registerAll();
   }
 
-  /**
-   * Register all tools, resources, and prompts
-   */
   private registerAll(): void {
     logger.info('Registering KiCAD tools, resources, and prompts...');
 
     const callKicad = this.callKicadScript.bind(this);
 
+    registerSessionTools(this.server, this.sessionManager);
     registerProjectTools(this.server, callKicad);
     registerBoardTools(this.server, callKicad);
     registerComponentTools(this.server, callKicad);
@@ -120,11 +106,6 @@ export class KiCADMcpServer {
     registerSchematicTools(this.server, callKicad);
     registerLibraryTools(this.server, callKicad);
 
-    registerProjectResources(this.server, callKicad);
-    registerBoardResources(this.server, callKicad);
-    registerComponentResources(this.server, callKicad);
-    registerLibraryResources(this.server, callKicad);
-
     registerComponentPrompts(this.server);
     registerRoutingPrompts(this.server);
     registerDesignPrompts(this.server);
@@ -132,176 +113,31 @@ export class KiCADMcpServer {
     logger.info('All KiCAD tools, resources, and prompts registered');
   }
 
-  /**
-   * Start the MCP server and the Python KiCAD interface
-   */
   async start(): Promise<void> {
     try {
       logger.info('Starting KiCAD MCP server...');
-      this.startPythonProcess();
-
-      if (!this.pythonProcess) {
-        throw new Error('Failed to spawn KiCAD python process');
-      }
-
-      this.pythonProcess.on('exit', (code, signal) => {
-        logger.warn(`Python process exited with code ${code} and signal ${signal}`);
-        this.pythonProcess = null;
-        this.failPendingRequests(new Error('KiCAD python process exited'));
-      });
-
-      this.pythonProcess.on('error', (err) => {
-        logger.error(`Python process error: ${err.message}`);
-      });
-
-      if (this.pythonProcess.stderr) {
-        this.pythonProcess.stderr.on('data', (data: Buffer) => {
-          logger.error(`Python stderr: ${data.toString()}`);
-        });
-      }
-
-      if (this.pythonProcess.stdout) {
-        this.lineReader = readline.createInterface({ input: this.pythonProcess.stdout });
-        this.lineReader.on('line', (line) => this.handlePythonResponse(line));
-      }
-
       logger.info('Connecting MCP server to STDIO transport...');
       await this.server.connect(this.stdioTransport);
       logger.info('Successfully connected to STDIO transport');
-
       process.stderr.write('KiCAD MCP SERVER READY\n');
-      logger.info('KiCAD MCP server started and ready');
     } catch (error) {
       logger.error(`Failed to start KiCAD MCP server: ${error}`);
       throw error;
     }
   }
 
-  /**
-   * Stop the MCP server and clean up resources
-   */
   async stop(): Promise<void> {
     logger.info('Stopping KiCAD MCP server...');
-
-    if (this.lineReader) {
-      this.lineReader.removeAllListeners();
-      this.lineReader.close();
-      this.lineReader = null;
-    }
-
-    if (this.pythonProcess) {
-      this.pythonProcess.kill();
-      this.pythonProcess = null;
-    }
-
-    this.failPendingRequests(new Error('KiCAD MCP server stopped'));
+    this.sessionManager.closeAll();
     logger.info('KiCAD MCP server stopped');
   }
 
-  /**
-   * Call the KiCAD scripting interface to execute commands
-   */
-  private async callKicadScript(command: string, params: Record<string, unknown>): Promise<unknown> {
-    if (!this.pythonProcess || !this.pythonProcess.stdin || this.pythonProcess.killed) {
-      logger.error('Python process is not running');
-      throw new Error('Python process for KiCAD scripting is not running');
-    }
-
-    const payload = JSON.stringify({ command, params });
-    logger.debug(`Sending KiCAD command: ${command}`);
-
-    return new Promise((resolve, reject) => {
-      const pending: PendingRequest = {
-        command,
-        resolve,
-        reject,
-        timer: setTimeout(() => {
-          logger.error(`Command timeout: ${command}`);
-          this.removePendingRequest(pending);
-          reject(new Error(`Command timeout: ${command}`));
-        }, this.options.responseTimeoutMs),
-      };
-
-      this.pendingRequests.push(pending);
-
-      try {
-        this.pythonProcess!.stdin!.write(payload + '\n');
-      } catch (error) {
-        this.removePendingRequest(pending);
-        reject(error instanceof Error ? error : new Error(String(error)));
-      }
-    });
-  }
-
-  private startPythonProcess(): void {
-    const { pythonExecutable, kicadScriptPath, pythonPath, extraEnv } = this.options;
-
-    logger.info(`Starting python process using ${pythonExecutable}`);
-
-    const spawnEnv: NodeJS.ProcessEnv = {
-      ...process.env,
-      ...extraEnv,
-    };
-
-    if (pythonPath) {
-      const separator = process.platform === 'win32' ? ';' : ':';
-      spawnEnv.PYTHONPATH = spawnEnv.PYTHONPATH
-        ? `${pythonPath}${separator}${spawnEnv.PYTHONPATH}`
-        : pythonPath;
-    }
-
-    const spawnOptions: SpawnOptions = {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: spawnEnv,
-    };
-
-    this.pythonProcess = spawn(pythonExecutable, [kicadScriptPath], spawnOptions);
-  }
-
-  private handlePythonResponse(rawLine: string): void {
-    const line = rawLine.trim();
-    if (!line) {
-      return;
-    }
-
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(line);
-    } catch (error) {
-      logger.error(`Failed to parse python response: ${line}`);
-      const pending = this.pendingRequests.shift();
-      if (pending) {
-        clearTimeout(pending.timer);
-        pending.reject(new Error('Invalid JSON response from KiCAD python process'));
-      }
-      return;
-    }
-
-    const pending = this.pendingRequests.shift();
-    if (!pending) {
-      logger.warn(`Received unexpected response with no pending request: ${line}`);
-      return;
-    }
-
-    clearTimeout(pending.timer);
-    logger.debug(`Received response for ${pending.command}`);
-    pending.resolve(parsed);
-  }
-
-  private removePendingRequest(pending: PendingRequest): void {
-    const idx = this.pendingRequests.indexOf(pending);
-    if (idx >= 0) {
-      this.pendingRequests.splice(idx, 1);
-    }
-    clearTimeout(pending.timer);
-  }
-
-  private failPendingRequests(error: Error): void {
-    while (this.pendingRequests.length > 0) {
-      const pending = this.pendingRequests.shift()!;
-      clearTimeout(pending.timer);
-      pending.reject(error);
-    }
+  private async callKicadScript(
+    sessionId: string,
+    command: string,
+    params: Record<string, unknown>
+  ): Promise<unknown> {
+    return this.sessionManager.call(sessionId, command, params);
   }
 
   private detectPythonExecutable(): string {

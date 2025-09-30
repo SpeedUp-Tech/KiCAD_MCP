@@ -1,12 +1,9 @@
 /**
  * Library tools for KiCAD MCP server
- *
- * Provides commands for creating schematic symbols and PCB footprints
- * headlessly so that LLM agents can extend the design libraries.
  */
 import { z } from 'zod';
 import { logger } from '../logger.js';
-import { formatToolResult } from './shared.js';
+import { formatToolResult, withSessionParams } from './shared.js';
 const pinDefinitionSchema = z.object({
     name: z.string().describe('Pin name (e.g., IN, OUT)'),
     number: z.string().describe('Pin number as seen in schematics'),
@@ -23,7 +20,7 @@ const padDefinitionSchema = z.object({
     x: z.number().default(0).describe('Pad X position'),
     y: z.number().default(0).describe('Pad Y position'),
     rotation: z.number().default(0).describe('Pad rotation in degrees'),
-    size: z.tuple([z.number(), z.number()]).describe('Pad size in mm (width, height)'),
+    size: z.object({ width: z.number().describe('Pad width (mm)'), height: z.number().describe('Pad height (mm)') }).optional().describe('Pad size in millimetres'),
     layers: z.array(z.string()).optional().describe('Layer list (defaults to F.Cu/F.Mask/F.Paste)'),
     drill: z
         .union([
@@ -44,7 +41,7 @@ const padDefinitionSchema = z.object({
 });
 export function registerLibraryTools(server, callKicadScript) {
     logger.info('Registering library management tools');
-    server.tool('create_symbol', {
+    server.tool('create_symbol', withSessionParams({
         libraryPath: z.string().describe('Path to the .kicad_sym library file'),
         symbolName: z.string().describe('Name of the symbol to create'),
         libraryName: z.string().optional().describe('Override symbol library name (defaults to filename)'),
@@ -55,18 +52,17 @@ export function registerLibraryTools(server, callKicadScript) {
             footprint: z.string().optional(),
             datasheet: z.string().optional(),
         })
-            .catchall(z.string())
+            .catchall(z.union([z.string(), z.number()]).transform((val) => String(val)))
             .optional()
             .describe('Optional property overrides'),
         bodyWidth: z.number().optional().describe('Symbol body width in mm'),
         bodyHeight: z.number().optional().describe('Symbol body height in mm'),
         pins: z.array(pinDefinitionSchema).optional().describe('Pin definitions for the symbol'),
-    }, async (args) => {
-        logger.debug(`Creating symbol ${args.symbolName}`);
-        const result = await callKicadScript('create_symbol', args);
+    }), async ({ sessionId, ...params }) => {
+        const result = await callKicadScript(sessionId, 'create_symbol', params);
         return formatToolResult(result);
     });
-    server.tool('create_footprint', {
+    server.tool('create_footprint', withSessionParams({
         libraryPath: z.string().describe('Directory for the .pretty footprint library'),
         footprintName: z.string().describe('Name of the footprint to create'),
         attributes: z.array(z.string()).optional().describe('Optional attribute flags (smd, through_hole, etc.)'),
@@ -98,9 +94,8 @@ export function registerLibraryTools(server, callKicadScript) {
             .optional()
             .describe('Optional silkscreen/fabrication outline segments'),
         pads: z.array(padDefinitionSchema).describe('Pad definitions for the footprint'),
-    }, async (args) => {
-        logger.debug(`Creating footprint ${args.footprintName}`);
-        const result = await callKicadScript('create_footprint', args);
+    }), async ({ sessionId, ...params }) => {
+        const result = await callKicadScript(sessionId, 'create_footprint', params);
         return formatToolResult(result);
     });
     logger.info('Library tools registered');

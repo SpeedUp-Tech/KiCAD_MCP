@@ -9,15 +9,17 @@ KiCAD MCP is a Model Context Protocol (MCP) server that lets an LLM agent drive 
 3. [Architecture Overview](#architecture-overview)
 4. [Installation & Build](#installation--build)
 5. [Configuration & Environment](#configuration--environment)
-6. [Available MCP Tools](#available-mcp-tools)
-7. [Headless Workflow Examples](#headless-workflow-examples)
-8. [Logs & Troubleshooting](#logs--troubleshooting)
-9. [Development Notes](#development-notes)
+6. [Session Lifecycle](#session-lifecycle)
+7. [Available MCP Tools](#available-mcp-tools)
+8. [Headless Workflow Examples](#headless-workflow-examples)
+9. [Logs & Troubleshooting](#logs--troubleshooting)
+10. [Development Notes](#development-notes)
 
 ---
 ## What You Can Do
 The server exposes a rich set of MCP tools so an agent can orchestrate the ECAD workflow end-to-end:
 
+- **Session lifecycle** – spin up isolated KiCad workers per user/workflow and tear them down when finished.
 - **Project lifecycle** – create/open/save KiCad projects, archive them, or generate timestamped backups.
 - **Schematic capture** – author new schematics, add symbols & wires, run ERC, export PDFs/netlists/BOMs via `kicad-cli`.
 - **Custom symbol & footprint creation** – generate `.kicad_sym` and `.kicad_mod` assets on the fly when the requested part is missing.
@@ -92,7 +94,7 @@ Configuration is read from `config/default-config.json` (or a file passed with `
 | `kicadPath` | Optional helper environment variable propagated to the Python process. |
 | `logDir` | Directory for daily log files (default: `~/.kicad-mcp/logs`). |
 | `logLevel` | `error`, `warn`, `info`, or `debug`. |
-| `responseTimeoutMs` | Per-command timeout (default 60 000 ms). |
+| `responseTimeoutMs` | Default per-command timeout for sessions (can be overridden per session). |
 
 Useful environment variables:
 
@@ -103,8 +105,23 @@ Useful environment variables:
 Logs from the Python bridge go to `~/.kicad-mcp/logs/kicad_interface.log`.
 
 ---
+## Session Lifecycle
+
+The server is multi-tenant: every design runs inside its own KiCad worker process. Always create a session first, pass its `sessionId` to every tool invocation, then close it when finished.
+
+1. `create_session` → returns `{ "success": true, "sessionId": "…" }`. Optional arguments let you override the Python executable, add `PYTHONPATH` entries, set per-session timeouts, or inject environment variables.
+2. Use the returned `sessionId` in all subsequent tool calls via the `sessionId` argument.
+3. `list_sessions` → shows currently active sessions (IDs, creation timestamps, command counts).
+4. `close_session` → terminates a specific worker and frees resources.
+
+Every command that touches KiCad state requires a session. If you omit `sessionId` the server will return an error. Sessions persist until explicitly closed or the MCP server shuts down.
+
+---
 ## Available MCP Tools
-Below is a condensed summary; see the TypeScript sources under `src/tools/` for parameter schemas.
+Below is a condensed summary; see the TypeScript sources under `src/tools/` for parameter schemas. All tools accept a `sessionId` argument unless noted otherwise.
+
+### Session (`session.ts`)
+- `create_session`, `list_sessions`, `close_session`
 
 ### Project (`project.ts`)
 - `create_project`, `open_project`, `save_project`, `get_project_info`
@@ -152,35 +169,42 @@ Below is a condensed summary; see the TypeScript sources under `src/tools/` for 
 
 Resources (`src/resources/…`) expose project, board, library, and component data via URIs like `kicad://board/info`. Prompts under `src/prompts/` give the agent instructions for common design operations.
 
+> 🔒 Multi-session note: shared resources are intentionally disabled in this release to avoid leaking state across sessions. Fetch any context you need through the standard tools.
+
 ---
 ## Headless Workflow Examples
 These scenarios assume the MCP server is running and the agent can invoke tools.
 
 ### 1. Create a Project & Base Schematic
-1. `create_project` → specify name/path.
-2. `create_schematic` → generate a blank `.kicad_sch` in the project directory.
-3. `add_schematic_component` → drop symbols with coordinates/rotation.
-4. `add_schematic_wire` → connect nets.
-5. `run_erc` → check for open nets or rule violations via `kicad-cli`.
-6. `export_schematic_netlist` / `export_schematic_bom` → produce manufacturing data.
+1. `create_session` → capture the returned `sessionId`.
+2. `create_project` → specify name/path.
+3. `create_schematic` → generate a blank `.kicad_sch` in the project directory.
+4. `add_schematic_component` → drop symbols with coordinates/rotation.
+5. `add_schematic_wire` → connect nets.
+6. `run_erc` → check for open nets or rule violations via `kicad-cli`.
+7. `export_schematic_netlist` / `export_schematic_bom` → produce manufacturing data.
 
 ### 2. Create a Custom Symbol & Footprint, Then Place It
-1. `create_symbol` with a target `.kicad_sym` path, pin definitions, and metadata.
-2. `create_footprint` targeting a `.pretty/` directory with pad geometry.
-3. `list_schematic_libraries` (optional) to confirm the library path.
-4. `add_schematic_component` referencing the new library/symbol combo, plus `footprint` property.
-5. `place_component` on the PCB by referencing the associated footprint.
+1. `create_session` → keep the `sessionId`.
+2. `create_symbol` with a target `.kicad_sym` path, pin definitions, and metadata.
+3. `create_footprint` targeting a `.pretty/` directory with pad geometry.
+4. `list_schematic_libraries` (optional) to confirm the library path.
+5. `add_schematic_component` referencing the new library/symbol combo, plus `footprint` property.
+6. `place_component` on the PCB by referencing the associated footprint.
 
 ### 3. PCB Layout & DRC
-1. `set_board_size`, `add_board_outline`, optional `add_mounting_hole`/`add_board_text`.
-2. `place_component` or `duplicate_component` to populate footprints.
-3. `add_net` + `route_trace` / `route_differential_pair` to connect nets.
-4. `add_copper_pour` for ground planes.
-5. `set_design_rules` & `create_netclass` to tune clearances.
-6. `run_drc` → returns success/error with violation list; optional `get_drc_violations` for details.
-7. `export_gerber` & `export_3d` to prep fabrication outputs.
+1. `create_session`.
+2. `set_board_size`, `add_board_outline`, optional `add_mounting_hole`/`add_board_text`.
+3. `place_component` or `duplicate_component` to populate footprints.
+4. `add_net` + `route_trace` / `route_differential_pair` to connect nets.
+5. `add_copper_pour` for ground planes.
+6. `set_design_rules` & `create_netclass` to tune clearances.
+7. `run_drc` → returns success/error with violation list; optional `get_drc_violations` for details.
+8. `export_gerber` & `export_3d` to prep fabrication outputs.
 
 Every step returns structured JSON summaries so the agent can loop over results and adapt.
+
+When your automation run is complete, call `close_session` to release the worker.
 
 ---
 ## Logs & Troubleshooting

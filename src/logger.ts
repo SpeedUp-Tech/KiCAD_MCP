@@ -87,18 +87,16 @@ class Logger {
     const timestamp = new Date().toISOString();
     const formattedMessage = `[${timestamp}] [${level.toUpperCase()}] ${message}`;
     
-    // Log to console
+    // Log to stderr to keep stdout clean for JSON-RPC
     switch (level) {
       case 'error':
         console.error(formattedMessage);
         break;
       case 'warn':
-        console.warn(formattedMessage);
-        break;
       case 'info':
       case 'debug':
       default:
-        console.log(formattedMessage);
+        process.stderr.write(formattedMessage + '\n');
         break;
     }
     

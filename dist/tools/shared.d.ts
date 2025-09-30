@@ -1,4 +1,6 @@
-/**
- * Convert a KiCAD JSON result into an MCP-compatible tool response structure.
- */
+import { z } from 'zod';
+export declare const sessionIdSchema: z.ZodString;
+export declare function withSessionParams<T extends Record<string, unknown>>(shape: T): T & {
+    sessionId: z.ZodString;
+};
 export declare function formatToolResult(result: unknown): any;

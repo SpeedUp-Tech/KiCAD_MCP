@@ -18,18 +18,32 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
 # Configure logging
-log_dir = os.path.join(os.path.expanduser('~'), '.kicad-mcp', 'logs')
-os.makedirs(log_dir, exist_ok=True)
-log_file = os.path.join(log_dir, 'kicad_interface.log')
+def _create_logging_handlers() -> list[logging.Handler]:
+    primary_dir = os.path.join(os.path.expanduser('~'), '.kicad-mcp', 'logs')
+    fallback_dir = os.path.join(os.getcwd(), 'kicad-mcp-logs')
+
+    for target_dir in (primary_dir, fallback_dir):
+        try:
+            os.makedirs(target_dir, exist_ok=True)
+            log_path = os.path.join(target_dir, 'kicad_interface.log')
+            return [
+                logging.FileHandler(log_path),
+                logging.StreamHandler(sys.stderr),
+            ]
+        except (OSError, PermissionError) as exc:
+            sys.stderr.write(f"WARNING: unable to write log to {target_dir}: {exc}\n")
+            continue
+
+    return [logging.StreamHandler(sys.stderr)]
 
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler(log_file),
-        logging.StreamHandler(sys.stderr)
-    ]
+    handlers=_create_logging_handlers(),
 )
+
+# Suppress noisy debug output from kicad-skip internals unless explicitly requested.
+logging.getLogger('skip').setLevel(logging.WARNING)
 logger = logging.getLogger('kicad_interface')
 
 # Log Python environment details
@@ -217,6 +231,7 @@ class KiCADInterface:
             "load_schematic": self._handle_load_schematic,
             "add_schematic_component": self._handle_add_schematic_component,
             "add_schematic_wire": self._handle_add_schematic_wire,
+            "connect_schematic_pins": self._handle_connect_schematic_pins,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
             "run_erc": self._handle_run_erc,
@@ -334,14 +349,41 @@ class KiCADInterface:
             if not schematic:
                 return {"success": False, "message": "Failed to load schematic"}
             
-            component_obj = ComponentManager.add_component(schematic, component)
-            success = component_obj is not None
-            
-            if success:
-                SchematicManager.save_schematic(schematic, schematic_path)
-                return {"success": True}
-            else:
-                return {"success": False, "message": "Failed to add component"}
+            try:
+                component_obj = ComponentManager.add_component(schematic, component)
+            except (ValueError, FileNotFoundError, TypeError) as exc:
+                logger.warning(f"Component definition rejected: {exc}")
+                return {"success": False, "message": str(exc)}
+            except Exception as exc:
+                logger.error(f"Unexpected error adding component: {exc}")
+                return {"success": False, "message": str(exc)}
+
+            save_ok = SchematicManager.save_schematic(schematic, schematic_path)
+            if not save_ok:
+                return {"success": False, "message": "Component added but failed to save schematic"}
+
+            at_value = getattr(component_obj, 'at', None)
+            position = {}
+            if at_value is not None and hasattr(at_value, 'value'):
+                coords = at_value.value
+                if isinstance(coords, list) and len(coords) >= 2:
+                    position = {
+                        "x": float(coords[0]),
+                        "y": float(coords[1]),
+                        "rotation": float(coords[2]) if len(coords) > 2 else 0.0,
+                    }
+
+            component_info = {
+                "reference": component_obj.property.Reference.value,
+                "value": component_obj.property.Value.value if hasattr(component_obj.property, 'Value') else None,
+                "libId": component_obj.lib_id.value if hasattr(component_obj, 'lib_id') else None,
+                "unit": component_obj.unit.value if hasattr(component_obj, 'unit') else None,
+                "footprint": component_obj.property.Footprint.value if hasattr(component_obj.property, 'Footprint') else None,
+            }
+            if position:
+                component_info["position"] = position
+
+            return {"success": True, "component": component_info}
         except Exception as e:
             logger.error(f"Error adding component to schematic: {str(e)}")
             return {"success": False, "message": str(e)}
@@ -353,28 +395,187 @@ class KiCADInterface:
             schematic_path = params.get("schematicPath")
             start_point = params.get("startPoint")
             end_point = params.get("endPoint")
-            
+            points = params.get("points") or params.get("segments") or params.get("pointList")
+            midpoints = params.get("midpoints") or params.get("viaPoints")
+            width = params.get("width")
+            stroke_type = params.get("strokeType") or params.get("style")
+            wire_uuid = params.get("uuid")
+            wire_options = params.get("wireOptions") or params.get("wire") or {}
+
             if not schematic_path:
                 return {"success": False, "message": "Schematic path is required"}
-            if not start_point or not end_point:
-                return {"success": False, "message": "Start and end points are required"}
-            
+            points_supplied = bool(points)
+            if isinstance(wire_options, dict):
+                if any(wire_options.get(key) is not None for key in ('points', 'pointList', 'segments')):
+                    points_supplied = True
+
+            if not start_point and not points_supplied:
+                return {"success": False, "message": "Start point is required when points are not provided"}
+            if not end_point and not points_supplied:
+                return {"success": False, "message": "End point is required when points are not provided"}
+
             schematic = SchematicManager.load_schematic(schematic_path)
             if not schematic:
                 return {"success": False, "message": "Failed to load schematic"}
-            
-            wire = ConnectionManager.add_wire(schematic, start_point, end_point)
-            success = wire is not None
-            
-            if success:
-                SchematicManager.save_schematic(schematic, schematic_path)
-                return {"success": True}
+
+            wire_properties = {}
+            if isinstance(wire_options, dict):
+                for key in (
+                    'points',
+                    'pointList',
+                    'segments',
+                    'midpoints',
+                    'viaPoints',
+                    'width',
+                    'strokeType',
+                    'style',
+                    'uuid',
+                ):
+                    if wire_options.get(key) is not None:
+                        wire_properties[key] = wire_options[key]
+
+            if points is not None:
+                wire_properties['points'] = points
+            if midpoints is not None:
+                wire_properties['midpoints'] = midpoints
+            if width is not None:
+                wire_properties['width'] = width
+            if stroke_type is not None:
+                wire_properties['strokeType'] = stroke_type
+            if wire_uuid is not None:
+                wire_properties['uuid'] = wire_uuid
+
+            try:
+                wire = ConnectionManager.add_wire(
+                    schematic,
+                    start_point,
+                    end_point,
+                    properties=wire_properties,
+                )
+            except (ValueError, TypeError) as exc:
+                logger.warning(f"Wire definition rejected: {exc}")
+                return {"success": False, "message": str(exc)}
+            except Exception as exc:
+                logger.error(f"Unexpected error adding wire: {exc}")
+                return {"success": False, "message": str(exc)}
+
+            save_ok = SchematicManager.save_schematic(schematic, schematic_path)
+            if not save_ok:
+                return {"success": False, "message": "Wire added but failed to save schematic"}
+
+            if isinstance(wire, list):
+                wires = wire
             else:
-                return {"success": False, "message": "Failed to add wire"}
+                wires = [wire]
+
+            def _wire_dump(wrapper):
+                points = [[pt.value[0], pt.value[1]] for pt in wrapper.points]
+                return {
+                    "uuid": wrapper.uuid.value,
+                    "points": points,
+                    "width": wrapper.stroke.width.value,
+                    "strokeType": wrapper.stroke.type.value,
+                    "length": wrapper.length,
+                }
+
+            segment_payloads = [_wire_dump(wrapper) for wrapper in wires]
+            total_length = sum(segment["length"] for segment in segment_payloads)
+
+            path_points = []
+            for idx, payload in enumerate(segment_payloads):
+                segment_points = payload["points"]
+                if idx == 0:
+                    path_points.extend(segment_points)
+                else:
+                    path_points.extend(segment_points[1:])
+
+            response = {
+                "wire": segment_payloads[0],
+                "segments": segment_payloads,
+                "segmentCount": len(segment_payloads),
+                "totalLength": total_length,
+                "path": path_points,
+            }
+
+            return {"success": True, **response}
         except Exception as e:
             logger.error(f"Error adding wire to schematic: {str(e)}")
             return {"success": False, "message": str(e)}
-    
+
+    def _handle_connect_schematic_pins(self, params):
+        """Connect two schematic pins by drawing a wire between them"""
+        logger.info("Connecting schematic pins")
+        try:
+            schematic_path = params.get("schematicPath")
+            source_pin = params.get("source")
+            target_pin = params.get("target")
+            wire_options = params.get("wireOptions") or params.get("wire")
+            routing = params.get("routing")
+
+            if not schematic_path:
+                return {"success": False, "message": "Schematic path is required"}
+            if not source_pin or not target_pin:
+                return {"success": False, "message": "Source and target pin definitions are required"}
+
+            schematic = SchematicManager.load_schematic(schematic_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            try:
+                wire = ConnectionManager.connect_pins(
+                    schematic,
+                    source_pin,
+                    target_pin,
+                    wire=wire_options,
+                    routing=routing,
+                )
+            except (ValueError, TypeError) as exc:
+                logger.warning(f"Pin connection rejected: {exc}")
+                return {"success": False, "message": str(exc)}
+            except Exception as exc:
+                logger.error(f"Unexpected error connecting pins: {exc}")
+                return {"success": False, "message": str(exc)}
+
+            save_ok = SchematicManager.save_schematic(schematic, schematic_path)
+            if not save_ok:
+                return {"success": False, "message": "Pins connected but failed to save schematic"}
+
+            wires = wire if isinstance(wire, list) else [wire]
+
+            def _wire_dump(wrapper):
+                points = [[pt.value[0], pt.value[1]] for pt in wrapper.points]
+                return {
+                    "uuid": wrapper.uuid.value,
+                    "points": points,
+                    "width": wrapper.stroke.width.value,
+                    "strokeType": wrapper.stroke.type.value,
+                    "length": wrapper.length,
+                }
+
+            segment_payloads = [_wire_dump(wrapper) for wrapper in wires]
+            total_length = sum(segment["length"] for segment in segment_payloads)
+
+            path_points = []
+            for idx, payload in enumerate(segment_payloads):
+                segment_points = payload["points"]
+                if idx == 0:
+                    path_points.extend(segment_points)
+                else:
+                    path_points.extend(segment_points[1:])
+
+            response = {
+                "wire": segment_payloads[0],
+                "segments": segment_payloads,
+                "segmentCount": len(segment_payloads),
+                "totalLength": total_length,
+                "path": path_points,
+            }
+
+            return {"success": True, **response}
+        except Exception as e:
+            logger.error(f"Error connecting schematic pins: {str(e)}")
+            return {"success": False, "message": str(e)}
+
     def _handle_list_schematic_libraries(self, params):
         """List available symbol libraries"""
         logger.info("Listing schematic libraries")
