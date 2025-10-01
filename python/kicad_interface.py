@@ -264,7 +264,9 @@ class KiCADInterface:
                 if result.get("success", False):
                     if command == "create_project" or command == "open_project":
                         logger.info("Updating board reference...")
-                        self.board = pcbnew.GetBoard()
+                        # In headless contexts pcbnew.GetBoard() may return None.
+                        # Prefer the board instance managed by ProjectCommands.
+                        self.board = self.project_commands.board
                         self._update_command_handlers()
                 
                 return result

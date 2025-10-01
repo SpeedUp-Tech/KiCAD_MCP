@@ -6,7 +6,6 @@ import os
 import pcbnew
 import logging
 from typing import Dict, Any, Optional, List, Tuple
-from PIL import Image
 import io
 import base64
 
@@ -128,12 +127,21 @@ class BoardViewCommands:
                     "format": "svg"
                 }
             else:
-                # Use PIL to convert SVG to PNG/JPG
+                # Convert SVG to PNG/JPG using CairoSVG; defer Pillow import for JPG only
                 from cairosvg import svg2png
                 png_data = svg2png(url=temp_svg, output_width=width, output_height=height)
                 os.remove(temp_svg)
-                
+
                 if format == "jpg":
+                    try:
+                        from PIL import Image  # type: ignore
+                    except Exception as pil_err:
+                        return {
+                            "success": False,
+                            "message": "JPEG conversion requires Pillow",
+                            "errorDetails": f"Install Pillow (python3-pil) to enable JPG export: {pil_err}",
+                        }
+
                     # Convert PNG to JPG
                     img = Image.open(io.BytesIO(png_data))
                     jpg_buffer = io.BytesIO()
@@ -142,13 +150,13 @@ class BoardViewCommands:
                     return {
                         "success": True,
                         "imageData": base64.b64encode(jpg_data).decode('utf-8'),
-                        "format": "jpg"
+                        "format": "jpg",
                     }
                 else:
                     return {
                         "success": True,
                         "imageData": base64.b64encode(png_data).decode('utf-8'),
-                        "format": "png"
+                        "format": "png",
                     }
 
         except Exception as e:

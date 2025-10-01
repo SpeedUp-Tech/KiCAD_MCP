@@ -248,12 +248,32 @@ class SchematicManager:
     @staticmethod
     def get_schematic_metadata(schematic):
         """Extract metadata from schematic"""
-        # kicad-skip doesn't expose a direct metadata object on Schematic.
-        # We can return basic info like version and generator.
+        # kicad-skip exposes parsed S-expression objects that may not be
+        # directly JSON-serializable (e.g., ParsedValue). Coerce to primitives.
+
+        def _coerce_int(val: Any) -> int | str:
+            try:
+                if hasattr(val, 'value'):
+                    return _coerce_int(getattr(val, 'value'))
+                if isinstance(val, (int, float)):
+                    return int(val)
+                # Fallback: attempt int() from string; otherwise return string
+                as_int = int(str(val))
+                return as_int
+            except Exception:
+                return str(val)
+
+        def _coerce_str(val: Any) -> str:
+            try:
+                if hasattr(val, 'value'):
+                    return _coerce_str(getattr(val, 'value'))
+                return str(val)
+            except Exception:
+                return ""
+
         metadata = {
-            "version": schematic.version,
-            "generator": schematic.generator,
-            # Add other relevant properties if needed
+            "version": _coerce_int(getattr(schematic, 'version', '')),
+            "generator": _coerce_str(getattr(schematic, 'generator', '')),
         }
         logger.debug("Extracted schematic metadata")
         return metadata
