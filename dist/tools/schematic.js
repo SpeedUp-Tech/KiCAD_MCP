@@ -23,6 +23,48 @@ const schematicComponentSchema = z.object({
     footprint: z.string().optional().describe('Associated PCB footprint name'),
     datasheet: z.string().optional().describe('Datasheet URL'),
 });
+const componentUpdateValueSchema = z.union([
+    z.string(),
+    z.number(),
+    z.boolean(),
+    z.null(),
+]);
+const componentUpdateSchema = z
+    .object({
+    newReference: z.string().min(1).optional().describe('New reference designator'),
+    reference: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('Alternate field name for new reference designator'),
+    value: z.string().optional().describe('Updated component value'),
+    footprint: z.string().optional().describe('Updated footprint name'),
+    datasheet: z.string().optional().describe('Updated datasheet link'),
+    x: z.number().optional().describe('Updated X coordinate'),
+    y: z.number().optional().describe('Updated Y coordinate'),
+    rotation: z.number().optional().describe('Updated rotation in degrees'),
+    position: z
+        .object({
+        x: z.number().optional(),
+        y: z.number().optional(),
+        rotation: z.number().optional(),
+    })
+        .partial()
+        .optional()
+        .describe('Grouped position updates'),
+    unit: z.union([z.string(), z.number()]).optional().describe('Updated unit identifier'),
+    excludeFromSim: z.boolean().optional().describe('Exclude from simulation flag'),
+    inBom: z.boolean().optional().describe('Include in BOM flag'),
+    onBoard: z.boolean().optional().describe('Placed on board flag'),
+    dnp: z.boolean().optional().describe('Do not populate flag'),
+    fieldsAutoplaced: z.boolean().optional().describe('Auto-place fields flag'),
+    properties: z
+        .record(componentUpdateValueSchema)
+        .optional()
+        .describe('Custom property overrides (null removes a property)'),
+})
+    .strict()
+    .describe('Component update payload');
 const schematicPinSchema = z
     .object({
     reference: z.string().describe('Component reference designator'),
@@ -47,6 +89,24 @@ const wireOptionsSchema = z
 })
     .partial()
     .describe('Optional overrides for the generated wire');
+const wireUpdateSchema = z
+    .object({
+    startPoint: schematicPointSchema.optional().describe('Updated starting coordinate'),
+    endPoint: schematicPointSchema.optional().describe('Updated ending coordinate'),
+    points: coordinateListSchema.optional().describe('Replacement list of points'),
+    pointList: coordinateListSchema.optional().describe('Alternate key for points'),
+    segments: coordinateListSchema.optional().describe('Alternate key for points'),
+    midpoints: coordinateListSchema.optional().describe('Midpoints to insert'),
+    viaPoints: coordinateListSchema.optional().describe('Additional waypoints to include'),
+    width: z.number().optional().describe('Updated wire width'),
+    strokeType: z
+        .enum(['default', 'dash', 'dot'])
+        .optional()
+        .describe('Updated stroke style'),
+    style: z.string().optional().describe('Alternate field for stroke style'),
+})
+    .partial()
+    .describe('Wire update payload');
 export function registerSchematicTools(server, callKicadScript) {
     logger.info('Registering schematic tools');
     server.tool('create_schematic', withSessionParams({
@@ -77,6 +137,32 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
+    server.tool('update_schematic_component', withSessionParams({
+        schematicPath: z.string().describe('Path to the schematic file to update'),
+        reference: z.string().describe('Reference designator to update'),
+        unit: z.union([z.string(), z.number()]).optional().describe('Specific unit to target'),
+        updates: componentUpdateSchema.describe('Field updates to apply'),
+    }), async ({ sessionId, schematicPath, reference, unit, updates }) => {
+        const result = await callKicadScript(sessionId, 'update_schematic_component', {
+            schematicPath,
+            reference,
+            unit,
+            updates,
+        });
+        return formatToolResult(result);
+    });
+    server.tool('remove_schematic_component', withSessionParams({
+        schematicPath: z.string().describe('Path to the schematic file to update'),
+        reference: z.string().describe('Reference designator to remove'),
+        unit: z.union([z.string(), z.number()]).optional().describe('Specific unit to remove'),
+    }), async ({ sessionId, schematicPath, reference, unit }) => {
+        const result = await callKicadScript(sessionId, 'remove_schematic_component', {
+            schematicPath,
+            reference,
+            unit,
+        });
+        return formatToolResult(result);
+    });
     server.tool('add_schematic_wire', withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
         startPoint: schematicPointSchema.describe('Wire start coordinates'),
@@ -86,6 +172,30 @@ export function registerSchematicTools(server, callKicadScript) {
             schematicPath,
             startPoint,
             endPoint,
+        });
+        return formatToolResult(result);
+    });
+    server.tool('update_schematic_connection', withSessionParams({
+        schematicPath: z.string().describe('Path to the schematic file to update'),
+        wireUuid: z.string().describe('Identifier of the wire segment to update'),
+        updates: wireUpdateSchema.describe('Updates to apply to the wire'),
+    }), async ({ sessionId, schematicPath, wireUuid, updates }) => {
+        const result = await callKicadScript(sessionId, 'update_schematic_connection', {
+            schematicPath,
+            wireUuid,
+            updates,
+        });
+        return formatToolResult(result);
+    });
+    server.tool('remove_schematic_connection', withSessionParams({
+        schematicPath: z.string().describe('Path to the schematic file to update'),
+        wireUuid: z.string().optional().describe('Single wire UUID to remove'),
+        wireUuids: z.array(z.string()).optional().describe('Multiple wire UUIDs to remove'),
+    }), async ({ sessionId, schematicPath, wireUuid, wireUuids }) => {
+        const result = await callKicadScript(sessionId, 'remove_schematic_connection', {
+            schematicPath,
+            wireUuid,
+            wireUuids,
         });
         return formatToolResult(result);
     });
@@ -126,6 +236,18 @@ export function registerSchematicTools(server, callKicadScript) {
         const result = await callKicadScript(sessionId, 'export_schematic_pdf', {
             schematicPath,
             outputPath,
+        });
+        return formatToolResult(result);
+    });
+    server.tool('export_schematic_svg', withSessionParams({
+        schematicPath: z.string().describe('Schematic file to export'),
+        outputPath: z.string().describe('Destination SVG path'),
+        extraArgs: z.array(z.string()).optional().describe('Additional kicad-cli arguments'),
+    }), async ({ sessionId, schematicPath, outputPath, extraArgs }) => {
+        const result = await callKicadScript(sessionId, 'export_schematic_svg', {
+            schematicPath,
+            outputPath,
+            extraArgs,
         });
         return formatToolResult(result);
     });

@@ -230,10 +230,15 @@ class KiCADInterface:
             "create_schematic": self._handle_create_schematic,
             "load_schematic": self._handle_load_schematic,
             "add_schematic_component": self._handle_add_schematic_component,
+            "update_schematic_component": self._handle_update_schematic_component,
+            "remove_schematic_component": self._handle_remove_schematic_component,
             "add_schematic_wire": self._handle_add_schematic_wire,
+            "update_schematic_connection": self._handle_update_schematic_connection,
+            "remove_schematic_connection": self._handle_remove_schematic_connection,
             "connect_schematic_pins": self._handle_connect_schematic_pins,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
+            "export_schematic_svg": self._handle_export_schematic_svg,
             "run_erc": self._handle_run_erc,
             "export_schematic_netlist": self._handle_export_netlist,
             "export_schematic_bom": self._handle_export_schematic_bom
@@ -387,7 +392,101 @@ class KiCADInterface:
         except Exception as e:
             logger.error(f"Error adding component to schematic: {str(e)}")
             return {"success": False, "message": str(e)}
-    
+
+    def _handle_update_schematic_component(self, params):
+        """Update a component instance in a schematic."""
+        logger.info("Updating component in schematic")
+        try:
+            schematic_path = params.get("schematicPath")
+            reference = params.get("reference") or params.get("componentRef")
+            updates = params.get("updates") or params.get("fields")
+            unit = params.get("unit")
+
+            if not schematic_path:
+                return {"success": False, "message": "Schematic path is required"}
+            if not reference:
+                return {"success": False, "message": "Component reference is required"}
+            if not isinstance(updates, dict) or not updates:
+                return {"success": False, "message": "updates must be a non-empty object"}
+
+            schematic = SchematicManager.load_schematic(schematic_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            try:
+                result = ComponentManager.update_component(
+                    schematic,
+                    reference,
+                    updates,
+                    unit=unit,
+                )
+            except (ValueError, TypeError) as exc:
+                logger.warning(f"Component update rejected: {exc}")
+                return {"success": False, "message": str(exc)}
+            except Exception as exc:
+                logger.error(f"Unexpected error updating component: {exc}")
+                return {"success": False, "message": str(exc)}
+
+            if not SchematicManager.save_schematic(schematic, schematic_path):
+                return {
+                    "success": False,
+                    "message": "Component updated but failed to save schematic",
+                }
+
+            return {
+                "success": True,
+                "component": result.get("component"),
+                "changedFields": result.get("changedFields", []),
+            }
+        except Exception as exc:
+            logger.error(f"Error updating component: {exc}")
+            return {"success": False, "message": str(exc)}
+
+    def _handle_remove_schematic_component(self, params):
+        """Remove component(s) from a schematic."""
+        logger.info("Removing component from schematic")
+        try:
+            schematic_path = params.get("schematicPath")
+            reference = params.get("reference") or params.get("componentRef")
+            unit = params.get("unit")
+
+            if not schematic_path:
+                return {"success": False, "message": "Schematic path is required"}
+            if not reference:
+                return {"success": False, "message": "Component reference is required"}
+
+            schematic = SchematicManager.load_schematic(schematic_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            try:
+                removed = ComponentManager.remove_component(
+                    schematic,
+                    reference,
+                    unit=unit,
+                )
+            except (ValueError, TypeError) as exc:
+                logger.warning(f"Component removal rejected: {exc}")
+                return {"success": False, "message": str(exc)}
+            except Exception as exc:
+                logger.error(f"Unexpected error removing component: {exc}")
+                return {"success": False, "message": str(exc)}
+
+            if not SchematicManager.save_schematic(schematic, schematic_path):
+                return {
+                    "success": False,
+                    "message": "Component removed but failed to save schematic",
+                }
+
+            return {
+                "success": True,
+                "removed": removed,
+                "removedCount": len(removed),
+            }
+        except Exception as exc:
+            logger.error(f"Error removing component: {exc}")
+            return {"success": False, "message": str(exc)}
+
     def _handle_add_schematic_wire(self, params):
         """Add a wire to a schematic"""
         logger.info("Adding wire to schematic")
@@ -501,6 +600,89 @@ class KiCADInterface:
         except Exception as e:
             logger.error(f"Error adding wire to schematic: {str(e)}")
             return {"success": False, "message": str(e)}
+
+    def _handle_update_schematic_connection(self, params):
+        """Update an existing wire segment."""
+        logger.info("Updating schematic connection")
+        try:
+            schematic_path = params.get("schematicPath")
+            wire_uuid = params.get("wireUuid") or params.get("uuid")
+            updates = params.get("updates") or params.get("wire")
+
+            if not schematic_path:
+                return {"success": False, "message": "Schematic path is required"}
+            if not wire_uuid:
+                return {"success": False, "message": "wireUuid is required"}
+            if not isinstance(updates, dict) or not updates:
+                return {"success": False, "message": "updates must be a non-empty object"}
+
+            schematic = SchematicManager.load_schematic(schematic_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            try:
+                payload = ConnectionManager.update_wire(schematic, wire_uuid, updates)
+            except (ValueError, TypeError) as exc:
+                logger.warning(f"Connection update rejected: {exc}")
+                return {"success": False, "message": str(exc)}
+            except Exception as exc:
+                logger.error(f"Unexpected error updating connection: {exc}")
+                return {"success": False, "message": str(exc)}
+
+            if not SchematicManager.save_schematic(schematic, schematic_path):
+                return {
+                    "success": False,
+                    "message": "Connection updated but failed to save schematic",
+                }
+
+            return {"success": True, "wire": payload}
+        except Exception as exc:
+            logger.error(f"Error updating schematic connection: {exc}")
+            return {"success": False, "message": str(exc)}
+
+    def _handle_remove_schematic_connection(self, params):
+        """Remove one or more wire segments."""
+        logger.info("Removing schematic connection")
+        try:
+            schematic_path = params.get("schematicPath")
+            wire_uuid = params.get("wireUuid")
+            wire_uuids = params.get("wireUuids") or params.get("uuids")
+
+            if not schematic_path:
+                return {"success": False, "message": "Schematic path is required"}
+
+            target_ids: List[str] = []
+            if wire_uuid:
+                target_ids.append(wire_uuid)
+            if isinstance(wire_uuids, (list, tuple)):
+                target_ids.extend(str(entry) for entry in wire_uuids if entry)
+
+            if not target_ids:
+                return {"success": False, "message": "At least one wire UUID must be provided"}
+
+            schematic = SchematicManager.load_schematic(schematic_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            try:
+                removed = ConnectionManager.remove_connection(schematic, target_ids)
+            except (ValueError, TypeError) as exc:
+                logger.warning(f"Connection removal rejected: {exc}")
+                return {"success": False, "message": str(exc)}
+            except Exception as exc:
+                logger.error(f"Unexpected error removing connection: {exc}")
+                return {"success": False, "message": str(exc)}
+
+            if not SchematicManager.save_schematic(schematic, schematic_path):
+                return {
+                    "success": False,
+                    "message": "Connection removed but failed to save schematic",
+                }
+
+            return {"success": True, "removed": removed, "removedCount": len(removed)}
+        except Exception as exc:
+            logger.error(f"Error removing schematic connection: {exc}")
+            return {"success": False, "message": str(exc)}
 
     def _handle_connect_schematic_pins(self, params):
         """Connect two schematic pins by drawing a wire between them"""
@@ -628,6 +810,50 @@ class KiCADInterface:
             }
         except Exception as e:
             logger.error(f"Error exporting schematic to PDF: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_export_schematic_svg(self, params):
+        """Export schematic to SVG"""
+        logger.info("Exporting schematic to SVG")
+        try:
+            schematic_path = params.get("schematicPath")
+            output_path = params.get("outputPath")
+            extra_args = params.get("extraArgs", [])
+
+            if not schematic_path:
+                return {"success": False, "message": "Schematic path is required"}
+            if not output_path:
+                return {"success": False, "message": "Output path is required"}
+
+            args = [
+                "sch",
+                "export",
+                "svg",
+                schematic_path,
+                "--output",
+                output_path,
+            ]
+            if isinstance(extra_args, list):
+                args.extend(str(arg) for arg in extra_args)
+
+            try:
+                result, executable = _run_kicad_cli(args)
+            except FileNotFoundError as exc:
+                logger.error(str(exc))
+                return {"success": False, "message": str(exc)}
+
+            success = result.returncode == 0
+            message = result.stderr.strip() if result.stderr else ""
+
+            return {
+                "success": success,
+                "message": message,
+                "stdout": result.stdout.strip(),
+                "executable": executable,
+                "outputPath": output_path if success else None,
+            }
+        except Exception as e:
+            logger.error(f"Error exporting schematic to SVG: {str(e)}")
             return {"success": False, "message": str(e)}
 
     def _handle_run_erc(self, params):

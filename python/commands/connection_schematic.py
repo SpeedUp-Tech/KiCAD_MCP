@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from skip import Schematic
 import logging
 import uuid
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+import math
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
+from skip import Schematic
 from sexpdata import Symbol as SSymbol
 
 from skip.eeschema.wire import WireWrapper
@@ -101,6 +102,47 @@ def _build_wire_node(
     ]
 
     return node
+
+
+def _polyline_length(points: Sequence[Tuple[float, float]]) -> float:
+    total = 0.0
+    for start, end in zip(points, points[1:]):
+        total += math.hypot(end[0] - start[0], end[1] - start[1])
+    return total
+
+
+def _extract_wire_points(wrapper: WireWrapper) -> List[Tuple[float, float]]:
+    pts_entry = wrapper.raw[1] if len(wrapper.raw) > 1 else None
+    points: List[Tuple[float, float]] = []
+    if isinstance(pts_entry, list) and pts_entry:
+        if pts_entry[0] == SSymbol('pts'):
+            for candidate in pts_entry[1:]:
+                if isinstance(candidate, list) and len(candidate) >= 3:
+                    try:
+                        points.append((float(candidate[1]), float(candidate[2])))
+                    except (TypeError, ValueError):
+                        continue
+    return points
+
+
+def _wire_payload(wrapper: WireWrapper) -> Dict[str, Any]:
+    raw_points = _extract_wire_points(wrapper)
+    return {
+        'uuid': getattr(getattr(wrapper, 'uuid', None), 'value', None),
+        'points': [[round(pt[0], 6), round(pt[1], 6)] for pt in raw_points],
+        'width': getattr(getattr(wrapper.stroke, 'width', None), 'value', None),
+        'strokeType': getattr(getattr(wrapper.stroke, 'type', None), 'value', None),
+        'length': _polyline_length(raw_points) if len(raw_points) >= 2 else 0.0,
+    }
+
+
+def _find_wire_by_uuid(schematic: Schematic, wire_uuid: str) -> Optional[WireWrapper]:
+    if not hasattr(schematic, 'wire'):
+        return None
+    for wire in schematic.wire:
+        if getattr(getattr(wire, 'uuid', None), 'value', None) == wire_uuid:
+            return wire
+    return None
 
 
 def _reference_from_symbol(symbol: Symbol) -> str:
@@ -322,6 +364,82 @@ class ConnectionManager:
         return created_wires
 
     @staticmethod
+    def update_wire(
+        schematic: Schematic,
+        wire_uuid: str,
+        updates: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Modify an existing wire's geometry or styling."""
+
+        if not isinstance(wire_uuid, str) or not wire_uuid.strip():
+            raise ValueError('wireUuid must be a non-empty string')
+        if not isinstance(updates, dict):
+            raise TypeError('updates must be a mapping')
+        if not updates:
+            raise ValueError('updates cannot be empty')
+
+        wrapper = _find_wire_by_uuid(schematic, wire_uuid.strip())
+        if wrapper is None:
+            raise ValueError(f"Wire '{wire_uuid}' not found")
+
+        config = dict(updates)
+        start_point = config.pop('startPoint', None)
+        end_point = config.pop('endPoint', None)
+        points_override = (
+            config.pop('points', None)
+            or config.pop('pointList', None)
+            or config.pop('segments', None)
+        )
+        midpoints = config.pop('midpoints', None) or config.pop('viaPoints', None)
+        if midpoints is not None:
+            if points_override is None:
+                points_override = []
+            if not isinstance(points_override, list):
+                raise TypeError('points must be provided as a list when using midpoints')
+            points_override.extend(midpoints)
+
+        width = config.pop('width', None)
+        stroke_type = config.pop('strokeType', None) or config.pop('style', None)
+
+        if config:
+            unknown = ', '.join(sorted(config.keys()))
+            raise ValueError(f"Unsupported wire update fields: {unknown}")
+
+        if points_override is not None or start_point is not None or end_point is not None:
+            new_points = _normalise_points(start_point, end_point, points_override)
+            pts_node = wrapper.raw[1] if len(wrapper.raw) > 1 else None
+            replacement = [SSymbol('pts')]
+            for x_val, y_val in new_points:
+                replacement.append([SSymbol('xy'), round(x_val, 6), round(y_val, 6)])
+
+            if isinstance(pts_node, list) and pts_node:
+                pts_node[:] = replacement
+            else:
+                if len(wrapper.raw) > 1:
+                    wrapper.raw[1] = replacement
+                else:
+                    wrapper.raw.insert(1, replacement)
+
+        if width is not None:
+            try:
+                new_width = float(width)
+            except (TypeError, ValueError) as exc:
+                raise ValueError('width must be numeric') from exc
+            if new_width <= 0:
+                raise ValueError('width must be positive')
+            wrapper.stroke.width.value = round(new_width, 6)
+
+        if stroke_type is not None:
+            stroke_value = str(stroke_type).lower()
+            if stroke_value not in _VALID_STROKE_TYPES:
+                raise ValueError(
+                    f"strokeType must be one of: {', '.join(sorted(_VALID_STROKE_TYPES))}"
+                )
+            wrapper.stroke.type.value = stroke_value
+
+        return _wire_payload(wrapper)
+
+    @staticmethod
     def add_connection(schematic: Schematic, source_ref: str, source_pin: str, target_ref: str, target_pin: str):
         """Add a connection between component pins"""
         # kicad-skip handles connections implicitly through wires and labels.
@@ -349,15 +467,58 @@ class ConnectionManager:
         return False # Indicate not fully implemented yet
 
     @staticmethod
-    def remove_connection(schematic: Schematic, connection_id: str):
-        """Remove a connection"""
-        # Removing connections in kicad-skip typically means removing the wires
-        # or net labels that form the connection.
-        # This method would need to identify the relevant graphical elements
-        # based on a connection identifier (which we would need to define).
-        # This is also an advanced implementation task.
-        logger.warning("Attempted to remove connection with ID %s. This requires advanced implementation.", connection_id)
-        return False # Indicate not fully implemented yet
+    def remove_connection(
+        schematic: Schematic,
+        connection_id: Union[str, Iterable[str]],
+    ) -> List[Dict[str, Any]]:
+        """Remove one or more wire segments that represent a connection."""
+
+        if isinstance(connection_id, str):
+            candidate_ids = [connection_id]
+        elif isinstance(connection_id, Iterable):
+            candidate_ids = list(connection_id)
+        else:
+            raise TypeError('connection_id must be a wire UUID or an iterable of UUIDs')
+
+        normalised_ids = {str(uuid_value).strip() for uuid_value in candidate_ids if uuid_value}
+        if not normalised_ids:
+            raise ValueError('At least one wire UUID is required to remove a connection')
+
+        if not hasattr(schematic, 'wire') or not len(schematic.wire):
+            raise ValueError('Schematic contains no wires to remove')
+
+        removed_wrappers: List[WireWrapper] = []
+        removed_payloads: List[Dict[str, Any]] = []
+
+        for wire in list(schematic.wire._elements):
+            wire_uuid = getattr(getattr(wire, 'uuid', None), 'value', None)
+            if wire_uuid in normalised_ids:
+                # Capture payload BEFORE mutating the tree so geometry is intact
+                try:
+                    removed_payloads.append(_wire_payload(wire))
+                except Exception:
+                    # As a fallback, at least return the UUID if payload extraction fails
+                    removed_payloads.append({
+                        'uuid': wire_uuid,
+                        'points': [],
+                        'width': None,
+                        'strokeType': None,
+                        'length': 0.0,
+                    })
+                parent = wire.raw_parent
+                if wire.raw in parent:
+                    parent.remove(wire.raw)
+                removed_wrappers.append(wire)
+
+        if not removed_wrappers:
+            raise ValueError('No wires matched the supplied UUIDs')
+
+        schematic.wire._elements = [
+            wire for wire in schematic.wire._elements if wire not in removed_wrappers
+        ]
+
+        logger.info("Removed %d wire segment(s)", len(removed_payloads))
+        return removed_payloads
 
     @staticmethod
     def get_net_connections(schematic: Schematic, net_name: str):
