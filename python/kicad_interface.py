@@ -16,6 +16,33 @@ import subprocess
 import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+from datetime import datetime, timezone
+class JsonStdoutHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            # Build a minimal, safe JSON log frame without relying on external formatters
+            msg = record.getMessage()
+            level = record.levelname.lower()
+            # Use ISO8601 UTC timestamp; avoid complex operations that could raise
+            ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+            frame = {
+                "type": "log",
+                "level": level,
+                "message": msg,
+                "time": ts,
+            }
+            sys.stdout.write(json.dumps(frame, default=str) + "\n")
+            sys.stdout.flush()
+        except Exception:
+            # Avoid recursive logging on handler failure; swallow errors
+            try:
+                fallback = {"type": "log", "level": "error", "message": "log_emit_failed"}
+                sys.stdout.write(json.dumps(fallback) + "\n")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+
 
 # Configure logging
 def _create_logging_handlers() -> list[logging.Handler]:
@@ -28,13 +55,13 @@ def _create_logging_handlers() -> list[logging.Handler]:
             log_path = os.path.join(target_dir, 'kicad_interface.log')
             return [
                 logging.FileHandler(log_path),
-                logging.StreamHandler(sys.stderr),
+                JsonStdoutHandler(),
             ]
         except (OSError, PermissionError) as exc:
             sys.stderr.write(f"WARNING: unable to write log to {target_dir}: {exc}\n")
             continue
 
-    return [logging.StreamHandler(sys.stderr)]
+    return [JsonStdoutHandler()]
 
 logging.basicConfig(
     level=logging.INFO,
@@ -143,14 +170,14 @@ def _run_kicad_cli(args: List[str], cwd: Optional[str] = None) -> Tuple[subproce
 
 class KiCADInterface:
     """Main interface class to handle KiCAD operations"""
-    
+
     def __init__(self):
         """Initialize the interface and command handlers"""
         self.board = None
         self.project_filename = None
-        
+
         logger.info("Initializing command handlers...")
-        
+
         # Initialize command handlers
         self.project_commands = ProjectCommands(self.board)
         self.board_commands = BoardCommands(self.board)
@@ -160,10 +187,10 @@ class KiCADInterface:
         self.export_commands = ExportCommands(self.board)
         self.symbol_library = LibraryManager()
         self.footprint_manager = FootprintManager()
-        
+
         # Schematic-related classes don't need board reference
         # as they operate directly on schematic files
-        
+
         # Command routing dictionary
         self.command_routes = {
             # Project commands
@@ -175,7 +202,7 @@ class KiCADInterface:
             "create_backup": self.project_commands.create_backup,
             "archive_project": self.project_commands.archive_project,
             "import_project": self.project_commands.import_project,
-            
+
             # Board commands
             "set_board_size": self.board_commands.set_board_size,
             "add_layer": self.board_commands.add_layer,
@@ -186,7 +213,7 @@ class KiCADInterface:
             "add_board_outline": self.board_commands.add_board_outline,
             "add_mounting_hole": self.board_commands.add_mounting_hole,
             "add_text": self.board_commands.add_text,
-            
+
             # Component commands
             "place_component": self.component_commands.place_component,
             "move_component": self.component_commands.move_component,
@@ -198,7 +225,7 @@ class KiCADInterface:
             "place_component_array": self.component_commands.place_component_array,
             "align_components": self.component_commands.align_components,
             "duplicate_component": self.component_commands.duplicate_component,
-            
+
             # Routing commands
             "add_net": self.routing_commands.add_net,
             "route_trace": self.routing_commands.route_trace,
@@ -208,13 +235,13 @@ class KiCADInterface:
             "create_netclass": self.routing_commands.create_netclass,
             "add_copper_pour": self.routing_commands.add_copper_pour,
             "route_differential_pair": self.routing_commands.route_differential_pair,
-            
+
             # Design rule commands
             "set_design_rules": self.design_rule_commands.set_design_rules,
             "get_design_rules": self.design_rule_commands.get_design_rules,
             "run_drc": self.design_rule_commands.run_drc,
             "get_drc_violations": self.design_rule_commands.get_drc_violations,
-            
+
             # Export commands
             "export_gerber": self.export_commands.export_gerber,
             "export_pdf": self.export_commands.export_pdf,
@@ -243,23 +270,23 @@ class KiCADInterface:
             "export_schematic_netlist": self._handle_export_netlist,
             "export_schematic_bom": self._handle_export_schematic_bom
         }
-        
+
         logger.info("KiCAD interface initialized")
 
     def handle_command(self, command: str, params: Dict[str, Any]) -> Dict[str, Any]:
         """Route command to appropriate handler"""
         logger.info(f"Handling command: {command}")
         logger.debug(f"Command parameters: {params}")
-        
+
         try:
             # Get the handler for the command
             handler = self.command_routes.get(command)
-            
+
             if handler:
                 # Execute the command
                 result = handler(params)
                 logger.debug(f"Command result: {result}")
-                
+
                 # Update board reference if command was successful
                 if result.get("success", False):
                     if command == "create_project" or command == "open_project":
@@ -268,7 +295,7 @@ class KiCADInterface:
                         # Prefer the board instance managed by ProjectCommands.
                         self.board = self.project_commands.board
                         self._update_command_handlers()
-                
+
                 return result
             else:
                 logger.error(f"Unknown command: {command}")
@@ -277,7 +304,7 @@ class KiCADInterface:
                     "message": f"Unknown command: {command}",
                     "errorDetails": "The specified command is not supported"
                 }
-                
+
         except Exception as e:
             # Get the full traceback
             traceback_str = traceback.format_exc()
@@ -297,7 +324,7 @@ class KiCADInterface:
         self.routing_commands.board = self.board
         self.design_rule_commands.board = self.board
         self.export_commands.board = self.board
-        
+
     # Schematic command handlers
     def _handle_create_schematic(self, params):
         """Create a new schematic"""
@@ -306,31 +333,31 @@ class KiCADInterface:
             project_name = params.get("projectName")
             path = params.get("path", ".")
             metadata = params.get("metadata", {})
-            
+
             if not project_name:
                 return {"success": False, "message": "Project name is required"}
-            
+
             schematic = SchematicManager.create_schematic(project_name, metadata)
             file_path = f"{path}/{project_name}.kicad_sch"
             success = SchematicManager.save_schematic(schematic, file_path)
-            
+
             return {"success": success, "file_path": file_path}
         except Exception as e:
             logger.error(f"Error creating schematic: {str(e)}")
             return {"success": False, "message": str(e)}
-    
+
     def _handle_load_schematic(self, params):
         """Load an existing schematic"""
         logger.info("Loading schematic")
         try:
             filename = params.get("filename")
-            
+
             if not filename:
                 return {"success": False, "message": "Filename is required"}
-            
+
             schematic = SchematicManager.load_schematic(filename)
             success = schematic is not None
-            
+
             if success:
                 metadata = SchematicManager.get_schematic_metadata(schematic)
                 return {"success": success, "metadata": metadata}
@@ -339,23 +366,23 @@ class KiCADInterface:
         except Exception as e:
             logger.error(f"Error loading schematic: {str(e)}")
             return {"success": False, "message": str(e)}
-    
+
     def _handle_add_schematic_component(self, params):
         """Add a component to a schematic"""
         logger.info("Adding component to schematic")
         try:
             schematic_path = params.get("schematicPath")
             component = params.get("component", {})
-            
+
             if not schematic_path:
                 return {"success": False, "message": "Schematic path is required"}
             if not component:
                 return {"success": False, "message": "Component definition is required"}
-            
+
             schematic = SchematicManager.load_schematic(schematic_path)
             if not schematic:
                 return {"success": False, "message": "Failed to load schematic"}
-            
+
             try:
                 component_obj = ComponentManager.add_component(schematic, component)
             except (ValueError, FileNotFoundError, TypeError) as exc:
@@ -765,25 +792,25 @@ class KiCADInterface:
         logger.info("Listing schematic libraries")
         try:
             search_paths = params.get("searchPaths")
-            
+
             libraries = LibraryManager.list_available_libraries(search_paths)
             return {"success": True, "libraries": libraries}
         except Exception as e:
             logger.error(f"Error listing schematic libraries: {str(e)}")
             return {"success": False, "message": str(e)}
-    
+
     def _handle_export_schematic_pdf(self, params):
         """Export schematic to PDF"""
         logger.info("Exporting schematic to PDF")
         try:
             schematic_path = params.get("schematicPath")
             output_path = params.get("outputPath")
-            
+
             if not schematic_path:
                 return {"success": False, "message": "Schematic path is required"}
             if not output_path:
                 return {"success": False, "message": "Output path is required"}
-            
+
             import subprocess
             try:
                 result, executable = _run_kicad_cli(
@@ -973,7 +1000,7 @@ def main():
     """Main entry point"""
     logger.info("Starting KiCAD interface...")
     interface = KiCADInterface()
-    
+
     try:
         logger.info("Processing commands from stdin...")
         # Process commands from stdin
@@ -984,7 +1011,7 @@ def main():
                 command_data = json.loads(line)
                 command = command_data.get("command")
                 params = command_data.get("params", {})
-                
+
                 if not command:
                     logger.error("Missing command field")
                     response = {
@@ -995,12 +1022,13 @@ def main():
                 else:
                     # Handle command
                     response = interface.handle_command(command, params)
-                
+
                 # Send response
                 logger.debug(f"Sending response: {response}")
-                print(json.dumps(response))
+                _frame = {"type": "response", "payload": response}
+                print(json.dumps(_frame, default=str))
                 sys.stdout.flush()
-                
+
             except json.JSONDecodeError as e:
                 logger.error(f"Invalid JSON input: {str(e)}")
                 response = {
@@ -1008,13 +1036,14 @@ def main():
                     "message": "Invalid JSON input",
                     "errorDetails": str(e)
                 }
-                print(json.dumps(response))
+                _frame = {"type": "response", "payload": response}
+                print(json.dumps(_frame, default=str))
                 sys.stdout.flush()
-                
+
     except KeyboardInterrupt:
         logger.info("KiCAD interface stopped")
         sys.exit(0)
-        
+
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}\n{traceback.format_exc()}")
         sys.exit(1)

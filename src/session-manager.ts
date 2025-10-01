@@ -178,21 +178,49 @@ class PythonSession {
     try {
       parsed = JSON.parse(line);
     } catch (error) {
-      logger.error(`Session ${this.id}: invalid JSON response: ${line}`);
-      const pending = this.pending.shift();
-      if (pending) {
-        clearTimeout(pending.timer);
-        pending.reject(new Error('Invalid JSON response from KiCad python process'));
-      }
+      logger.error(`Session ${this.id}: invalid JSON on stdout: ${line}`);
+      // Do not consume pending request here; keep waiting for a valid response frame
       return;
     }
 
+    const obj = parsed as any;
+
+    // Structured framing from Python: { type: 'log' | 'response', ... }
+    if (obj && typeof obj === 'object' && 'type' in obj) {
+      const t = String(obj.type);
+      if (t === 'log') {
+        const level = String(obj.level || 'info').toLowerCase();
+        const msg = typeof obj.message === 'string' ? obj.message : JSON.stringify(obj);
+        const prefixed = `Session ${this.id} py: ${msg}`;
+        if (level === 'error') logger.error(prefixed);
+        else if (level === 'warn' || level === 'warning') logger.warn(prefixed);
+        else if (level === 'debug') logger.debug(prefixed);
+        else logger.info(prefixed);
+        return; // keep waiting for a response frame
+      }
+
+      if (t === 'response') {
+        const payload = obj.payload ?? obj.result ?? obj;
+        const pending = this.pending.shift();
+        if (!pending) {
+          logger.warn(`Session ${this.id}: response frame without pending command`);
+          return;
+        }
+        clearTimeout(pending.timer);
+        pending.resolve(payload);
+        return;
+      }
+
+      logger.warn(`Session ${this.id}: unknown stdout frame type: ${t}`);
+      return;
+    }
+
+    // Backward-compatibility: treat bare JSON as a response
     const pending = this.pending.shift();
     if (!pending) {
       logger.warn(`Session ${this.id}: unexpected response without pending command`);
       return;
     }
-
     clearTimeout(pending.timer);
     pending.resolve(parsed);
   }
