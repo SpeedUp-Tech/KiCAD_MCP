@@ -8,7 +8,8 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "dev": "tsc -w & nodemon dist/index.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "validate:env": "python3 ./python/validate_env.py --config ./config/default-config.json || python ./python/validate_env.py --config ./config/default-config.json"
   },
   "keywords": [
     "kicad",

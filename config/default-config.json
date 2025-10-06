@@ -3,9 +3,9 @@
   "version": "1.0.0",
   "description": "MCP server for KiCAD PCB design operations",
   "pythonPath": "/usr/lib/python3/dist-packages",
-  "pythonExecutable": "/usr/bin/python3",
-  "kicadPath": "",
+  "pythonExecutable": "/root/miniconda3/envs/kicad/bin/python",
+  "kicadPath": "/usr/share/kicad",
   "logLevel": "info",
-  "logDir": "./logs",
+  "logDir": "~/.kicad-mcp/logs",
   "responseTimeoutMs": 60000
 }
