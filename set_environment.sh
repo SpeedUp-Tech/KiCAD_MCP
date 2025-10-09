@@ -216,6 +216,48 @@ if [[ -n "$KICAD_CLI_OVERRIDE" ]]; then
   export KICAD_CLI="$KICAD_CLI_OVERRIDE"
 fi
 
+# If we are in a conda env and we detected a system KiCad Python path,
+# add it permanently to the environment's site-packages via a .pth file.
+# This makes pcbnew importable in tests and runtime without per-run hacks.
+if [[ -n "${CONDA_PREFIX:-}" ]]; then
+  # Prefer explicit override for python-path; fall back to detected
+  KI_PY_PATHS="$PY_PATH_TO_SET"
+  if [[ -z "$KI_PY_PATHS" && -n "$DETECTED_KICAD_PY_PATH" ]]; then
+    KI_PY_PATHS="$DETECTED_KICAD_PY_PATH"
+  fi
+  if [[ -n "$KI_PY_PATHS" ]]; then
+    # Resolve site-packages path of the active conda Python
+    CONDA_SITE_PKGS="$(python - <<'PY'
+import site
+cands=[p for p in site.getsitepackages() if p.endswith('site-packages')]
+print(cands[0] if cands else site.getusersitepackages())
+PY
+)"
+    if [[ -d "$CONDA_SITE_PKGS" ]]; then
+      PTH_FILE="$CONDA_SITE_PKGS/kicad_system.pth"
+      # Support multiple paths separated by ':'
+      IFS=':' read -r -a _KI_PATH_ARR <<< "$KI_PY_PATHS"
+      {
+        for p in "${_KI_PATH_ARR[@]}"; do
+          [[ -n "$p" ]] && echo "$p"
+        done
+      } > "$PTH_FILE"
+      echo "Wrote KiCad path(s) to $PTH_FILE"
+      # Quick verification (non-fatal)
+      python - <<'PY' || true
+try:
+    import pcbnew
+    import sys
+    print(f"pcbnew resolved: {pcbnew.__file__}")
+except Exception as e:
+    print(f"WARNING: pcbnew import still failing: {e}")
+PY
+    else
+      echo "WARNING: Could not locate conda site-packages; skipping .pth install" >&2
+    fi
+  fi
+fi
+
 
 
 # Install Python dependencies into the same interpreter we will use (avoids ABI mismatches)
@@ -290,4 +332,3 @@ python "$ROOT_DIR/python/validate_env.py" \
   ${PY_PATH_OVERRIDE:+--python-path "$PY_PATH_OVERRIDE"}
 
 printf "\nEnvironment setup completed for %s.\n" "$ACTIVE_ENV_DESC"
-
