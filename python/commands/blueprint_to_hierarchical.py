@@ -163,37 +163,88 @@ def _analyze_module_connections(modules: List[Dict], signals: List[Dict], rails:
 
 
 def _add_hierarchical_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> None:
-    """Add hierarchical labels to a schematic tree."""
-    y_pos = 50.0
-    
-    # Add labels for each connection type
-    for label_name in sorted(connections["power_inputs"]):
-        tree.append(_make_hierarchical_label(label_name, "input", 30.0, y_pos, 0))
-        y_pos += 10.0
-    
-    for label_name in sorted(connections["power_outputs"]):
-        tree.append(_make_hierarchical_label(label_name, "output", 130.0, y_pos, 0))
-        y_pos += 10.0
-    
-    for label_name in sorted(connections["signal_inputs"]):
-        tree.append(_make_hierarchical_label(label_name, "input", 30.0, y_pos, 0))
-        y_pos += 10.0
-    
-    for label_name in sorted(connections["signal_outputs"]):
-        tree.append(_make_hierarchical_label(label_name, "output", 130.0, y_pos, 0))
-        y_pos += 10.0
+    """
+    Add hierarchical labels to a schematic tree following schematic drawing principles:
+    - Signal flow: left to right (inputs on left, outputs on right)
+    - Power flow: top to bottom (inputs on top, outputs on bottom)
+    - All labels are horizontal (0 degrees) for readability
+    - Labels are centered on each edge
+
+    Layout:
+    - Power inputs: centered horizontally along the top
+    - Signal inputs: centered vertically along the left side
+    - Signal outputs: centered vertically along the right side
+    - Power outputs: centered horizontally along the bottom
+    """
+    # A4 schematic working area is approximately 277mm x 190mm
+    # Using grid units (typically 2.54mm per unit), we have roughly:
+    # Width: ~270mm / 2.54 ≈ 106 units, Height: ~180mm / 2.54 ≈ 71 units
+    # Safe working area: leave margins
+
+    LEFT_X = 20.0      # Left edge for signal inputs
+    RIGHT_X = 260.0    # Right edge for signal outputs
+    TOP_Y = 20.0       # Top edge for power inputs
+    BOTTOM_Y = 180.0   # Bottom edge for power outputs
+    CENTER_X = 140.0   # Center X for top/bottom labels
+    CENTER_Y = 100.0   # Center Y for left/right labels
+
+    LABEL_SPACING = 10.0  # Spacing between labels
+
+    # All labels use angle 0 (horizontal text, reader-friendly)
+
+    # Power inputs: centered horizontally along the top
+    power_inputs = sorted(connections["power_inputs"])
+    if power_inputs:
+        total_width = (len(power_inputs) - 1) * LABEL_SPACING
+        x_start = CENTER_X - total_width / 2
+        for i, label_name in enumerate(power_inputs):
+            tree.append(_make_hierarchical_label(label_name, "input", x_start + i * LABEL_SPACING, TOP_Y, 0))
+
+    # Signal inputs: centered vertically along the left side
+    signal_inputs = sorted(connections["signal_inputs"])
+    if signal_inputs:
+        total_height = (len(signal_inputs) - 1) * LABEL_SPACING
+        y_start = CENTER_Y - total_height / 2
+        for i, label_name in enumerate(signal_inputs):
+            tree.append(_make_hierarchical_label(label_name, "input", LEFT_X, y_start + i * LABEL_SPACING, 0))
+
+    # Signal outputs: centered vertically along the right side
+    signal_outputs = sorted(connections["signal_outputs"])
+    if signal_outputs:
+        total_height = (len(signal_outputs) - 1) * LABEL_SPACING
+        y_start = CENTER_Y - total_height / 2
+        for i, label_name in enumerate(signal_outputs):
+            tree.append(_make_hierarchical_label(label_name, "output", RIGHT_X, y_start + i * LABEL_SPACING, 0))
+
+    # Power outputs: centered horizontally along the bottom
+    power_outputs = sorted(connections["power_outputs"])
+    if power_outputs:
+        total_width = (len(power_outputs) - 1) * LABEL_SPACING
+        x_start = CENTER_X - total_width / 2
+        for i, label_name in enumerate(power_outputs):
+            tree.append(_make_hierarchical_label(label_name, "output", x_start + i * LABEL_SPACING, BOTTOM_Y, 0))
 
 
 def _make_hierarchical_label(name: str, shape: str, x: float, y: float, angle: int) -> List:
-    """Create a hierarchical label element."""
-    justify = "left" if angle == 0 else "right"
+    """
+    Create a hierarchical label element.
+
+    Args:
+        name: Label name
+        shape: Label shape ("input", "output", "bidirectional", "passive")
+        x: X coordinate
+        y: Y coordinate
+        angle: Rotation angle in degrees (always 0 for horizontal, reader-friendly text)
+    """
+    # All labels use horizontal text (angle 0) for readability
+    # Text justification is always "left" for horizontal labels
     return [
         Symbol("hierarchical_label"),
         name,
         [Symbol("shape"), Symbol(shape)],
         [Symbol("at"), x, y, angle],
         [Symbol("fields_autoplaced")],
-        [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]], [Symbol("justify"), Symbol(justify)]],
+        [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]], [Symbol("justify"), Symbol("left")]],
         [Symbol("uuid"), Symbol(str(uuid4()))]
     ]
 
