@@ -129,6 +129,7 @@ try:
     from commands.connection_schematic import ConnectionManager
     from commands.library_schematic import LibraryManager
     from commands.footprint import FootprintManager
+    from commands.blueprint_to_hierarchical import generate_hierarchical_schematic
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -268,7 +269,8 @@ class KiCADInterface:
             "export_schematic_svg": self._handle_export_schematic_svg,
             "run_erc": self._handle_run_erc,
             "export_schematic_netlist": self._handle_export_netlist,
-            "export_schematic_bom": self._handle_export_schematic_bom
+            "export_schematic_bom": self._handle_export_schematic_bom,
+            "generate_hierarchical_schematic": self._handle_generate_hierarchical_schematic
         }
 
         logger.info("KiCAD interface initialized")
@@ -994,6 +996,37 @@ class KiCADInterface:
             }
         except Exception as e:
             logger.error(f"Error exporting schematic BOM: {str(e)}")
+            return {"success": False, "message": str(e)}
+
+    def _handle_generate_hierarchical_schematic(self, params):
+        """Generate a hierarchical KiCAD schematic from a blueprint JSON file."""
+        logger.info("Generating hierarchical schematic from blueprint")
+        try:
+            blueprint_path = params.get("blueprintPath")
+            output_dir = params.get("outputDir")
+
+            if not blueprint_path:
+                return {"success": False, "message": "blueprintPath is required"}
+            if not output_dir:
+                return {"success": False, "message": "outputDir is required"}
+
+            # Call the generate_hierarchical_schematic function
+            result = generate_hierarchical_schematic(blueprint_path, output_dir)
+
+            return {
+                "success": True,
+                "message": "Hierarchical schematic generated successfully",
+                "result": result
+            }
+        except FileNotFoundError as e:
+            logger.error(f"Blueprint file not found: {str(e)}")
+            return {"success": False, "message": f"Blueprint file not found: {str(e)}"}
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid blueprint JSON: {str(e)}")
+            return {"success": False, "message": f"Invalid blueprint JSON: {str(e)}"}
+        except Exception as e:
+            logger.error(f"Error generating hierarchical schematic: {str(e)}")
+            logger.error(traceback.format_exc())
             return {"success": False, "message": str(e)}
 
 def main():

@@ -389,5 +389,20 @@ export function registerSchematicTools(
     }
   );
 
+  server.tool(
+    'generate_hierarchical_schematic',
+    withSessionParams({
+      blueprintPath: z.string().describe('Path to the blueprint JSON file'),
+      outputDir: z.string().describe('Directory where the hierarchical schematic project will be created'),
+    }),
+    async ({ sessionId, blueprintPath, outputDir }) => {
+      const result = await callKicadScript(sessionId, 'generate_hierarchical_schematic', {
+        blueprintPath,
+        outputDir,
+      });
+      return formatToolResult(result);
+    }
+  );
+
   logger.info('Schematic tools registered');
 }
