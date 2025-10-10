@@ -15,7 +15,7 @@ Key principles:
 import json
 import logging
 from pathlib import Path
-from typing import Dict, List, Set, Tuple
+from typing import Any, Dict, List, Set, Tuple
 from uuid import uuid4
 
 from sexpdata import Symbol
@@ -71,7 +71,11 @@ def generate_hierarchical_schematic(blueprint_path: str, output_dir: str) -> Dic
             "title": module_id,
             "description": module.get("function", "")
         })
-        
+
+        # Ensure tree is a list (type guard for type checker)
+        if not isinstance(sch.tree, list):
+            raise RuntimeError(f"Schematic tree is not a list for module {module_id}")
+
         # Add hierarchical labels
         _add_hierarchical_labels_to_tree(sch.tree, connections)
 
@@ -92,8 +96,13 @@ def generate_hierarchical_schematic(blueprint_path: str, output_dir: str) -> Dic
     
     # Step 3: Create top schematic with sheet symbols (A3 paper size)
     top_sch = SchematicManager.create_schematic("Top", metadata={"paper": "A3"})
+
+    # Ensure tree is a list (type guard for type checker)
+    if not isinstance(top_sch.tree, list):
+        raise RuntimeError("Top schematic tree is not a list")
+
     top_tree = top_sch.tree
-    
+
     # Get root UUID
     root_uuid = _get_root_uuid(top_tree)
     
@@ -168,64 +177,138 @@ def _add_hierarchical_labels_to_tree(tree: List, connections: Dict[str, Set[str]
     - Signal flow: left to right (inputs on left, outputs on right)
     - Power flow: top to bottom (inputs on top, outputs on bottom)
     - All labels are horizontal (0 degrees) for readability
-    - Labels are centered on each edge
+    - Labels are spread adaptively across each edge
 
     Layout:
-    - Power inputs: centered horizontally along the top
-    - Signal inputs: centered vertically along the left side
-    - Signal outputs: centered vertically along the right side
-    - Power outputs: centered horizontally along the bottom
+    - Power inputs: spread adaptively along the top edge
+    - Signal inputs: spread adaptively along the left edge
+    - Signal outputs: spread adaptively along the right edge
+    - Power outputs: spread adaptively along the bottom edge
     """
     # A4 schematic working area is approximately 277mm x 190mm
     # Using grid units (typically 2.54mm per unit), we have roughly:
     # Width: ~270mm / 2.54 ≈ 106 units, Height: ~180mm / 2.54 ≈ 71 units
-    # Safe working area: leave margins
+    # The workspace box typically starts around (25, 25) and ends around (270, 190)
+    # Labels should be INSIDE the workspace box
 
-    LEFT_X = 20.0      # Left edge for signal inputs
-    RIGHT_X = 260.0    # Right edge for signal outputs
-    TOP_Y = 20.0       # Top edge for power inputs
-    BOTTOM_Y = 180.0   # Bottom edge for power outputs
-    CENTER_X = 140.0   # Center X for top/bottom labels
-    CENTER_Y = 100.0   # Center Y for left/right labels
+    LEFT_X = 30.0      # Left edge for signal inputs (inside workspace)
+    RIGHT_X = 260.0    # Right edge for signal outputs (inside workspace)
+    TOP_Y = 20.0       # Top edge for power inputs (inside workspace)
+    BOTTOM_Y = 180.0   # Bottom edge for power outputs (inside workspace)
 
-    LABEL_SPACING = 10.0  # Spacing between labels
+    # Usable ranges for spreading labels (inside workspace)
+    HORIZONTAL_START = 50.0   # Start X for top/bottom labels
+    HORIZONTAL_END = 230.0    # End X for top/bottom labels
+    VERTICAL_START = 50.0     # Start Y for left/right labels
+    VERTICAL_END = 150.0      # End Y for left/right labels
+
+    # Adaptive spacing parameters
+    MIN_SPACING = 15.0        # Minimum spacing between labels
+    MAX_SPACING = 50.0        # Maximum spacing between labels
 
     # All labels use angle 0 (horizontal text, reader-friendly)
 
-    # Power inputs: centered horizontally along the top
+    # Power inputs: spread adaptively along the top edge
     power_inputs = sorted(connections["power_inputs"])
     if power_inputs:
-        total_width = (len(power_inputs) - 1) * LABEL_SPACING
-        x_start = CENTER_X - total_width / 2
-        for i, label_name in enumerate(power_inputs):
-            tree.append(_make_hierarchical_label(label_name, "input", x_start + i * LABEL_SPACING, TOP_Y, 0))
+        positions = _calculate_adaptive_positions(
+            len(power_inputs),
+            HORIZONTAL_START,
+            HORIZONTAL_END,
+            MIN_SPACING,
+            MAX_SPACING
+        )
+        for label_name, x_pos in zip(power_inputs, positions):
+            tree.append(_make_hierarchical_label(label_name, "input", x_pos, TOP_Y, 0, "left"))
 
-    # Signal inputs: centered vertically along the left side
+    # Signal inputs: spread adaptively along the left edge
+    # Use "right" justify so text extends left and symbol is on the right (toward connections)
     signal_inputs = sorted(connections["signal_inputs"])
     if signal_inputs:
-        total_height = (len(signal_inputs) - 1) * LABEL_SPACING
-        y_start = CENTER_Y - total_height / 2
-        for i, label_name in enumerate(signal_inputs):
-            tree.append(_make_hierarchical_label(label_name, "input", LEFT_X, y_start + i * LABEL_SPACING, 0))
+        positions = _calculate_adaptive_positions(
+            len(signal_inputs),
+            VERTICAL_START,
+            VERTICAL_END,
+            MIN_SPACING,
+            MAX_SPACING
+        )
+        for label_name, y_pos in zip(signal_inputs, positions):
+            tree.append(_make_hierarchical_label(label_name, "input", LEFT_X, y_pos, 0, "right"))
 
-    # Signal outputs: centered vertically along the right side
+    # Signal outputs: spread adaptively along the right edge
     signal_outputs = sorted(connections["signal_outputs"])
     if signal_outputs:
-        total_height = (len(signal_outputs) - 1) * LABEL_SPACING
-        y_start = CENTER_Y - total_height / 2
-        for i, label_name in enumerate(signal_outputs):
-            tree.append(_make_hierarchical_label(label_name, "output", RIGHT_X, y_start + i * LABEL_SPACING, 0))
+        positions = _calculate_adaptive_positions(
+            len(signal_outputs),
+            VERTICAL_START,
+            VERTICAL_END,
+            MIN_SPACING,
+            MAX_SPACING
+        )
+        for label_name, y_pos in zip(signal_outputs, positions):
+            tree.append(_make_hierarchical_label(label_name, "output", RIGHT_X, y_pos, 0, "left"))
 
-    # Power outputs: centered horizontally along the bottom
+    # Power outputs: spread adaptively along the bottom edge
     power_outputs = sorted(connections["power_outputs"])
     if power_outputs:
-        total_width = (len(power_outputs) - 1) * LABEL_SPACING
-        x_start = CENTER_X - total_width / 2
-        for i, label_name in enumerate(power_outputs):
-            tree.append(_make_hierarchical_label(label_name, "output", x_start + i * LABEL_SPACING, BOTTOM_Y, 0))
+        positions = _calculate_adaptive_positions(
+            len(power_outputs),
+            HORIZONTAL_START,
+            HORIZONTAL_END,
+            MIN_SPACING,
+            MAX_SPACING
+        )
+        for label_name, x_pos in zip(power_outputs, positions):
+            tree.append(_make_hierarchical_label(label_name, "output", x_pos, BOTTOM_Y, 0, "left"))
 
 
-def _make_hierarchical_label(name: str, shape: str, x: float, y: float, angle: int) -> List:
+def _calculate_adaptive_positions(count: int, start: float, end: float, min_spacing: float, max_spacing: float) -> List[float]:
+    """
+    Calculate adaptive positions for labels along an edge.
+
+    Strategy:
+    - Single label: place at center
+    - Multiple labels: use spacing between min_spacing and max_spacing
+    - If labels fit with max_spacing, center them on the edge
+    - If labels need more space, use the full edge with uniform spacing
+
+    Args:
+        count: Number of labels
+        start: Start position of the edge
+        end: End position of the edge
+        min_spacing: Minimum spacing between labels
+        max_spacing: Maximum spacing between labels
+
+    Returns:
+        List of positions for each label
+    """
+    if count == 0:
+        return []
+
+    if count == 1:
+        # Single label: place at center
+        return [(start + end) / 2]
+
+    # Calculate total length needed with max_spacing
+    total_length_max = (count - 1) * max_spacing
+    available_length = end - start
+
+    if total_length_max <= available_length:
+        # Labels fit comfortably with max_spacing, center them
+        actual_spacing = max_spacing
+        total_length = total_length_max
+        offset = (available_length - total_length) / 2
+        start_pos = start + offset
+    else:
+        # Use full edge with uniform spacing
+        actual_spacing = available_length / (count - 1)
+        start_pos = start
+
+    # Generate positions
+    return [start_pos + i * actual_spacing for i in range(count)]
+
+
+def _make_hierarchical_label(name: str, shape: str, x: float, y: float, angle: int, justify: str = "left") -> List:
     """
     Create a hierarchical label element.
 
@@ -235,16 +318,19 @@ def _make_hierarchical_label(name: str, shape: str, x: float, y: float, angle: i
         x: X coordinate
         y: Y coordinate
         angle: Rotation angle in degrees (always 0 for horizontal, reader-friendly text)
+        justify: Text justification ("left" or "right")
+                 - "left": text extends right, symbol on left (format: <>[label])
+                 - "right": text extends left, symbol on right (format: [label]<>)
     """
     # All labels use horizontal text (angle 0) for readability
-    # Text justification is always "left" for horizontal labels
+    # Text justification controls where the symbol appears relative to text
     return [
         Symbol("hierarchical_label"),
         name,
         [Symbol("shape"), Symbol(shape)],
         [Symbol("at"), x, y, angle],
         [Symbol("fields_autoplaced")],
-        [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]], [Symbol("justify"), Symbol("left")]],
+        [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]], [Symbol("justify"), Symbol(justify)]],
         [Symbol("uuid"), Symbol(str(uuid4()))]
     ]
 
@@ -348,13 +434,13 @@ def _rebuild_sheet_instances_at_end(tree: List, root_uuid: str, sheet_uuids: Dic
         if isinstance(tree[i], list) and tree[i] and tree[i][0] == Symbol("sheet_instances"):
             tree.pop(i)
             break
-    
+
     # Create new sheet_instances with correct paths
-    sheet_instances = [Symbol("sheet_instances")]
-    
+    sheet_instances: List[Any] = [Symbol("sheet_instances")]
+
     # Add root path
     sheet_instances.append([Symbol("path"), "/", [Symbol("page"), "1"]])
-    
+
     # Add each sheet path with format: /root_uuid/sheet_uuid
     for page_num, (module_id, sheet_uuid) in enumerate(sheet_uuids.items(), start=2):
         sheet_instances.append([
@@ -362,7 +448,7 @@ def _rebuild_sheet_instances_at_end(tree: List, root_uuid: str, sheet_uuids: Dic
             f"/{root_uuid}/{sheet_uuid}",
             [Symbol("page"), str(page_num)]
         ])
-    
+
     # Append to END of tree
     tree.append(sheet_instances)
 
