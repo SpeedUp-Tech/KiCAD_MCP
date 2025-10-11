@@ -29,8 +29,9 @@ class ComponentManagerTests(unittest.TestCase):
         self.assertEqual(symbol.property.Footprint.value, 'Resistor_SMD:R_0603_1608Metric')
 
         at_value = symbol.at.value
-        self.assertAlmostEqual(at_value[0], 12.34)
-        self.assertAlmostEqual(at_value[1], 56.78)
+        # Coordinates are automatically snapped to 1.27mm grid
+        self.assertAlmostEqual(at_value[0], 12.7)   # 12.34 -> 12.7 (10 * 1.27)
+        self.assertAlmostEqual(at_value[1], 57.15)  # 56.78 -> 57.15 (45 * 1.27)
         self.assertAlmostEqual(at_value[2], 90.0)
         self.assertEqual(symbol.unit.value, 1)
         self.assertEqual(symbol.property.Tolerance.value, '5%')

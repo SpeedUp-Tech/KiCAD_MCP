@@ -88,6 +88,19 @@ const schematicPinSchema = z
   })
   .describe('Pin specification for schematic connectivity');
 
+const schematicLabelSchema = z
+  .object({
+    label: z.string().optional().describe('Hierarchical label name'),
+    labelName: z.string().optional().describe('Alternative field for hierarchical label name'),
+  })
+  .describe('Hierarchical label specification for schematic connectivity');
+
+const schematicConnectionPointSchema = z
+  .union([schematicPinSchema, schematicLabelSchema])
+  .describe(
+    'Connection point specification - either a component pin (with reference and pin fields) or a hierarchical label (with label/labelName field)'
+  );
+
 const coordinateListSchema = z.array(schematicPointSchema);
 
 const wireOptionsSchema = z
@@ -264,8 +277,12 @@ export function registerSchematicTools(
     'connect_schematic_pins',
     withSessionParams({
       schematicPath: z.string().describe('Path to the schematic file to update'),
-      source: schematicPinSchema.describe('Source pin definition'),
-      target: schematicPinSchema.describe('Target pin definition'),
+      source: schematicConnectionPointSchema.describe(
+        'Source connection point - either a component pin {reference, pin} or hierarchical label {label}'
+      ),
+      target: schematicConnectionPointSchema.describe(
+        'Target connection point - either a component pin {reference, pin} or hierarchical label {label}'
+      ),
       wire: wireOptionsSchema.optional().describe('Optional wire styling overrides'),
       routing: z
         .object({
