@@ -17,6 +17,8 @@ from skip.eeschema.schematic.symbol import Symbol, SymbolCollection
 from skip.sexp.parser import ParsedValue
 from skip.sexp.util import loadTree
 
+from .grid_utils import snap_to_grid, snap_point_to_grid
+
 logger = logging.getLogger('kicad_interface')
 
 
@@ -392,8 +394,11 @@ class ComponentManager:
         if datasheet == '~':
             datasheet = ''
 
-        x = float(component_def.get('x', 0.0))
-        y = float(component_def.get('y', 0.0))
+        # Get coordinates and snap to grid for KiCAD compliance
+        x_raw = float(component_def.get('x', 0.0))
+        y_raw = float(component_def.get('y', 0.0))
+        x = snap_to_grid(x_raw)
+        y = snap_to_grid(y_raw)
         rotation = float(component_def.get('rotation', 0.0))
         unit = int(component_def.get('unit', 1))
 
@@ -611,11 +616,11 @@ class ComponentManager:
         )
 
         if x is not None:
-            x = float(x)
+            x = snap_to_grid(float(x))
         else:
             x = current_at[0]
         if y is not None:
-            y = float(y)
+            y = snap_to_grid(float(y))
         else:
             y = current_at[1]
         if rotation is not None:

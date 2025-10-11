@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Set, Tuple
 from uuid import uuid4
 
 from sexpdata import Symbol
+from .grid_utils import snap_to_grid
 
 from .schematic import SchematicManager
 
@@ -322,13 +323,17 @@ def _make_hierarchical_label(name: str, shape: str, x: float, y: float, angle: i
                  - "left": text extends right, symbol on left (format: <>[label])
                  - "right": text extends left, symbol on right (format: [label]<>)
     """
+    # Snap coordinates to grid for KiCAD compliance
+    x_snapped = snap_to_grid(x)
+    y_snapped = snap_to_grid(y)
+
     # All labels use horizontal text (angle 0) for readability
     # Text justification controls where the symbol appears relative to text
     return [
         Symbol("hierarchical_label"),
         name,
         [Symbol("shape"), Symbol(shape)],
-        [Symbol("at"), x, y, angle],
+        [Symbol("at"), x_snapped, y_snapped, angle],
         [Symbol("fields_autoplaced")],
         [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]], [Symbol("justify"), Symbol(justify)]],
         [Symbol("uuid"), Symbol(str(uuid4()))]
@@ -337,10 +342,14 @@ def _make_hierarchical_label(name: str, shape: str, x: float, y: float, angle: i
 
 def _add_text_to_tree(tree: List, text: str, x: float, y: float, font_size: float = 1.8) -> None:
     """Add a text annotation to the tree."""
+    # Snap coordinates to grid
+    x_snapped = snap_to_grid(x)
+    y_snapped = snap_to_grid(y)
+
     tree.append([
         Symbol("text"),
         text,
-        [Symbol("at"), x, y, 0],
+        [Symbol("at"), x_snapped, y_snapped, 0],
         [Symbol("effects"), [Symbol("font"), [Symbol("size"), font_size, font_size], [Symbol("thickness"), 0.4], Symbol("bold")], [Symbol("justify"), Symbol("left"), Symbol("bottom")]],
         [Symbol("uuid"), Symbol(str(uuid4()))]
     ])
@@ -366,16 +375,16 @@ def _add_sheet_symbols_to_tree(tree: List, module_data: Dict, sheets_dir: Path) 
     """Add sheet symbols to top schematic tree. Returns mapping of module_id to sheet_uuid."""
     sheet_uuids = {}
     
-    # Layout in grid
-    x_pos, y_pos = 40.0, 40.0
-    sheet_width, sheet_height = 50.0, 40.0
-    x_spacing, y_spacing = 80.0, 60.0
-    
+    # Layout in grid - snap base positions to grid
+    x_pos, y_pos = snap_to_grid(40.0), snap_to_grid(40.0)
+    sheet_width, sheet_height = snap_to_grid(50.0), snap_to_grid(40.0)
+    x_spacing, y_spacing = snap_to_grid(80.0), snap_to_grid(60.0)
+
     for idx, (module_id, data) in enumerate(module_data.items()):
         col = idx % 3
         row = idx // 3
-        x = x_pos + col * x_spacing
-        y = y_pos + row * y_spacing
+        x = snap_to_grid(x_pos + col * x_spacing)
+        y = snap_to_grid(y_pos + row * y_spacing)
         
         sheet_uuid = str(uuid4())
         sheet_uuids[module_id] = sheet_uuid

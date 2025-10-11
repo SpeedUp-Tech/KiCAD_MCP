@@ -12,6 +12,8 @@ from skip.eeschema.wire import WireWrapper
 from skip.sexp.parser import ParsedValue
 from skip.eeschema.schematic.symbol import Symbol
 
+from .grid_utils import snap_to_grid, snap_point_to_grid, snap_points_to_grid
+
 logger = logging.getLogger('kicad_interface')
 
 
@@ -88,7 +90,10 @@ def _build_wire_node(
 ) -> List[Any]:
     pts_expr: List[Any] = [SSymbol('pts')]
     for x_val, y_val in points:
-        pts_expr.append([SSymbol('xy'), round(x_val, 6), round(y_val, 6)])
+        # Snap to grid before writing to file
+        x_snapped = snap_to_grid(x_val)
+        y_snapped = snap_to_grid(y_val)
+        pts_expr.append([SSymbol('xy'), round(x_snapped, 6), round(y_snapped, 6)])
 
     node: List[Any] = [
         SSymbol('wire'),
