@@ -312,6 +312,20 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
+    server.tool('get_schematic_state', withSessionParams({
+        schematicPath: z.string().describe('Path to the schematic file to analyze'),
+        format: z
+            .enum(['json', 'text'])
+            .optional()
+            .default('json')
+            .describe('Output format: "json" returns structured data with components, labels, and connections; "text" returns a human-readable summary'),
+    }), async ({ sessionId, schematicPath, format }) => {
+        const result = await callKicadScript(sessionId, 'get_schematic_state', {
+            schematicPath,
+            format,
+        });
+        return formatToolResult(result);
+    });
     logger.info('Schematic tools registered');
 }
 //# sourceMappingURL=schematic.js.map

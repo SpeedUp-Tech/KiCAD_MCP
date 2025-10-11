@@ -130,6 +130,7 @@ try:
     from commands.library_schematic import LibraryManager
     from commands.footprint import FootprintManager
     from commands.blueprint_to_hierarchical import generate_hierarchical_schematic
+    from commands.schematic_state import get_schematic_state
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -270,7 +271,8 @@ class KiCADInterface:
             "run_erc": self._handle_run_erc,
             "export_schematic_netlist": self._handle_export_netlist,
             "export_schematic_bom": self._handle_export_schematic_bom,
-            "generate_hierarchical_schematic": self._handle_generate_hierarchical_schematic
+            "generate_hierarchical_schematic": self._handle_generate_hierarchical_schematic,
+            "get_schematic_state": self._handle_get_schematic_state
         }
 
         logger.info("KiCAD interface initialized")
@@ -1026,6 +1028,39 @@ class KiCADInterface:
             return {"success": False, "message": f"Invalid blueprint JSON: {str(e)}"}
         except Exception as e:
             logger.error(f"Error generating hierarchical schematic: {str(e)}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(e)}
+
+    def _handle_get_schematic_state(self, params):
+        """Get high-level schematic state representation."""
+        logger.info("Getting schematic state")
+        try:
+            schematic_path = params.get("schematicPath")
+            format_type = params.get("format", "json")  # 'json' or 'text'
+
+            if not schematic_path:
+                return {"success": False, "message": "schematicPath is required"}
+
+            schematic = SchematicManager.load_schematic(schematic_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            state = get_schematic_state(schematic)
+
+            if format_type == "text":
+                # Return only the text summary
+                return {
+                    "success": True,
+                    "state": state['summary']
+                }
+            else:
+                # Return full structured data
+                return {
+                    "success": True,
+                    "state": state
+                }
+        except Exception as e:
+            logger.error(f"Error getting schematic state: {str(e)}")
             logger.error(traceback.format_exc())
             return {"success": False, "message": str(e)}
 
