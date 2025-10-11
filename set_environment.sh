@@ -188,6 +188,67 @@ if [[ -n "$KICAD_CLI_BIN" ]]; then
   export KICAD_CLI="$KICAD_CLI_BIN"
 fi
 
+# Setup KiCad symbol library configuration
+setup_kicad_symbol_libs() {
+  echo "Setting up KiCad symbol library configuration..."
+
+  # Detect KiCad version
+  local kicad_ver major_ver
+  kicad_ver="$(kicad-cli --version 2>/dev/null | head -n1 | grep -oE '[0-9]+(\.[0-9]+)*' | head -n1 || echo "9.0")"
+  major_ver="${kicad_ver%%.*}"
+
+  # Auto-detect KiCad symbol directory
+  local symbol_dir
+  symbol_dir="$(dirname "$(find /usr/share -path '*/kicad/symbols/Device.kicad_sym' -print -quit 2>/dev/null)" 2>/dev/null || true)"
+
+  # Fallback to common paths if auto-detection fails
+  if [[ -z "$symbol_dir" ]]; then
+    for candidate in "/usr/share/kicad/symbols" "/usr/local/share/kicad/symbols" "/opt/kicad/share/kicad/symbols"; do
+      if [[ -d "$candidate" && -f "$candidate/Device.kicad_sym" ]]; then
+        symbol_dir="$candidate"
+        break
+      fi
+    done
+  fi
+
+  if [[ -z "$symbol_dir" ]]; then
+    echo "WARNING: Could not locate KiCad symbol libraries. Skipping sym-lib-table setup." >&2
+    return 0
+  fi
+
+  echo "Found KiCad symbols at: $symbol_dir"
+  export KICAD${major_ver}_SYMBOL_DIR="$symbol_dir"
+
+  # Create KiCad config directory
+  local config_dir="$HOME/.config/kicad/${major_ver}.0"
+  mkdir -p "$config_dir"
+
+  # Generate sym-lib-table with all available libraries
+  local sym_lib_table="$config_dir/sym-lib-table"
+  echo "Generating sym-lib-table at: $sym_lib_table"
+
+  {
+    echo "(sym_lib_table"
+    echo "  (version 7)"
+
+    # Add all .kicad_sym files found in the symbol directory
+    local lib_count=0
+    while IFS= read -r lib_file; do
+      local lib_name
+      lib_name="$(basename "$lib_file" .kicad_sym)"
+      echo "  (lib (name \"$lib_name\")(type \"KiCad\")(uri \"$lib_file\")(options \"\")(descr \"\"))"
+      ((lib_count++))
+    done < <(find "$symbol_dir" -maxdepth 1 -name "*.kicad_sym" -type f | sort)
+
+    echo ")"
+  } > "$sym_lib_table"
+
+  echo "Successfully configured $lib_count symbol libraries in sym-lib-table"
+}
+
+# Run symbol library setup
+setup_kicad_symbol_libs || true
+
 # Detect KiCad pcbnew site-packages directory to add to pythonPath
 DETECTED_KICAD_PY_PATH="$(/usr/bin/python3 - <<'PY'
 try:
