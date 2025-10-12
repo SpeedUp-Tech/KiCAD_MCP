@@ -42,6 +42,7 @@ async function main() {
         config.pythonExecutable || process.env.KICAD_PYTHON || process.env.PYTHON_EXECUTABLE,
       extraEnv: config.kicadPath ? { KICAD_PATH: config.kicadPath } : {},
       responseTimeoutMs: config.responseTimeoutMs,
+      processManagement: config.processManagement,
     });
     
     // Start the server

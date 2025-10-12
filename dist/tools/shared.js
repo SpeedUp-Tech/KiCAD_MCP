@@ -1,13 +1,19 @@
 import { z } from 'zod';
+/**
+ * @deprecated sessionIdSchema is deprecated as sessions are no longer used.
+ * Kept for backward compatibility only.
+ */
 export const sessionIdSchema = z
     .string()
     .min(1)
     .describe('Session identifier returned by create_session');
+/**
+ * @deprecated withSessionParams is deprecated. Sessions are no longer required.
+ * Simply pass your schema object directly to server.tool() instead.
+ * This function now returns the shape unchanged (no sessionId injection).
+ */
 export function withSessionParams(shape) {
-    return {
-        sessionId: sessionIdSchema,
-        ...shape,
-    };
+    return shape;
 }
 export function formatToolResult(result) {
     if (result && typeof result === 'object') {

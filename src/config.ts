@@ -17,6 +17,16 @@ const __dirname = dirname(__filename);
 const DEFAULT_CONFIG_PATH = join(dirname(__dirname), 'config', 'default-config.json');
 
 /**
+ * Process management configuration schema
+ */
+const ProcessManagementSchema = z.object({
+  mode: z.enum(['singleton', 'per-connection', 'auto']).default('auto'),
+  maxProcesses: z.number().positive().default(100),
+  idleTimeoutMs: z.number().positive().default(300000),
+  evictionPolicy: z.enum(['lru', 'fifo']).default('lru')
+});
+
+/**
  * Server configuration schema
  */
 const ConfigSchema = z.object({
@@ -28,7 +38,8 @@ const ConfigSchema = z.object({
   kicadPath: z.string().optional(),
   logLevel: z.enum(['error', 'warn', 'info', 'debug']).default('info'),
   logDir: z.string().optional(),
-  responseTimeoutMs: z.number().positive().optional()
+  responseTimeoutMs: z.number().positive().optional(),
+  processManagement: ProcessManagementSchema.optional()
 });
 
 /**

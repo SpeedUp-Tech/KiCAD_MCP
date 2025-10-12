@@ -1,6 +1,5 @@
 import { spawn } from 'child_process';
 import readline from 'readline';
-import { randomUUID } from 'crypto';
 import { logger } from './logger.js';
 class PythonSession {
     constructor(id, options) {
@@ -194,56 +193,193 @@ class PythonSession {
         }
     }
 }
-export class SessionManager {
-    constructor(baseOptions) {
-        this.sessions = new Map();
+/**
+ * PythonProcessManager supports both singleton and per-connection process management.
+ *
+ * - Singleton mode: Single persistent Python process (for STDIO)
+ * - Per-connection mode: One process per connection with pooling (for HTTP/SSE)
+ * - Auto mode: Automatically detects based on connectionId pattern
+ */
+export class PythonProcessManager {
+    constructor(baseOptions, config) {
+        this.processes = new Map();
+        this.SINGLETON_ID = 'singleton';
         this.options = {
             kicadScriptPath: baseOptions.kicadScriptPath,
+            pythonExecutable: baseOptions.pythonExecutable,
             pythonPath: baseOptions.pythonPath,
             extraEnv: baseOptions.extraEnv,
             responseTimeoutMs: baseOptions.responseTimeoutMs,
-            defaultPythonExecutable: baseOptions.pythonExecutable,
+        };
+        this.config = {
+            mode: config?.mode || 'auto',
+            maxProcesses: config?.maxProcesses || 100,
+            idleTimeoutMs: config?.idleTimeoutMs || 300000, // 5 minutes
+            evictionPolicy: config?.evictionPolicy || 'lru',
         };
     }
-    createSession(overrides) {
-        const id = randomUUID();
-        const session = new PythonSession(id, {
-            kicadScriptPath: this.options.kicadScriptPath,
-            pythonExecutable: overrides?.pythonExecutable || this.options.defaultPythonExecutable,
-            pythonPath: overrides?.pythonPath ?? this.options.pythonPath,
-            extraEnv: { ...this.options.extraEnv, ...(overrides?.extraEnv || {}) },
-            responseTimeoutMs: overrides?.responseTimeoutMs || this.options.responseTimeoutMs,
-        });
-        this.sessions.set(id, session);
-        logger.info(`Created KiCad session ${id}`);
-        return { id, createdAt: Date.now(), commandCount: 0 };
+    /**
+     * Execute a command on the appropriate Python process.
+     * @param connectionId - Identifier for the connection (auto-provided by transport)
+     * @param command - Command to execute
+     * @param params - Command parameters
+     */
+    async call(connectionId, command, params) {
+        const effectiveId = this.getEffectiveConnectionId(connectionId);
+        const process = this.getOrCreateProcess(effectiveId);
+        // Update last used timestamp
+        const entry = this.processes.get(effectiveId);
+        entry.lastUsed = Date.now();
+        // Reset idle timer
+        this.resetIdleTimer(effectiveId);
+        return process.call(command, params);
     }
-    closeSession(id) {
-        const session = this.sessions.get(id);
-        if (!session) {
-            return false;
+    /**
+     * Determine the effective connection ID based on mode.
+     */
+    getEffectiveConnectionId(connectionId) {
+        if (this.config.mode === 'singleton') {
+            return this.SINGLETON_ID;
         }
-        session.dispose();
-        this.sessions.delete(id);
-        logger.info(`Closed KiCad session ${id}`);
-        return true;
+        if (this.config.mode === 'per-connection') {
+            return connectionId;
+        }
+        // Auto mode: Use singleton for STDIO-like IDs, per-connection for others
+        if (connectionId === 'stdio-singleton' || connectionId === 'default') {
+            return this.SINGLETON_ID;
+        }
+        return connectionId;
     }
-    closeAll() {
-        for (const [id, session] of this.sessions.entries()) {
-            session.dispose();
-            this.sessions.delete(id);
-            logger.info(`Closed KiCad session ${id}`);
+    /**
+     * Get or create a Python process for the given connection.
+     */
+    getOrCreateProcess(connectionId) {
+        const existing = this.processes.get(connectionId);
+        if (existing && !existing.session['disposed']) {
+            return existing.session;
+        }
+        // Check if we need to evict a process
+        if (this.processes.size >= this.config.maxProcesses) {
+            this.evictProcess();
+        }
+        // Create new process
+        const id = connectionId === this.SINGLETON_ID
+            ? 'kicad-python-process'
+            : `kicad-python-${connectionId.substring(0, 8)}`;
+        logger.info(`Starting KiCad Python process for connection ${connectionId}...`);
+        const session = new PythonSession(id, this.options);
+        const entry = {
+            session,
+            lastUsed: Date.now(),
+        };
+        this.processes.set(connectionId, entry);
+        this.resetIdleTimer(connectionId);
+        logger.info(`KiCad Python process started (total: ${this.processes.size})`);
+        return session;
+    }
+    /**
+     * Evict a process based on the configured eviction policy.
+     */
+    evictProcess() {
+        if (this.processes.size === 0) {
+            return;
+        }
+        let victimId = null;
+        if (this.config.evictionPolicy === 'lru') {
+            // Find least recently used
+            let oldestTime = Infinity;
+            for (const [id, entry] of this.processes.entries()) {
+                if (entry.lastUsed < oldestTime) {
+                    oldestTime = entry.lastUsed;
+                    victimId = id;
+                }
+            }
+        }
+        else {
+            // FIFO: evict first entry
+            victimId = this.processes.keys().next().value || null;
+        }
+        if (victimId) {
+            logger.info(`Evicting process for connection ${victimId} (policy: ${this.config.evictionPolicy})`);
+            this.disposeProcess(victimId);
         }
     }
-    async call(sessionId, command, params) {
-        const session = this.sessions.get(sessionId);
-        if (!session) {
-            throw new Error(`Unknown session: ${sessionId}`);
+    /**
+     * Reset the idle timer for a process.
+     */
+    resetIdleTimer(connectionId) {
+        const entry = this.processes.get(connectionId);
+        if (!entry) {
+            return;
         }
-        return session.call(command, params);
+        // Clear existing timer
+        if (entry.idleTimer) {
+            clearTimeout(entry.idleTimer);
+        }
+        // Don't set idle timer for singleton mode
+        if (connectionId === this.SINGLETON_ID) {
+            return;
+        }
+        // Set new idle timer
+        entry.idleTimer = setTimeout(() => {
+            logger.info(`Process for connection ${connectionId} idle timeout, disposing...`);
+            this.disposeProcess(connectionId);
+        }, this.config.idleTimeoutMs);
     }
-    listSessions() {
-        return Array.from(this.sessions.values()).map((session) => session.info());
+    /**
+     * Dispose of a specific process.
+     */
+    disposeProcess(connectionId) {
+        const entry = this.processes.get(connectionId);
+        if (!entry) {
+            return;
+        }
+        // Clear idle timer
+        if (entry.idleTimer) {
+            clearTimeout(entry.idleTimer);
+        }
+        // Dispose session
+        entry.session.dispose();
+        this.processes.delete(connectionId);
+        logger.info(`Disposed process for connection ${connectionId} (remaining: ${this.processes.size})`);
+    }
+    /**
+     * Handle connection close event.
+     * Should be called when an HTTP/SSE connection is closed.
+     */
+    onConnectionClose(connectionId) {
+        const effectiveId = this.getEffectiveConnectionId(connectionId);
+        // Don't dispose singleton
+        if (effectiveId === this.SINGLETON_ID) {
+            return;
+        }
+        logger.info(`Connection ${connectionId} closed, disposing process...`);
+        this.disposeProcess(effectiveId);
+    }
+    /**
+     * Dispose of all processes.
+     */
+    dispose() {
+        logger.info(`Stopping all KiCad Python processes (${this.processes.size})...`);
+        for (const [connectionId, entry] of this.processes.entries()) {
+            if (entry.idleTimer) {
+                clearTimeout(entry.idleTimer);
+            }
+            entry.session.dispose();
+        }
+        this.processes.clear();
+        logger.info('All KiCad Python processes stopped');
+    }
+    /**
+     * Get statistics about the process pool.
+     */
+    getStats() {
+        return {
+            activeProcesses: this.processes.size,
+            maxProcesses: this.config.maxProcesses,
+            mode: this.config.mode,
+            connections: Array.from(this.processes.keys()),
+        };
     }
 }
 //# sourceMappingURL=session-manager.js.map

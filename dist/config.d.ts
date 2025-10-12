@@ -15,6 +15,22 @@ declare const ConfigSchema: z.ZodObject<{
     logLevel: z.ZodDefault<z.ZodEnum<["error", "warn", "info", "debug"]>>;
     logDir: z.ZodOptional<z.ZodString>;
     responseTimeoutMs: z.ZodOptional<z.ZodNumber>;
+    processManagement: z.ZodOptional<z.ZodObject<{
+        mode: z.ZodDefault<z.ZodEnum<["singleton", "per-connection", "auto"]>>;
+        maxProcesses: z.ZodDefault<z.ZodNumber>;
+        idleTimeoutMs: z.ZodDefault<z.ZodNumber>;
+        evictionPolicy: z.ZodDefault<z.ZodEnum<["lru", "fifo"]>>;
+    }, "strip", z.ZodTypeAny, {
+        mode: "auto" | "singleton" | "per-connection";
+        maxProcesses: number;
+        idleTimeoutMs: number;
+        evictionPolicy: "lru" | "fifo";
+    }, {
+        mode?: "auto" | "singleton" | "per-connection" | undefined;
+        maxProcesses?: number | undefined;
+        idleTimeoutMs?: number | undefined;
+        evictionPolicy?: "lru" | "fifo" | undefined;
+    }>>;
 }, "strip", z.ZodTypeAny, {
     name: string;
     description: string;
@@ -25,6 +41,12 @@ declare const ConfigSchema: z.ZodObject<{
     kicadPath?: string | undefined;
     logDir?: string | undefined;
     responseTimeoutMs?: number | undefined;
+    processManagement?: {
+        mode: "auto" | "singleton" | "per-connection";
+        maxProcesses: number;
+        idleTimeoutMs: number;
+        evictionPolicy: "lru" | "fifo";
+    } | undefined;
 }, {
     name?: string | undefined;
     description?: string | undefined;
@@ -35,6 +57,12 @@ declare const ConfigSchema: z.ZodObject<{
     logLevel?: "error" | "warn" | "info" | "debug" | undefined;
     logDir?: string | undefined;
     responseTimeoutMs?: number | undefined;
+    processManagement?: {
+        mode?: "auto" | "singleton" | "per-connection" | undefined;
+        maxProcesses?: number | undefined;
+        idleTimeoutMs?: number | undefined;
+        evictionPolicy?: "lru" | "fifo" | undefined;
+    } | undefined;
 }>;
 /**
  * Server configuration type

@@ -34,22 +34,12 @@ async def run_workflow() -> None:
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            # 1. create MCP session
-            session_result = await session.call_tool(
-                name='create_session',
-                arguments={'responseTimeoutMs': 120_000},
-            )
-            session_payload = json.loads(session_result.content[0].text)
-            session_id = session_payload['sessionId']
-            print('create_session ->', session_payload)
-
-            # 2. create schematic file in temp directory
+            # 1. create schematic file in temp directory
             tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_workflow_'))
             schematic_name = 'workflow_demo'
             schematic_result = await session.call_tool(
                 name='create_schematic',
                 arguments={
-                    'sessionId': session_id,
                     'projectName': schematic_name,
                     'path': str(tmp_dir),
                 },
@@ -92,7 +82,6 @@ async def run_workflow() -> None:
                 result = await session.call_tool(
                     name='add_schematic_component',
                     arguments={
-                        'sessionId': session_id,
                         'schematicPath': schematic_path,
                         'component': comp,
                     },
@@ -120,7 +109,6 @@ async def run_workflow() -> None:
                 result = await session.call_tool(
                     name='connect_schematic_pins',
                     arguments={
-                        'sessionId': session_id,
                         'schematicPath': schematic_path,
                         'source': source,
                         'target': target,
@@ -137,7 +125,6 @@ async def run_workflow() -> None:
             export_result = await session.call_tool(
                 name='export_schematic_pdf',
                 arguments={
-                    'sessionId': session_id,
                     'schematicPath': schematic_path,
                     'outputPath': pdf_path,
                 },
@@ -147,14 +134,7 @@ async def run_workflow() -> None:
             print('export_schematic_pdf ->', json.loads(export_result.content[0].text))
             print('PDF generated at:', pdf_path)
 
-            # 6. close session
-            close_result = await session.call_tool(
-                name='close_session',
-                arguments={'sessionId': session_id},
-            )
-            if close_result.isError:
-                raise RuntimeError(f"close_session failed: {close_result.content}")
-            print('close_session ->', json.loads(close_result.content[0].text))
+
 
 
 if __name__ == '__main__':

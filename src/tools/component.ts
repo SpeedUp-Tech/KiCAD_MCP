@@ -8,7 +8,6 @@ import { logger } from '../logger.js';
 import { formatToolResult, withSessionParams } from './shared.js';
 
 type CommandFunction = (
-  sessionId: string,
   command: string,
   params: Record<string, unknown>
 ) => Promise<unknown>;
@@ -33,9 +32,9 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
       rotation: z.number().optional().describe('Optional rotation in degrees'),
       layer: z.string().optional().describe('Optional layer (e.g., F.Cu, B.SilkS)'),
     }),
-    async ({ sessionId, componentId, position, reference, value, footprint, rotation, layer }) => {
-      logger.debug(`Session ${sessionId}: place component ${componentId}`);
-      const result = await callKicadScript(sessionId, 'place_component', {
+    async ({ componentId, position, reference, value, footprint, rotation, layer }) => {
+      logger.debug('place component ${componentId}');
+      const result = await callKicadScript('place_component', {
         componentId,
         position,
         reference,
@@ -61,9 +60,9 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
         .describe('New position coordinates and unit'),
       rotation: z.number().optional().describe('Optional new rotation in degrees'),
     }),
-    async ({ sessionId, reference, position, rotation }) => {
-      logger.debug(`Session ${sessionId}: move component ${reference}`);
-      const result = await callKicadScript(sessionId, 'move_component', { reference, position, rotation });
+    async ({ reference, position, rotation }) => {
+      logger.debug('move component ${reference}');
+      const result = await callKicadScript('move_component', { reference, position, rotation });
       return formatToolResult(result);
     }
   );
@@ -74,9 +73,9 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
       reference: z.string().describe('Reference designator of the component (e.g., "R5")'),
       angle: z.number().describe('Rotation angle in degrees (absolute, not relative)'),
     }),
-    async ({ sessionId, reference, angle }) => {
-      logger.debug(`Session ${sessionId}: rotate component ${reference} to ${angle}`);
-      const result = await callKicadScript(sessionId, 'rotate_component', { reference, angle });
+    async ({ reference, angle }) => {
+      logger.debug('rotate component ${reference} to ${angle}');
+      const result = await callKicadScript('rotate_component', { reference, angle });
       return formatToolResult(result);
     }
   );
@@ -86,9 +85,9 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
     withSessionParams({
       reference: z.string().describe('Reference designator of the component to delete (e.g., "R5")'),
     }),
-    async ({ sessionId, reference }) => {
-      logger.debug(`Session ${sessionId}: delete component ${reference}`);
-      const result = await callKicadScript(sessionId, 'delete_component', { reference });
+    async ({ reference }) => {
+      logger.debug('delete component ${reference}');
+      const result = await callKicadScript('delete_component', { reference });
       return formatToolResult(result);
     }
   );
@@ -101,9 +100,9 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
       value: z.string().optional().describe('Optional new component value'),
       footprint: z.string().optional().describe('Optional new footprint'),
     }),
-    async ({ sessionId, reference, newReference, value, footprint }) => {
-      logger.debug(`Session ${sessionId}: edit component ${reference}`);
-      const result = await callKicadScript(sessionId, 'edit_component', {
+    async ({ reference, newReference, value, footprint }) => {
+      logger.debug('edit component ${reference}');
+      const result = await callKicadScript('edit_component', {
         reference,
         newReference,
         value,
@@ -118,8 +117,8 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
     withSessionParams({
       reference: z.string().describe('Reference designator of the component'),
     }),
-    async ({ sessionId, reference }) => {
-      const result = await callKicadScript(sessionId, 'get_component_properties', { reference });
+    async ({ reference }) => {
+      const result = await callKicadScript('get_component_properties', { reference });
       return formatToolResult(result);
     }
   );
@@ -127,8 +126,8 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
   server.tool(
     'get_component_list',
     withSessionParams({}),
-    async ({ sessionId }) => {
-      const result = await callKicadScript(sessionId, 'get_component_list', {});
+    async () => {
+      const result = await callKicadScript('get_component_list', {});
       return formatToolResult(result);
     }
   );
@@ -156,8 +155,8 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
       orientation: z.enum(['row', 'column', 'grid']).optional().describe('Placement orientation'),
       unit: z.enum(['mm', 'inch']).describe('Spacing unit'),
     }),
-    async ({ sessionId, reference, value, footprint, startPosition, count, spacing, orientation, unit }) => {
-      const result = await callKicadScript(sessionId, 'place_component_array', {
+    async ({ reference, value, footprint, startPosition, count, spacing, orientation, unit }) => {
+      const result = await callKicadScript('place_component_array', {
         reference,
         value,
         footprint,
@@ -179,8 +178,8 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
       spacing: z.number().optional().describe('Spacing between components'),
       unit: z.enum(['mm', 'inch']).optional().describe('Spacing unit'),
     }),
-    async ({ sessionId, references, direction, spacing, unit }) => {
-      const result = await callKicadScript(sessionId, 'align_components', {
+    async ({ references, direction, spacing, unit }) => {
+      const result = await callKicadScript('align_components', {
         references,
         direction,
         spacing,
@@ -203,8 +202,8 @@ export function registerComponentTools(server: McpServer, callKicadScript: Comma
         .describe('Offset between duplicates'),
       unit: z.enum(['mm', 'inch']).describe('Offset unit'),
     }),
-    async ({ sessionId, reference, count, offset, unit }) => {
-      const result = await callKicadScript(sessionId, 'duplicate_component', {
+    async ({ reference, count, offset, unit }) => {
+      const result = await callKicadScript('duplicate_component', {
         reference,
         count,
         offset,

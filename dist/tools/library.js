@@ -58,8 +58,8 @@ export function registerLibraryTools(server, callKicadScript) {
         bodyWidth: z.number().optional().describe('Symbol body width in mm'),
         bodyHeight: z.number().optional().describe('Symbol body height in mm'),
         pins: z.array(pinDefinitionSchema).optional().describe('Pin definitions for the symbol'),
-    }), async ({ sessionId, ...params }) => {
-        const result = await callKicadScript(sessionId, 'create_symbol', params);
+    }), async (params) => {
+        const result = await callKicadScript('create_symbol', params);
         return formatToolResult(result);
     });
     server.tool('create_footprint', withSessionParams({
@@ -94,8 +94,8 @@ export function registerLibraryTools(server, callKicadScript) {
             .optional()
             .describe('Optional silkscreen/fabrication outline segments'),
         pads: z.array(padDefinitionSchema).describe('Pad definitions for the footprint'),
-    }), async ({ sessionId, ...params }) => {
-        const result = await callKicadScript(sessionId, 'create_footprint', params);
+    }), async (params) => {
+        const result = await callKicadScript('create_footprint', params);
         return formatToolResult(result);
     });
     logger.info('Library tools registered');

@@ -8,7 +8,6 @@ import { logger } from '../logger.js';
 import { formatToolResult, withSessionParams } from './shared.js';
 
 type CommandFunction = (
-  sessionId: string,
   command: string,
   params: Record<string, unknown>
 ) => Promise<unknown>;
@@ -73,8 +72,8 @@ export function registerLibraryTools(server: McpServer, callKicadScript: Command
       bodyHeight: z.number().optional().describe('Symbol body height in mm'),
       pins: z.array(pinDefinitionSchema).optional().describe('Pin definitions for the symbol'),
     }),
-    async ({ sessionId, ...params }) => {
-      const result = await callKicadScript(sessionId, 'create_symbol', params);
+    async (params) => {
+      const result = await callKicadScript('create_symbol', params);
       return formatToolResult(result);
     }
   );
@@ -116,8 +115,8 @@ export function registerLibraryTools(server: McpServer, callKicadScript: Command
         .describe('Optional silkscreen/fabrication outline segments'),
       pads: z.array(padDefinitionSchema).describe('Pad definitions for the footprint'),
     }),
-    async ({ sessionId, ...params }) => {
-      const result = await callKicadScript(sessionId, 'create_footprint', params);
+    async (params) => {
+      const result = await callKicadScript('create_footprint', params);
       return formatToolResult(result);
     }
   );

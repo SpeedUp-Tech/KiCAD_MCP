@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -16,7 +17,12 @@ CONFIG_PATH = PROJECT_ROOT / 'config' / 'default-config.json'
 NODE_ENTRY = PROJECT_ROOT / 'dist' / 'index.js'
 
 
-async def run_session_list_flow() -> dict:
+async def run_process_management_flow() -> dict:
+    """
+    Test that the process management works correctly.
+    Since sessions are removed, we test that multiple operations
+    work correctly using the singleton process.
+    """
     server_params = StdioServerParameters(
         command='node',
         args=[str(NODE_ENTRY), '--config', str(CONFIG_PATH)],
@@ -27,55 +33,32 @@ async def run_session_list_flow() -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            # Create a new session
-            create = await session.call_tool(
-                name='create_session',
-                arguments={'responseTimeoutMs': 120_000},
-            )
-            assert not create.isError, f"create_session error: {create.content}"
-            created_payload = json.loads(create.content[0].text)
-            session_id = created_payload['sessionId']
-
-            # List sessions and verify presence
-            listed = await session.call_tool(
-                name='list_sessions',
-                arguments={},
-            )
-            assert not listed.isError, f"list_sessions error: {listed.content}"
-            list_payload = json.loads(listed.content[0].text)
-            session_ids = [entry.get('id') for entry in list_payload.get('sessions', [])]
-            assert session_id in session_ids, 'created session not listed'
-
-            # Close session
-            closed = await session.call_tool(
-                name='close_session',
-                arguments={'sessionId': session_id},
-            )
-            assert not closed.isError, f"close_session error: {closed.content}"
-
-            # List again to verify removal
-            listed_after = await session.call_tool(
-                name='list_sessions',
-                arguments={},
-            )
-            assert not listed_after.isError, f"list_sessions error: {listed_after.content}"
-            list_after_payload = json.loads(listed_after.content[0].text)
-            session_ids_after = [entry.get('id') for entry in list_after_payload.get('sessions', [])]
+            # Create multiple schematics to verify process reuse
+            results = []
+            for i in range(3):
+                tmp_dir = Path(tempfile.mkdtemp(prefix=f'test_process_{i}_'))
+                result = await session.call_tool(
+                    name='create_schematic',
+                    arguments={
+                        'projectName': f'test_{i}',
+                        'path': str(tmp_dir),
+                    }
+                )
+                assert not result.isError, f"create_schematic error: {result.content}"
+                results.append(json.loads(result.content[0].text))
 
             return {
-                'created': created_payload,
-                'list_before': list_payload,
-                'list_after': list_after_payload,
-                'was_present': session_id in session_ids,
-                'was_removed': session_id not in session_ids_after,
+                'operations_completed': len(results),
+                'all_successful': all('file_path' in r for r in results),
             }
 
 
 class SessionManagementTests(unittest.TestCase):
-    def test_create_list_close_session(self) -> None:
-        payload = asyncio.run(run_session_list_flow())
-        self.assertTrue(payload['was_present'])
-        self.assertTrue(payload['was_removed'])
+    def test_process_management(self) -> None:
+        """Test that process management works correctly without sessions"""
+        payload = asyncio.run(run_process_management_flow())
+        self.assertEqual(payload['operations_completed'], 3)
+        self.assertTrue(payload['all_successful'])
 
 
 if __name__ == '__main__':

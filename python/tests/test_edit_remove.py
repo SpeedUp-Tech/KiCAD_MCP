@@ -30,20 +30,11 @@ async def run_edit_remove_workflow() -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            session_result = await session.call_tool(
-                name='create_session',
-                arguments={'responseTimeoutMs': 120_000},
-            )
-            assert not session_result.isError, f"create_session error: {session_result.content}"
-            session_payload = json.loads(session_result.content[0].text)
-            session_id = session_payload['sessionId']
-
             tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_edit_remove_'))
             schematic_name = 'edit_remove_demo'
             schematic_result = await session.call_tool(
                 name='create_schematic',
                 arguments={
-                    'sessionId': session_id,
                     'projectName': schematic_name,
                     'path': str(tmp_dir),
                 },
@@ -74,7 +65,6 @@ async def run_edit_remove_workflow() -> dict:
                 add_result = await session.call_tool(
                     name='add_schematic_component',
                     arguments={
-                        'sessionId': session_id,
                         'schematicPath': schematic_path,
                         'component': comp,
                     },
@@ -84,7 +74,6 @@ async def run_edit_remove_workflow() -> dict:
             connect_result = await session.call_tool(
                 name='connect_schematic_pins',
                 arguments={
-                    'sessionId': session_id,
                     'schematicPath': schematic_path,
                     'source': {'reference': 'R1', 'pin': '1'},
                     'target': {'reference': 'C1', 'pin': '1'},
@@ -100,7 +89,6 @@ async def run_edit_remove_workflow() -> dict:
             update_result = await session.call_tool(
                 name='update_schematic_component',
                 arguments={
-                    'sessionId': session_id,
                     'schematicPath': schematic_path,
                     'reference': 'R1',
                     'updates': {
@@ -127,7 +115,6 @@ async def run_edit_remove_workflow() -> dict:
             wire_update_result = await session.call_tool(
                 name='update_schematic_connection',
                 arguments={
-                    'sessionId': session_id,
                     'schematicPath': schematic_path,
                     'wireUuid': wire_uuid,
                     'updates': {
@@ -144,7 +131,6 @@ async def run_edit_remove_workflow() -> dict:
             remove_conn_result = await session.call_tool(
                 name='remove_schematic_connection',
                 arguments={
-                    'sessionId': session_id,
                     'schematicPath': schematic_path,
                     'wireUuids': wire_ids,
                 },
@@ -155,7 +141,6 @@ async def run_edit_remove_workflow() -> dict:
             remove_comp_result = await session.call_tool(
                 name='remove_schematic_component',
                 arguments={
-                    'sessionId': session_id,
                     'schematicPath': schematic_path,
                     'reference': 'C1',
                 },
@@ -168,18 +153,11 @@ async def run_edit_remove_workflow() -> dict:
             export_svg_result = await session.call_tool(
                 name='export_schematic_svg',
                 arguments={
-                    'sessionId': session_id,
                     'schematicPath': schematic_path,
                     'outputPath': svg_path,
                 },
             )
             assert not export_svg_result.isError, f"export_schematic_svg error: {export_svg_result.content}"
-
-            close_result = await session.call_tool(
-                name='close_session',
-                arguments={'sessionId': session_id},
-            )
-            assert not close_result.isError, f"close_session error: {close_result.content}"
 
             return {
                 'svg_path': svg_path,

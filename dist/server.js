@@ -6,7 +6,6 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { existsSync } from 'fs';
 import { logger } from './logger.js';
 // Tool registrations
-import { registerSessionTools } from './tools/session.js';
 import { registerProjectTools } from './tools/project.js';
 import { registerBoardTools } from './tools/board.js';
 import { registerComponentTools } from './tools/component.js';
@@ -19,10 +18,11 @@ import { registerLibraryTools } from './tools/library.js';
 import { registerComponentPrompts } from './prompts/component.js';
 import { registerRoutingPrompts } from './prompts/routing.js';
 import { registerDesignPrompts } from './prompts/design.js';
-import { SessionManager } from './session-manager.js';
+import { PythonProcessManager } from './session-manager.js';
 export class KiCADMcpServer {
     constructor(options) {
-        const { kicadScriptPath, logLevel = 'info', pythonExecutable, pythonPath, extraEnv, responseTimeoutMs = 60000, } = options;
+        this.currentConnectionId = 'stdio-singleton';
+        const { kicadScriptPath, logLevel = 'info', pythonExecutable, pythonPath, extraEnv, responseTimeoutMs = 60000, processManagement, } = options;
         logger.setLogLevel(logLevel);
         if (!existsSync(kicadScriptPath)) {
             throw new Error(`KiCAD interface script not found: ${kicadScriptPath}`);
@@ -42,19 +42,18 @@ export class KiCADMcpServer {
         });
         this.stdioTransport = new StdioServerTransport();
         logger.info('Using STDIO transport for local communication');
-        this.sessionManager = new SessionManager({
+        this.processManager = new PythonProcessManager({
             kicadScriptPath: kicadScriptPath,
             pythonExecutable: this.options.pythonExecutable,
             pythonPath: this.options.pythonPath,
             extraEnv: this.options.extraEnv,
             responseTimeoutMs: this.options.responseTimeoutMs,
-        });
+        }, processManagement);
         this.registerAll();
     }
     registerAll() {
         logger.info('Registering KiCAD tools, resources, and prompts...');
         const callKicad = this.callKicadScript.bind(this);
-        registerSessionTools(this.server, this.sessionManager);
         registerProjectTools(this.server, callKicad);
         registerBoardTools(this.server, callKicad);
         registerComponentTools(this.server, callKicad);
@@ -83,11 +82,23 @@ export class KiCADMcpServer {
     }
     async stop() {
         logger.info('Stopping KiCAD MCP server...');
-        this.sessionManager.closeAll();
+        this.processManager.dispose();
         logger.info('KiCAD MCP server stopped');
     }
-    async callKicadScript(sessionId, command, params) {
-        return this.sessionManager.call(sessionId, command, params);
+    /**
+     * Get the current connection ID.
+     * For STDIO: always returns 'stdio-singleton'
+     * For HTTP/SSE: would extract from request context (future implementation)
+     */
+    getConnectionId() {
+        // For now, STDIO is the only supported transport
+        // When HTTP/SSE support is added, this will extract the connection ID
+        // from the request context provided by the MCP SDK
+        return this.currentConnectionId;
+    }
+    async callKicadScript(command, params) {
+        const connectionId = this.getConnectionId();
+        return this.processManager.call(connectionId, command, params);
     }
     detectPythonExecutable() {
         if (process.platform === 'win32') {

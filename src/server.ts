@@ -8,7 +8,6 @@ import { existsSync } from 'fs';
 import { logger } from './logger.js';
 
 // Tool registrations
-import { registerSessionTools } from './tools/session.js';
 import { registerProjectTools } from './tools/project.js';
 import { registerBoardTools } from './tools/board.js';
 import { registerComponentTools } from './tools/component.js';
@@ -23,7 +22,7 @@ import { registerComponentPrompts } from './prompts/component.js';
 import { registerRoutingPrompts } from './prompts/routing.js';
 import { registerDesignPrompts } from './prompts/design.js';
 
-import { SessionManager } from './session-manager.js';
+import { PythonProcessManager, ProcessManagementConfig } from './session-manager.js';
 
 export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
 
@@ -34,16 +33,18 @@ export interface KiCadServerOptions {
   pythonPath?: string;
   extraEnv?: Record<string, string>;
   responseTimeoutMs?: number;
+  processManagement?: Partial<ProcessManagementConfig>;
 }
 
 export class KiCADMcpServer {
   private readonly server: McpServer;
   private readonly stdioTransport: StdioServerTransport;
-  private readonly options: Required<Omit<KiCadServerOptions, 'extraEnv' | 'logLevel'>> & {
+  private readonly options: Required<Omit<KiCadServerOptions, 'extraEnv' | 'logLevel' | 'processManagement'>> & {
     logLevel: LogLevel;
     extraEnv: Record<string, string>;
   };
-  private readonly sessionManager: SessionManager;
+  private readonly processManager: PythonProcessManager;
+  private currentConnectionId: string = 'stdio-singleton';
 
   constructor(options: KiCadServerOptions) {
     const {
@@ -53,6 +54,7 @@ export class KiCADMcpServer {
       pythonPath,
       extraEnv,
       responseTimeoutMs = 60_000,
+      processManagement,
     } = options;
 
     logger.setLogLevel(logLevel);
@@ -80,13 +82,16 @@ export class KiCADMcpServer {
     this.stdioTransport = new StdioServerTransport();
     logger.info('Using STDIO transport for local communication');
 
-    this.sessionManager = new SessionManager({
-      kicadScriptPath: kicadScriptPath,
-      pythonExecutable: this.options.pythonExecutable,
-      pythonPath: this.options.pythonPath,
-      extraEnv: this.options.extraEnv,
-      responseTimeoutMs: this.options.responseTimeoutMs,
-    });
+    this.processManager = new PythonProcessManager(
+      {
+        kicadScriptPath: kicadScriptPath,
+        pythonExecutable: this.options.pythonExecutable,
+        pythonPath: this.options.pythonPath,
+        extraEnv: this.options.extraEnv,
+        responseTimeoutMs: this.options.responseTimeoutMs,
+      },
+      processManagement
+    );
 
     this.registerAll();
   }
@@ -96,7 +101,6 @@ export class KiCADMcpServer {
 
     const callKicad = this.callKicadScript.bind(this);
 
-    registerSessionTools(this.server, this.sessionManager);
     registerProjectTools(this.server, callKicad);
     registerBoardTools(this.server, callKicad);
     registerComponentTools(this.server, callKicad);
@@ -128,16 +132,28 @@ export class KiCADMcpServer {
 
   async stop(): Promise<void> {
     logger.info('Stopping KiCAD MCP server...');
-    this.sessionManager.closeAll();
+    this.processManager.dispose();
     logger.info('KiCAD MCP server stopped');
   }
 
+  /**
+   * Get the current connection ID.
+   * For STDIO: always returns 'stdio-singleton'
+   * For HTTP/SSE: would extract from request context (future implementation)
+   */
+  private getConnectionId(): string {
+    // For now, STDIO is the only supported transport
+    // When HTTP/SSE support is added, this will extract the connection ID
+    // from the request context provided by the MCP SDK
+    return this.currentConnectionId;
+  }
+
   private async callKicadScript(
-    sessionId: string,
     command: string,
     params: Record<string, unknown>
   ): Promise<unknown> {
-    return this.sessionManager.call(sessionId, command, params);
+    const connectionId = this.getConnectionId();
+    return this.processManager.call(connectionId, command, params);
   }
 
   private detectPythonExecutable(): string {

@@ -8,7 +8,6 @@ import { logger } from '../logger.js';
 import { formatToolResult, withSessionParams } from './shared.js';
 
 type CommandFunction = (
-  sessionId: string,
   command: string,
   params: Record<string, unknown>
 ) => Promise<unknown>;
@@ -34,8 +33,8 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
       requireCourtyard: z.boolean().optional().describe('Require courtyards for all footprints'),
       courtyardClearance: z.number().optional().describe('Minimum clearance between courtyards (mm)'),
     }),
-    async ({ sessionId, ...params }) => {
-      const result = await callKicadScript(sessionId, 'set_design_rules', params);
+    async ({ ...params }) => {
+      const result = await callKicadScript('set_design_rules', params);
       return formatToolResult(result);
     }
   );
@@ -43,8 +42,8 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
   server.tool(
     'get_design_rules',
     withSessionParams({}),
-    async ({ sessionId }) => {
-      const result = await callKicadScript(sessionId, 'get_design_rules', {});
+    async () => {
+      const result = await callKicadScript('get_design_rules', {});
       return formatToolResult(result);
     }
   );
@@ -54,8 +53,8 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
     withSessionParams({
       reportPath: z.string().optional().describe('Optional path to save the DRC report'),
     }),
-    async ({ sessionId, reportPath }) => {
-      const result = await callKicadScript(sessionId, 'run_drc', { reportPath });
+    async ({ reportPath }) => {
+      const result = await callKicadScript('run_drc', { reportPath });
       return formatToolResult(result);
     }
   );
@@ -75,8 +74,8 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
       diff_pair_gap: z.number().optional().describe('Differential pair gap (mm)'),
       nets: z.array(z.string()).optional().describe('Net names to assign'),
     }),
-    async ({ sessionId, ...params }) => {
-      const result = await callKicadScript(sessionId, 'add_net_class', params);
+    async ({ ...params }) => {
+      const result = await callKicadScript('add_net_class', params);
       return formatToolResult(result);
     }
   );
@@ -87,8 +86,8 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
       net: z.string().describe('Name of the net'),
       netClass: z.string().describe('Name of the net class'),
     }),
-    async ({ sessionId, net, netClass }) => {
-      const result = await callKicadScript(sessionId, 'assign_net_to_class', { net, netClass });
+    async ({ net, netClass }) => {
+      const result = await callKicadScript('assign_net_to_class', { net, netClass });
       return formatToolResult(result);
     }
   );
@@ -102,8 +101,8 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
       minViaDiameter: z.number().optional().describe('Minimum via diameter (mm)'),
       minViaDrill: z.number().optional().describe('Minimum via drill size (mm)'),
     }),
-    async ({ sessionId, layer, minTrackWidth, minClearance, minViaDiameter, minViaDrill }) => {
-      const result = await callKicadScript(sessionId, 'set_layer_constraints', {
+    async ({ layer, minTrackWidth, minClearance, minViaDiameter, minViaDrill }) => {
+      const result = await callKicadScript('set_layer_constraints', {
         layer,
         minTrackWidth,
         minClearance,
@@ -120,8 +119,8 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
       point: coordinatePointSchema().describe('Point to test clearance from'),
       layer: z.string().optional().describe('Layer to test on'),
     }),
-    async ({ sessionId, point, layer }) => {
-      const result = await callKicadScript(sessionId, 'check_clearance', { point, layer });
+    async ({ point, layer }) => {
+      const result = await callKicadScript('check_clearance', { point, layer });
       return formatToolResult(result);
     }
   );
@@ -131,8 +130,8 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
     withSessionParams({
       severity: z.enum(['all', 'error']).optional().describe('Severity filter'),
     }),
-    async ({ sessionId, severity }) => {
-      const result = await callKicadScript(sessionId, 'get_drc_violations', { severity });
+    async ({ severity }) => {
+      const result = await callKicadScript('get_drc_violations', { severity });
       return formatToolResult(result);
     }
   );

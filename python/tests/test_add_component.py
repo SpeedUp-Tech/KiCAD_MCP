@@ -21,7 +21,7 @@ EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 async def run_one_component_workflow() -> str:
-    """Create session -> create schematic -> add one component -> export PDF -> close session.
+    """create schematic -> add one component -> export PDF.
 
     Returns the path to the generated PDF.
     """
@@ -35,22 +35,12 @@ async def run_one_component_workflow() -> str:
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            # 1) create session
-            session_result = await session.call_tool(
-                name='create_session',
-                arguments={'responseTimeoutMs': 120_000},
-            )
-            assert not session_result.isError, f"create_session error: {session_result.content}"
-            session_payload = json.loads(session_result.content[0].text)
-            session_id = session_payload['sessionId']
-
-            # 2) create schematic
+                        # create schematic
             tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_one_comp_'))
             schematic_name = 'one_component_demo'
             schematic_result = await session.call_tool(
                 name='create_schematic',
                 arguments={
-                    'sessionId': session_id,
                     'projectName': schematic_name,
                     'path': str(tmp_dir),
                 },
@@ -59,11 +49,10 @@ async def run_one_component_workflow() -> str:
             schematic_payload = json.loads(schematic_result.content[0].text)
             schematic_path = schematic_payload['file_path']
 
-            # 3) add a component
+            # add a component
             add_result = await session.call_tool(
                 name='add_schematic_component',
                 arguments={
-                    'sessionId': session_id,
                     'schematicPath': schematic_path,
                     'component': {
                         'type': 'R',
@@ -77,26 +66,19 @@ async def run_one_component_workflow() -> str:
             )
             assert not add_result.isError, f"add_schematic_component error: {add_result.content}"
 
-            # 4) export schematic to PDF
+            # export schematic to PDF
             pdf_filename = f"{schematic_name}_{uuid.uuid4().hex}.pdf"
             pdf_path = str(EXPORT_DIR / pdf_filename)
             export_result = await session.call_tool(
                 name='export_schematic_pdf',
                 arguments={
-                    'sessionId': session_id,
                     'schematicPath': schematic_path,
                     'outputPath': pdf_path,
                 },
             )
             assert not export_result.isError, f"export_schematic_pdf error: {export_result.content}"
 
-            # 5) close session
-            close_result = await session.call_tool(
-                name='close_session',
-                arguments={'sessionId': session_id},
-            )
-            assert not close_result.isError, f"close_session error: {close_result.content}"
-
+            
             return pdf_path
 
 

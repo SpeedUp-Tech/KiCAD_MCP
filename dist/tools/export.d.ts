@@ -2,6 +2,6 @@
  * Export tools for KiCAD MCP server
  */
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-type CommandFunction = (sessionId: string, command: string, params: Record<string, unknown>) => Promise<unknown>;
+type CommandFunction = (command: string, params: Record<string, unknown>) => Promise<unknown>;
 export declare function registerExportTools(server: McpServer, callKicadScript: CommandFunction): void;
 export {};

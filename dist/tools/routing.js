@@ -19,8 +19,8 @@ export function registerRoutingTools(server, callKicadScript) {
     server.tool('add_net', withSessionParams({
         name: z.string().describe('Net name'),
         class: z.string().optional().describe('Optional net class name'),
-    }), async ({ sessionId, name, class: netClass }) => {
-        const result = await callKicadScript(sessionId, 'add_net', { name, class: netClass });
+    }), async ({ name, class: netClass }) => {
+        const result = await callKicadScript('add_net', { name, class: netClass });
         return formatToolResult(result);
     });
     server.tool('route_trace', withSessionParams({
@@ -30,8 +30,8 @@ export function registerRoutingTools(server, callKicadScript) {
         width: z.number().optional().describe('Track width (mm)'),
         net: z.string().optional().describe('Net name to assign to the track'),
         via: z.boolean().optional().describe('Add a via at the end point'),
-    }), async ({ sessionId, start, end, layer, width, net, via }) => {
-        const result = await callKicadScript(sessionId, 'route_trace', {
+    }), async ({ start, end, layer, width, net, via }) => {
+        const result = await callKicadScript('route_trace', {
             start,
             end,
             layer,
@@ -48,8 +48,8 @@ export function registerRoutingTools(server, callKicadScript) {
         net: z.string().optional().describe('Net to assign'),
         from_layer: z.string().optional().describe('Start layer (default F.Cu)'),
         to_layer: z.string().optional().describe('End layer (default B.Cu)'),
-    }), async ({ sessionId, position, size, drill, net, from_layer, to_layer }) => {
-        const result = await callKicadScript(sessionId, 'add_via', {
+    }), async ({ position, size, drill, net, from_layer, to_layer }) => {
+        const result = await callKicadScript('add_via', {
             position,
             size,
             drill,
@@ -62,12 +62,12 @@ export function registerRoutingTools(server, callKicadScript) {
     server.tool('delete_trace', withSessionParams({
         traceUuid: z.string().optional().describe('UUID of the trace to delete'),
         position: coordinatePointSchema.optional().describe('Position near the trace to delete'),
-    }), async ({ sessionId, traceUuid, position }) => {
-        const result = await callKicadScript(sessionId, 'delete_trace', { traceUuid, position });
+    }), async ({ traceUuid, position }) => {
+        const result = await callKicadScript('delete_trace', { traceUuid, position });
         return formatToolResult(result);
     });
-    server.tool('get_nets_list', withSessionParams({}), async ({ sessionId }) => {
-        const result = await callKicadScript(sessionId, 'get_nets_list', {});
+    server.tool('get_nets_list', withSessionParams({}), async () => {
+        const result = await callKicadScript('get_nets_list', {});
         return formatToolResult(result);
     });
     server.tool('create_netclass', withSessionParams({
@@ -81,8 +81,8 @@ export function registerRoutingTools(server, callKicadScript) {
         diffPairWidth: z.number().optional().describe('Differential pair trace width (mm)'),
         diffPairGap: z.number().optional().describe('Differential pair gap (mm)'),
         nets: z.array(z.string()).optional().describe('Net names to assign'),
-    }), async ({ sessionId, ...params }) => {
-        const result = await callKicadScript(sessionId, 'create_netclass', params);
+    }), async ({ ...params }) => {
+        const result = await callKicadScript('create_netclass', params);
         return formatToolResult(result);
     });
     server.tool('add_copper_pour', withSessionParams({
@@ -99,8 +99,8 @@ export function registerRoutingTools(server, callKicadScript) {
             .describe('Polygon points defining the pour'),
         priority: z.number().optional().describe('Zone priority'),
         fillType: z.enum(['solid', 'hatched']).optional().describe('Fill type'),
-    }), async ({ sessionId, layer, net, clearance, minWidth, points, priority, fillType }) => {
-        const result = await callKicadScript(sessionId, 'add_copper_pour', {
+    }), async ({ layer, net, clearance, minWidth, points, priority, fillType }) => {
+        const result = await callKicadScript('add_copper_pour', {
             layer,
             net,
             clearance,
@@ -119,8 +119,8 @@ export function registerRoutingTools(server, callKicadScript) {
         layer: z.string().optional().describe('Layer to route on (default F.Cu)'),
         width: z.number().optional().describe('Trace width (mm)'),
         gap: z.number().optional().describe('Pair gap (mm)'),
-    }), async ({ sessionId, startPos, endPos, netPos, netNeg, layer, width, gap }) => {
-        const result = await callKicadScript(sessionId, 'route_differential_pair', {
+    }), async ({ startPos, endPos, netPos, netNeg, layer, width, gap }) => {
+        const result = await callKicadScript('route_differential_pair', {
             startPos,
             endPos,
             netPos,

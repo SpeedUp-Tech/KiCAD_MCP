@@ -31,20 +31,15 @@ async def run_export_flow() -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            # Start session
-            created = await session.call_tool(
-                name='create_session',
-                arguments={'responseTimeoutMs': 120_000},
-            )
-            assert not created.isError, f"create_session error: {created.content}"
-            session_id = json.loads(created.content[0].text)['sessionId']
-
             with tempfile.TemporaryDirectory(prefix='schematic_export_') as tmpdir:
                 # Create a simple schematic
                 name = 'export_demo'
                 create_sch = await session.call_tool(
                     name='create_schematic',
-                    arguments={'sessionId': session_id, 'projectName': name, 'path': tmpdir},
+                    arguments={
+                        'projectName': name,
+                        'path': tmpdir,
+                    },
                 )
                 assert not create_sch.isError, f"create_schematic error: {create_sch.content}"
                 sch_path = json.loads(create_sch.content[0].text)['file_path']
@@ -54,7 +49,6 @@ async def run_export_flow() -> dict:
                 netlist = await session.call_tool(
                     name='export_schematic_netlist',
                     arguments={
-                        'sessionId': session_id,
                         'schematicPath': sch_path,
                         'outputPath': netlist_path,
                     },
@@ -66,7 +60,6 @@ async def run_export_flow() -> dict:
                 bom = await session.call_tool(
                     name='export_schematic_bom',
                     arguments={
-                        'sessionId': session_id,
                         'schematicPath': sch_path,
                         'outputPath': bom_path,
                         'format': 'csv',
@@ -79,19 +72,11 @@ async def run_export_flow() -> dict:
                 erc = await session.call_tool(
                     name='run_erc',
                     arguments={
-                        'sessionId': session_id,
                         'schematicPath': sch_path,
                         'reportPath': erc_report,
                     },
                 )
                 erc_payload = json.loads(erc.content[0].text) if not erc.isError else {'success': False}
-
-            # Close session
-            closed = await session.call_tool(
-                name='close_session',
-                arguments={'sessionId': session_id},
-            )
-            assert not closed.isError, f"close_session error: {closed.content}"
 
             return {
                 'netlist': netlist_payload,

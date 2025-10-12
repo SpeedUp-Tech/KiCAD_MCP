@@ -8,7 +8,6 @@ import { logger } from '../logger.js';
 import { formatToolResult, withSessionParams } from './shared.js';
 
 type CommandFunction = (
-  sessionId: string,
   command: string,
   params: Record<string, unknown>
 ) => Promise<unknown>;
@@ -26,8 +25,8 @@ export function registerExportTools(server: McpServer, callKicadScript: CommandF
       generateMapFile: z.boolean().optional().describe('Generate Gerber job/map file'),
       useAuxOrigin: z.boolean().optional().describe('Use aux origin'),
     }),
-    async ({ sessionId, ...params }) => {
-      const result = await callKicadScript(sessionId, 'export_gerber', params);
+    async ({ ...params }) => {
+      const result = await callKicadScript('export_gerber', params);
       return formatToolResult(result);
     }
   );
@@ -41,8 +40,8 @@ export function registerExportTools(server: McpServer, callKicadScript: CommandF
       frameReference: z.boolean().optional().describe('Include frame references'),
       pageSize: z.string().optional().describe('Custom page size'),
     }),
-    async ({ sessionId, ...params }) => {
-      const result = await callKicadScript(sessionId, 'export_pdf', params);
+    async ({ ...params }) => {
+      const result = await callKicadScript('export_pdf', params);
       return formatToolResult(result);
     }
   );
@@ -55,8 +54,8 @@ export function registerExportTools(server: McpServer, callKicadScript: CommandF
       blackAndWhite: z.boolean().optional().describe('Monochrome output'),
       includeComponents: z.boolean().optional().describe('Include component annotations'),
     }),
-    async ({ sessionId, ...params }) => {
-      const result = await callKicadScript(sessionId, 'export_svg', params);
+    async ({ ...params }) => {
+      const result = await callKicadScript('export_svg', params);
       return formatToolResult(result);
     }
   );
@@ -71,8 +70,8 @@ export function registerExportTools(server: McpServer, callKicadScript: CommandF
       includeSolderMask: z.boolean().optional().describe('Include solder mask'),
       includeSilkscreen: z.boolean().optional().describe('Include silkscreen'),
     }),
-    async ({ sessionId, ...params }) => {
-      const result = await callKicadScript(sessionId, 'export_3d', params);
+    async ({ ...params }) => {
+      const result = await callKicadScript('export_3d', params);
       return formatToolResult(result);
     }
   );
@@ -85,8 +84,8 @@ export function registerExportTools(server: McpServer, callKicadScript: CommandF
       groupByValue: z.boolean().optional().describe('Group components by value'),
       includeAttributes: z.array(z.string()).optional().describe('Additional component attributes to include'),
     }),
-    async ({ sessionId, ...params }) => {
-      const result = await callKicadScript(sessionId, 'export_bom', params);
+    async ({ ...params }) => {
+      const result = await callKicadScript('export_bom', params);
       return formatToolResult(result);
     }
   );

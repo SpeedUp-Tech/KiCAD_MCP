@@ -30,20 +30,11 @@ async def run_library_footprint_flow() -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            # Start session
-            created = await session.call_tool(
-                name='create_session',
-                arguments={'responseTimeoutMs': 120_000},
-            )
-            assert not created.isError, f"create_session error: {created.content}"
-            session_id = json.loads(created.content[0].text)['sessionId']
-
             # Create symbol in exported directory
             lib_path = str(EXPORT_DIR / 'test_symbols.kicad_sym')
             symbol = await session.call_tool(
                 name='create_symbol',
                 arguments={
-                    'sessionId': session_id,
                     'libraryPath': lib_path,
                     'symbolName': 'My_Test_Symbol',
                     'properties': {'reference': 'U', 'value': 'My_Test_Symbol'},
@@ -61,7 +52,6 @@ async def run_library_footprint_flow() -> dict:
             footprint = await session.call_tool(
                 name='create_footprint',
                 arguments={
-                    'sessionId': session_id,
                     'libraryPath': pretty_dir,
                     'footprintName': 'MY_FOOTPRINT',
                     'pads': [
@@ -86,13 +76,6 @@ async def run_library_footprint_flow() -> dict:
             )
             fp_payload = json.loads(footprint.content[0].text) if not footprint.isError else {'success': False}
             fp_path = os.path.join(pretty_dir, 'MY_FOOTPRINT.kicad_mod')
-
-            # Close session
-            closed = await session.call_tool(
-                name='close_session',
-                arguments={'sessionId': session_id},
-            )
-            assert not closed.isError, f"close_session error: {closed.content}"
 
             return {
                 'symbol': symbol_payload,

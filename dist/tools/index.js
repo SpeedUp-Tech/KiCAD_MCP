@@ -11,5 +11,4 @@ export { registerDesignRuleTools } from './design-rules.js';
 export { registerExportTools } from './export.js';
 export { registerSchematicTools } from './schematic.js';
 export { registerLibraryTools } from './library.js';
-export { registerSessionTools } from './session.js';
 //# sourceMappingURL=index.js.map

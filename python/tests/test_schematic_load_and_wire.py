@@ -28,13 +28,6 @@ async def run_load_and_wire_flow() -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            # 1) create session
-            created = await session.call_tool(
-                name='create_session',
-                arguments={'responseTimeoutMs': 120_000},
-            )
-            assert not created.isError, f"create_session error: {created.content}"
-            session_id = json.loads(created.content[0].text)['sessionId']
 
             # 2) create schematic in temp dir
             with tempfile.TemporaryDirectory(prefix='schematic_load_wire_') as tmpdir:
@@ -42,7 +35,6 @@ async def run_load_and_wire_flow() -> dict:
                 create_sch = await session.call_tool(
                     name='create_schematic',
                     arguments={
-                        'sessionId': session_id,
                         'projectName': schematic_name,
                         'path': tmpdir,
                     },
@@ -53,7 +45,7 @@ async def run_load_and_wire_flow() -> dict:
                 # 3) load schematic
                 load_sch = await session.call_tool(
                     name='load_schematic',
-                    arguments={'sessionId': session_id, 'filename': sch_path},
+                    arguments={'filename': sch_path},
                 )
                 assert not load_sch.isError, f"load_schematic error: {load_sch.content}"
                 load_payload = json.loads(load_sch.content[0].text)
@@ -62,7 +54,6 @@ async def run_load_and_wire_flow() -> dict:
                 add_wire = await session.call_tool(
                     name='add_schematic_wire',
                     arguments={
-                        'sessionId': session_id,
                         'schematicPath': sch_path,
                         'startPoint': {'x': 10, 'y': 10},
                         'endPoint': {'x': 30, 'y': 10},
@@ -75,7 +66,6 @@ async def run_load_and_wire_flow() -> dict:
                 add_wire2 = await session.call_tool(
                     name='add_schematic_wire',
                     arguments={
-                        'sessionId': session_id,
                         'schematicPath': sch_path,
                         'startPoint': {'x': 40, 'y': 40},
                         'endPoint': {'x': 60, 'y': 60},
@@ -92,13 +82,6 @@ async def run_load_and_wire_flow() -> dict:
                 assert not add_wire2.isError, f"add_schematic_wire(points) error: {add_wire2.content}"
                 wire2 = json.loads(add_wire2.content[0].text)
 
-            # 6) close session
-            closed = await session.call_tool(
-                name='close_session',
-                arguments={'sessionId': session_id},
-            )
-            assert not closed.isError, f"close_session error: {closed.content}"
-
             return {'loaded': load_payload, 'wire1': wire1, 'wire2': wire2}
 
 
@@ -114,4 +97,3 @@ class SchematicLoadWireTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-
