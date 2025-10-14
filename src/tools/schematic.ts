@@ -430,18 +430,18 @@ export function registerSchematicTools(
     'get_schematic_state',
     withSessionParams({
       schematicPath: z.string().describe('Path to the schematic file to analyze'),
-      format: z
-        .enum(['json', 'text'])
+      showDetails: z
+        .boolean()
         .optional()
-        .default('json')
+        .default(false)
         .describe(
-          'Output format: "json" returns structured data with components, labels, and connections; "text" returns a human-readable summary'
+          'If false (default), shows only topology and electrical properties. If true, includes all visual layout details (coordinates, rotation, footprints)'
         ),
     }),
-    async ({ schematicPath, format }) => {
+    async ({ schematicPath, showDetails }) => {
       const result = await callKicadScript('get_schematic_state', {
         schematicPath,
-        format,
+        showDetails,
       });
       return formatToolResult(result);
     }

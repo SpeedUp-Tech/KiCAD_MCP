@@ -1036,7 +1036,7 @@ class KiCADInterface:
         logger.info("Getting schematic state")
         try:
             schematic_path = params.get("schematicPath")
-            format_type = params.get("format", "json")  # 'json' or 'text'
+            show_details = params.get("showDetails", False)
 
             if not schematic_path:
                 return {"success": False, "message": "schematicPath is required"}
@@ -1045,20 +1045,13 @@ class KiCADInterface:
             if not schematic:
                 return {"success": False, "message": "Failed to load schematic"}
 
-            state = get_schematic_state(schematic)
+            # get_schematic_state now returns a string directly
+            state_text = get_schematic_state(schematic, show_details=show_details)
 
-            if format_type == "text":
-                # Return only the text summary
-                return {
-                    "success": True,
-                    "state": state['summary']
-                }
-            else:
-                # Return full structured data
-                return {
-                    "success": True,
-                    "state": state
-                }
+            return {
+                "success": True,
+                "state": state_text
+            }
         except Exception as e:
             logger.error(f"Error getting schematic state: {str(e)}")
             logger.error(traceback.format_exc())

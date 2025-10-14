@@ -1,9 +1,14 @@
 """
 High-level schematic state representation for AI agents.
 
-This module provides a function to extract a structured, human-readable
-representation of a KiCAD schematic that captures essential topology
-and connectivity information without exposing low-level S-expression details.
+This module provides a function to extract a human-readable text summary
+of a KiCAD schematic that captures topology and connectivity information.
+
+The summary can be generated in two modes:
+- Simple mode (show_details=False): Shows only topology and electrical properties
+  (what connects to what, component values, pin types, label directions)
+- Detailed mode (show_details=True): Includes all visual layout details
+  (coordinates, rotation, footprints, pin positions)
 """
 
 from __future__ import annotations
@@ -147,6 +152,15 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
                     else:
                         symbol_name = lib_id
 
+                # Extract position and rotation
+                position = None
+                rotation = None
+                if hasattr(symbol, 'at') and symbol.at is not None:
+                    coords = list(symbol.at.value)
+                    if coords:
+                        position = (float(coords[0]), float(coords[1]) if len(coords) > 1 else 0.0)
+                        rotation = float(coords[2]) if len(coords) > 2 else 0.0
+
                 # Extract pin information from library definition
                 pins = []
                 if lib_symbols_node and lib_id:
@@ -157,10 +171,18 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
                         for pin in symbol.pin:
                             pin_number = str(getattr(pin, 'number', ''))
                             pin_data = pins_info.get(pin_number, {})
+
+                            # Get pin position
+                            pin_position = None
+                            if hasattr(pin, 'location'):
+                                loc = pin.location
+                                pin_position = (round(float(loc.x), 2), round(float(loc.y), 2))
+
                             pins.append({
                                 'number': pin_number,
                                 'name': pin_data.get('name', ''),
-                                'type': pin_data.get('type', 'passive')
+                                'type': pin_data.get('type', 'passive'),
+                                'position': pin_position
                             })
 
                 components.append({
@@ -169,6 +191,8 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
                     'library': library_name,
                     'symbol': symbol_name,
                     'footprint': footprint,
+                    'position': position,
+                    'rotation': rotation,
                     'pins': pins
                 })
             except Exception as e:
@@ -180,7 +204,7 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
 
 def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
     """
-    Extract labels from schematic.
+    Extract labels from schematic with position information.
 
     All labels except hierarchical are categorized as 'global' since they create
     global nets across the schematic. This includes:
@@ -189,6 +213,7 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
     - power symbols (which create global power nets)
 
     Returns dict with keys: 'hierarchical', 'global'
+    Each label includes: name, direction, and position
     """
     labels = {
         'hierarchical': [],
@@ -202,15 +227,22 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                 if len(node) > 1:
                     name = _atom_to_str(node[1])
                     shape = 'passive'
+                    position = None
 
                     # Find shape
                     shape_node = _find_subelement(node, 'shape')
                     if shape_node and len(shape_node) > 1:
                         shape = _atom_to_str(shape_node[1])
 
+                    # Find position
+                    at_node = _find_subelement(node, 'at')
+                    if at_node and len(at_node) >= 3:
+                        position = (float(at_node[1]), float(at_node[2]))
+
                     labels['hierarchical'].append({
                         'name': name,
-                        'direction': shape
+                        'direction': shape,
+                        'position': position
                     })
 
             elif _is_entry(node, 'global_label'):
@@ -219,14 +251,21 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                 if len(node) > 1:
                     name = _atom_to_str(node[1])
                     shape = 'passive'
+                    position = None
 
                     shape_node = _find_subelement(node, 'shape')
                     if shape_node and len(shape_node) > 1:
                         shape = _atom_to_str(shape_node[1])
 
+                    # Find position
+                    at_node = _find_subelement(node, 'at')
+                    if at_node and len(at_node) >= 3:
+                        position = (float(at_node[1]), float(at_node[2]))
+
                     labels['global'].append({
                         'name': name,
-                        'direction': shape
+                        'direction': shape,
+                        'position': position
                     })
 
             elif _is_entry(node, 'label'):
@@ -234,9 +273,17 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                 # Local labels are treated as global in KiCAD
                 if len(node) > 1:
                     name = _atom_to_str(node[1])
+                    position = None
+
+                    # Find position
+                    at_node = _find_subelement(node, 'at')
+                    if at_node and len(at_node) >= 3:
+                        position = (float(at_node[1]), float(at_node[2]))
+
                     labels['global'].append({
                         'name': name,
-                        'direction': 'passive'
+                        'direction': 'passive',
+                        'position': position
                     })
         except Exception as e:
             logger.warning(f"Error extracting label: {e}")
@@ -250,10 +297,19 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                 lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '')
                 if lib_id and 'power' in lib_id.lower():
                     value = getattr(getattr(symbol.property, 'Value', None), 'value', '')
+                    position = None
+
+                    # Get position from symbol
+                    if hasattr(symbol, 'at') and symbol.at is not None:
+                        coords = list(symbol.at.value)
+                        if coords:
+                            position = (float(coords[0]), float(coords[1]) if len(coords) > 1 else 0.0)
+
                     if value:
                         labels['global'].append({
                             'name': value,
-                            'direction': 'power'
+                            'direction': 'power',
+                            'position': position
                         })
             except Exception as e:
                 logger.warning(f"Error extracting power symbol: {e}")
@@ -396,61 +452,98 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
     return connections
 
 
-def get_schematic_state(schematic: Schematic) -> Dict[str, Any]:
+def get_schematic_state(schematic: Schematic, show_details: bool = False) -> str:
     """
-    Extract high-level schematic state representation.
-    
-    Returns a structured dict containing:
-    - components: List of components with pins
-    - labels: Hierarchical, global, and power labels
-    - connections: Connection map between pins
-    - summary: Text summary in human-readable format
+    Extract high-level schematic state representation as a text summary.
+
+    Args:
+        schematic: The schematic to analyze
+        show_details: If False (default), shows only topology and electrical properties.
+                     If True, includes all visual layout details (coordinates, rotation, footprints).
+
+    Returns:
+        Text summary string representing the schematic state
     """
     # Extract components
     components = _extract_components(schematic)
-    
+
     # Extract labels
     labels = _extract_labels(schematic)
-    
+
     # Build connection map
     connections = _build_connection_map(schematic, components)
-    
+
     # Generate text summary
     summary_lines = []
-    summary_lines.append("=== Schematic State Summary ===\n")
-    
+    summary_lines.append("=== Schematic State ===\n")
+
     # Components section
     summary_lines.append("Allocated components and pins:")
     for comp in components:
-        comp_line = f"{comp['reference']}: {comp['symbol']}"
-        if comp['library']:
-            comp_line += f", {comp['library']}:{comp['symbol']}"
-        if comp['footprint']:
-            comp_line += f", {comp['footprint']}"
-        if comp['value']:
-            comp_line += f", {comp['value']}"
-        summary_lines.append(comp_line)
-        
-        for pin in comp['pins']:
-            pin_line = f"  Pin {pin['number']}: {pin['type']}"
-            if pin['name']:
-                pin_line += f" ({pin['name']})"
-            summary_lines.append(pin_line)
-    
+        if show_details:
+            # Detailed mode: Show library:symbol, value, footprint, position, rotation
+            comp_line = f"{comp['reference']}: {comp['symbol']}"
+            if comp['library']:
+                comp_line += f", {comp['library']}:{comp['symbol']}"
+            if comp['value']:
+                comp_line += f", {comp['value']}"
+            summary_lines.append(comp_line)
+
+            # Show footprint
+            if comp['footprint']:
+                summary_lines.append(f"  Footprint: {comp['footprint']}")
+
+            # Show position and rotation
+            if comp['position'] is not None:
+                x, y = comp['position']
+                rot = comp['rotation'] if comp['rotation'] is not None else 0.0
+                summary_lines.append(f"  Position: ({x}, {y}), Rotation: {rot}°")
+
+            # Show pins with positions
+            for pin in comp['pins']:
+                pin_line = f"  Pin {pin['number']}: {pin['type']}"
+                if pin['name']:
+                    pin_line += f" ({pin['name']})"
+                if pin['position'] is not None:
+                    px, py = pin['position']
+                    pin_line += f", Position: ({px}, {py})"
+                summary_lines.append(pin_line)
+        else:
+            # Simple mode: Show only symbol, value, and pin types
+            comp_line = f"{comp['reference']}: {comp['symbol']}"
+            if comp['value']:
+                comp_line += f", {comp['value']}"
+            summary_lines.append(comp_line)
+
+            # Show pins without positions
+            for pin in comp['pins']:
+                pin_line = f"  Pin {pin['number']}: {pin['type']}"
+                if pin['name']:
+                    pin_line += f" ({pin['name']})"
+                summary_lines.append(pin_line)
+
     summary_lines.append("")
 
-    # Labels section
+    # Labels section - always show full details (direction is electrical property)
     has_labels = labels['hierarchical'] or labels['global']
     if has_labels:
         summary_lines.append("Labels:")
 
         # Hierarchical labels - show type since they're special
         for label in labels['hierarchical']:
-            summary_lines.append(f"  {label['name']}: hierarchical, {label['direction']}")
+            label_line = f"  {label['name']}: hierarchical, {label['direction']}"
+            if show_details and label['position'] is not None:
+                x, y = label['position']
+                label_line += f", Position: ({x}, {y})"
+            summary_lines.append(label_line)
 
-        # Global labels - don't show type, just name and direction
+        # Global labels - show name and direction (electrical property)
         for label in labels['global']:
-            summary_lines.append(f"  {label['name']}: {label['direction']}")
+            label_line = f"  {label['name']}: {label['direction']}"
+            if show_details and label['position'] is not None:
+                x, y = label['position']
+                label_line += f", Position: ({x}, {y})"
+            summary_lines.append(label_line)
 
         summary_lines.append("")
 
@@ -459,11 +552,6 @@ def get_schematic_state(schematic: Schematic) -> Dict[str, Any]:
         summary_lines.append("Connection map:")
         for conn in connections:
             summary_lines.append(f"  {conn}")
-    
-    return {
-        'components': components,
-        'labels': labels,
-        'connections': connections,
-        'summary': '\n'.join(summary_lines)
-    }
+
+    return '\n'.join(summary_lines)
 
