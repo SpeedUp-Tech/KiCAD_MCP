@@ -109,16 +109,20 @@ def _extract_pins_recursive(node: Any, pins_info: Dict[str, Dict[str, Any]]) -> 
 
 
 def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
-    """Extract component information from schematic."""
+    """
+    Extract component information from schematic.
+
+    Note: Power symbols are excluded as they are labels, not components.
+    """
     components = []
-    
+
     # Find lib_symbols node for pin information
     lib_symbols_node = None
     for node in schematic.tree:
         if _is_entry(node, 'lib_symbols'):
             lib_symbols_node = node
             break
-    
+
     # Iterate through all symbols in the schematic
     if hasattr(schematic, 'symbol'):
         for symbol in schematic.symbol:
@@ -128,7 +132,11 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
                 value = getattr(getattr(symbol.property, 'Value', None), 'value', '')
                 lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '')
                 footprint = getattr(getattr(symbol.property, 'Footprint', None), 'value', '')
-                
+
+                # Skip power symbols - they are labels, not components
+                if lib_id and 'power' in lib_id.lower():
+                    continue
+
                 # Extract library and symbol name
                 library_name = ''
                 symbol_name = ''
@@ -138,12 +146,12 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
                         library_name, symbol_name = parts
                     else:
                         symbol_name = lib_id
-                
+
                 # Extract pin information from library definition
                 pins = []
                 if lib_symbols_node and lib_id:
                     pins_info = _extract_pin_info_from_library(lib_symbols_node, lib_id)
-                    
+
                     # Get pin instances from the symbol
                     if hasattr(symbol, 'pin'):
                         for pin in symbol.pin:
@@ -154,7 +162,7 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
                                 'name': pin_data.get('name', ''),
                                 'type': pin_data.get('type', 'passive')
                             })
-                
+
                 components.append({
                     'reference': reference,
                     'value': value,
@@ -166,22 +174,27 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
             except Exception as e:
                 logger.warning(f"Error extracting component info: {e}")
                 continue
-    
+
     return components
 
 
 def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
     """
     Extract labels from schematic.
-    
-    Returns dict with keys: 'hierarchical', 'global', 'power'
+
+    All labels except hierarchical are categorized as 'global' since they create
+    global nets across the schematic. This includes:
+    - global_label nodes
+    - label (local label) nodes
+    - power symbols (which create global power nets)
+
+    Returns dict with keys: 'hierarchical', 'global'
     """
     labels = {
         'hierarchical': [],
-        'global': [],
-        'power': []
+        'global': []
     }
-    
+
     for node in schematic.tree:
         try:
             if _is_entry(node, 'hierarchical_label'):
@@ -189,34 +202,36 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                 if len(node) > 1:
                     name = _atom_to_str(node[1])
                     shape = 'passive'
-                    
+
                     # Find shape
                     shape_node = _find_subelement(node, 'shape')
                     if shape_node and len(shape_node) > 1:
                         shape = _atom_to_str(shape_node[1])
-                    
+
                     labels['hierarchical'].append({
                         'name': name,
                         'direction': shape
                     })
-            
+
             elif _is_entry(node, 'global_label'):
                 # Format: (global_label "NAME" (shape input/output) (at x y angle) ...)
+                # These are global nets
                 if len(node) > 1:
                     name = _atom_to_str(node[1])
                     shape = 'passive'
-                    
+
                     shape_node = _find_subelement(node, 'shape')
                     if shape_node and len(shape_node) > 1:
                         shape = _atom_to_str(shape_node[1])
-                    
+
                     labels['global'].append({
                         'name': name,
                         'direction': shape
                     })
-            
+
             elif _is_entry(node, 'label'):
                 # Format: (label "NAME" (at x y angle) ...)
+                # Local labels are treated as global in KiCAD
                 if len(node) > 1:
                     name = _atom_to_str(node[1])
                     labels['global'].append({
@@ -226,8 +241,9 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
         except Exception as e:
             logger.warning(f"Error extracting label: {e}")
             continue
-    
-    # Extract power symbols (they appear as regular symbols with specific lib_ids)
+
+    # Extract power symbols - they create GLOBAL power nets
+    # All power symbols with the same value (e.g., "VCC") are connected globally
     if hasattr(schematic, 'symbol'):
         for symbol in schematic.symbol:
             try:
@@ -235,55 +251,90 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                 if lib_id and 'power' in lib_id.lower():
                     value = getattr(getattr(symbol.property, 'Value', None), 'value', '')
                     if value:
-                        labels['power'].append({
+                        labels['global'].append({
                             'name': value,
                             'direction': 'power'
                         })
             except Exception as e:
                 logger.warning(f"Error extracting power symbol: {e}")
                 continue
-    
+
     return labels
 
 
 def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]) -> List[str]:
     """
-    Build a connection map by analyzing wires and their endpoints.
+    Build a connection map by analyzing component pins and wires.
 
     Returns a list of connection strings in the format:
-    "R1.1 -> C1.2 (Net: Net-R1-Pad1)"
+    "R1.1 -> C1.2 [Net-0]"
     """
     connections = []
 
-    # Build a spatial index of wire endpoints
-    # We'll track which wires connect to which points
-    wire_endpoints: Dict[Tuple[float, float], List[int]] = defaultdict(list)  # (x, y) -> [wire_indices]
+    # Build a spatial index of component pins: (x, y) -> [(reference, pin_number), ...]
+    # Note: Power symbols are excluded as they don't have real pins
+    pin_locations: Dict[Tuple[float, float], List[Tuple[str, str]]] = defaultdict(list)
+
+    if hasattr(schematic, 'symbol'):
+        for symbol in schematic.symbol:
+            try:
+                reference = getattr(getattr(symbol.property, 'Reference', None), 'value', None)
+                if not reference:
+                    continue
+
+                # Skip power symbols - they don't have real pins
+                lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '')
+                if lib_id and 'power' in lib_id.lower():
+                    continue
+
+                # Get pins from the symbol
+                if hasattr(symbol, 'pin'):
+                    for pin in symbol.pin:
+                        try:
+                            pin_number = str(getattr(pin, 'number', ''))
+                            if not pin_number:
+                                continue
+
+                            # Get absolute pin position
+                            if hasattr(pin, 'location'):
+                                loc = pin.location
+                                x = round(float(loc.x), 1)
+                                y = round(float(loc.y), 1)
+                                pin_locations[(x, y)].append((reference, pin_number))
+                        except Exception as e:
+                            logger.warning(f"Error extracting pin location: {e}")
+                            continue
+            except Exception as e:
+                logger.warning(f"Error processing symbol for connection map: {e}")
+                continue
+
+    # Build a spatial index of wire endpoints and all intermediate points
+    # (x, y) -> [wire_indices]
+    wire_points: Dict[Tuple[float, float], List[int]] = defaultdict(list)
 
     if hasattr(schematic, 'wire'):
         for wire_idx, wire in enumerate(schematic.wire):
             try:
-                # Get wire endpoints
                 if hasattr(wire, 'points'):
                     points = wire.points
                     if len(points) >= 2:
-                        # Add start and end points
-                        for point in [points[0], points[-1]]:
+                        # Add all points (start, end, and any intermediate points)
+                        for point in points:
                             if hasattr(point, 'value'):
                                 coords = point.value
                                 if len(coords) >= 2:
                                     x = round(float(coords[0]), 1)
                                     y = round(float(coords[1]), 1)
-                                    wire_endpoints[(x, y)].append(wire_idx)
+                                    wire_points[(x, y)].append(wire_idx)
             except Exception as e:
-                logger.warning(f"Error analyzing wire endpoints: {e}")
+                logger.warning(f"Error analyzing wire points: {e}")
                 continue
 
     # Build a net map by grouping connected wires
-    # Wires that share endpoints are on the same net
     wire_to_net: Dict[int, int] = {}
     net_counter = 0
 
-    for point, wire_indices in wire_endpoints.items():
+    for point, wire_indices in wire_points.items():
         if len(wire_indices) > 1:
             # Multiple wires meet at this point - they're on the same net
             existing_nets = set()
@@ -313,34 +364,34 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
                 wire_to_net[wire_idx] = net_counter
                 net_counter += 1
 
-    # Now build a simple text representation
-    # For each wire, show what it connects
-    if hasattr(schematic, 'wire'):
-        for wire_idx, wire in enumerate(schematic.wire):
-            try:
-                if hasattr(wire, 'points'):
-                    points = wire.points
-                    if len(points) >= 2:
-                        start_point = points[0]
-                        end_point = points[-1]
+    # Map each point to its net ID
+    point_to_net: Dict[Tuple[float, float], int] = {}
+    for point, wire_indices in wire_points.items():
+        if wire_indices:
+            # Use the net of the first wire at this point (they should all be the same after merging)
+            point_to_net[point] = wire_to_net.get(wire_indices[0], wire_indices[0])
 
-                        if hasattr(start_point, 'value') and hasattr(end_point, 'value'):
-                            start_coords = start_point.value
-                            end_coords = end_point.value
+    # Build pin-to-pin connections
+    # Group pins by net
+    net_to_pins: Dict[int, List[str]] = defaultdict(list)
 
-                            if len(start_coords) >= 2 and len(end_coords) >= 2:
-                                start_x = round(float(start_coords[0]), 1)
-                                start_y = round(float(start_coords[1]), 1)
-                                end_x = round(float(end_coords[0]), 1)
-                                end_y = round(float(end_coords[1]), 1)
+    for point, pins in pin_locations.items():
+        # Check if this point is on a net
+        if point in point_to_net:
+            net_id = point_to_net[point]
+            for reference, pin_number in pins:
+                pin_ref = f"{reference}.{pin_number}"
+                net_to_pins[net_id].append(pin_ref)
 
-                                net_id = wire_to_net.get(wire_idx, wire_idx)
-                                connections.append(
-                                    f"Wire {wire_idx}: ({start_x}, {start_y}) -> ({end_x}, {end_y}) [Net-{net_id}]"
-                                )
-            except Exception as e:
-                logger.warning(f"Error formatting wire connection: {e}")
-                continue
+    # Generate connection strings
+    for net_id, pins in sorted(net_to_pins.items()):
+        if len(pins) >= 2:
+            # Create connections between all pairs of pins on this net
+            for i in range(len(pins) - 1):
+                connections.append(f"{pins[i]} -> {pins[i+1]} [Net-{net_id}]")
+        elif len(pins) == 1:
+            # Single pin on this net (unconnected or connected to label/power)
+            connections.append(f"{pins[0]} [Net-{net_id}]")
 
     return connections
 
@@ -387,27 +438,23 @@ def get_schematic_state(schematic: Schematic) -> Dict[str, Any]:
             summary_lines.append(pin_line)
     
     summary_lines.append("")
-    
+
     # Labels section
-    if labels['hierarchical']:
-        summary_lines.append("Hierarchical labels:")
+    has_labels = labels['hierarchical'] or labels['global']
+    if has_labels:
+        summary_lines.append("Labels:")
+
+        # Hierarchical labels - show type since they're special
         for label in labels['hierarchical']:
-            summary_lines.append(f"  {label['name']}: {label['direction']}")
-        summary_lines.append("")
-    
-    if labels['global']:
-        summary_lines.append("Global labels:")
+            summary_lines.append(f"  {label['name']}: hierarchical, {label['direction']}")
+
+        # Global labels - don't show type, just name and direction
         for label in labels['global']:
             summary_lines.append(f"  {label['name']}: {label['direction']}")
+
         summary_lines.append("")
-    
-    if labels['power']:
-        summary_lines.append("Power rails:")
-        for label in labels['power']:
-            summary_lines.append(f"  {label['name']}")
-        summary_lines.append("")
-    
-    # Connections section
+
+    # Connection map section
     if connections:
         summary_lines.append("Connection map:")
         for conn in connections:
