@@ -961,11 +961,12 @@ class KiCADInterface:
             return {"success": False, "message": str(e)}
 
     def _handle_get_schematic_state(self, params):
-        """Get high-level schematic state representation."""
+        """Get high-level schematic state representation (JSON by default)."""
         logger.info("Getting schematic state")
         try:
             schematic_path = params.get("schematicPath")
             show_details = params.get("showDetails", False)
+            output_format = str(params.get("outputFormat", "json")).lower()
 
             if not schematic_path:
                 return {"success": False, "message": "schematicPath is required"}
@@ -974,12 +975,16 @@ class KiCADInterface:
             if not schematic:
                 return {"success": False, "message": "Failed to load schematic"}
 
-            # get_schematic_state now returns a string directly
-            state_text = get_schematic_state(schematic, show_details=show_details)
+            state = get_schematic_state(
+                schematic,
+                show_details=show_details,
+                output_format=output_format,
+            )
 
             return {
                 "success": True,
-                "state": state_text
+                "format": output_format,
+                "state": state,
             }
         except Exception as e:
             logger.error(f"Error getting schematic state: {str(e)}")

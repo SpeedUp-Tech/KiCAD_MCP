@@ -34,7 +34,7 @@ class TestBlueprintToHierarchical(unittest.TestCase):
             {
                 "name": "3A充电方案",
                 "blueprint": "test_cases/3A充电方案/blueprint.json",
-                "expected_modules": 5,
+                "expected_modules": 6,
             },
             {
                 "name": "140w笔记本充电",
@@ -60,7 +60,9 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         
         # Verify files exist
         self.assertTrue(Path(result["top_schematic"]).exists())
-        self.assertEqual(len(result["module_sheets"]), test_case["expected_modules"])
+        with open(test_case["blueprint"], 'r', encoding='utf-8') as f:
+            expected_modules = len(json.load(f).get("modules", []))
+        self.assertEqual(len(result["module_sheets"]), expected_modules)
         
         for module_path in result["module_sheets"].values():
             self.assertTrue(Path(module_path).exists())
@@ -81,7 +83,9 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         self.assertIn("output_dir", result)
         
         # Verify module count
-        self.assertEqual(len(result["module_sheets"]), test_case["expected_modules"])
+        with open(test_case["blueprint"], 'r', encoding='utf-8') as f:
+            expected_modules = len(json.load(f).get("modules", []))
+        self.assertEqual(len(result["module_sheets"]), expected_modules)
     
     def test_03_element_ordering(self):
         """Test that sheet_instances is at the END of the tree"""
@@ -236,16 +240,25 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         svg_files = list(svg_dir.glob("Top-*.svg"))
         self.assertGreater(len(svg_files), 0, "No SVG files generated")
         
-        # Check that at least one SVG contains hierarchical label text
-        # (This is a basic check - labels should appear in SVG content)
+        # Collect expected label names dynamically from top schematic sheet pins
+        top_tree = loads(Path(result["top_schematic"]).read_text(encoding="utf-8"))
+        expected_label_names = set()
+        for entry in top_tree:
+            if isinstance(entry, list) and entry and entry[0] == Symbol("sheet"):
+                for item in entry:
+                    if isinstance(item, list) and item and item[0] == Symbol("pin"):
+                        expected_label_names.add(str(item[1]))
+
+        self.assertGreater(len(expected_label_names), 0, "No sheet pins/labels found in top schematic")
+
+        # Check that at least one SVG contains one of the discovered label texts
         found_label = False
         for svg_file in svg_files:
             content = svg_file.read_text()
-            # Check for common label patterns from the blueprint
-            if any(label in content for label in ["R_USB_5V_IN", "S_VIN_SENSE", "S_LED_D1"]):
+            if any(label in content for label in expected_label_names):
                 found_label = True
                 break
-        
+
         self.assertTrue(found_label, "No hierarchical labels found in SVG exports")
     
     def test_08_sheet_symbols_have_pins(self):

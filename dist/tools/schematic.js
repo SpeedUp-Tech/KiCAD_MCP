@@ -291,10 +291,16 @@ export function registerSchematicTools(server, callKicadScript) {
             .optional()
             .default(false)
             .describe('If false (default), shows only topology and electrical properties. If true, includes all visual layout details (coordinates, rotation, footprints)'),
-    }), async ({ schematicPath, showDetails }) => {
+        outputFormat: z
+            .enum(['json', 'text'])
+            .optional()
+            .default('json')
+            .describe('Preferred output format. JSON is default; text is generated as a post-process.'),
+    }), async ({ schematicPath, showDetails, outputFormat }) => {
         const result = await callKicadScript('get_schematic_state', {
             schematicPath,
             showDetails,
+            outputFormat,
         });
         return formatToolResult(result);
     });

@@ -20,6 +20,7 @@ from collections import defaultdict
 from skip import Schematic
 import sexpdata
 from sexpdata import Symbol as SSymbol
+from .grid_utils import snap_to_grid
 
 logger = logging.getLogger('kicad_interface')
 
@@ -237,7 +238,8 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                     # Find position
                     at_node = _find_subelement(node, 'at')
                     if at_node and len(at_node) >= 3:
-                        position = (float(at_node[1]), float(at_node[2]))
+                        # Snap to schematic grid to match wire coordinates
+                        position = (snap_to_grid(float(at_node[1])), snap_to_grid(float(at_node[2])))
 
                     labels['hierarchical'].append({
                         'name': name,
@@ -260,7 +262,8 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                     # Find position
                     at_node = _find_subelement(node, 'at')
                     if at_node and len(at_node) >= 3:
-                        position = (float(at_node[1]), float(at_node[2]))
+                        # Snap to schematic grid to match wire coordinates
+                        position = (snap_to_grid(float(at_node[1])), snap_to_grid(float(at_node[2])))
 
                     labels['global'].append({
                         'name': name,
@@ -278,7 +281,8 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                     # Find position
                     at_node = _find_subelement(node, 'at')
                     if at_node and len(at_node) >= 3:
-                        position = (float(at_node[1]), float(at_node[2]))
+                        # Snap to schematic grid to match wire coordinates
+                        position = (snap_to_grid(float(at_node[1])), snap_to_grid(float(at_node[2])))
 
                     labels['global'].append({
                         'name': name,
@@ -303,7 +307,11 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                     if hasattr(symbol, 'at') and symbol.at is not None:
                         coords = list(symbol.at.value)
                         if coords:
-                            position = (float(coords[0]), float(coords[1]) if len(coords) > 1 else 0.0)
+                            # Snap to schematic grid to match wire coordinates
+                            position = (
+                                snap_to_grid(float(coords[0])),
+                                snap_to_grid(float(coords[1])) if len(coords) > 1 else 0.0,
+                            )
 
                     if value:
                         labels['global'].append({
@@ -318,19 +326,29 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
     return labels
 
 
-def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]) -> List[str]:
+def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
-    Build a connection map by analyzing component pins and wires.
+    Build a complete connection map as explicit edges between endpoints.
 
-    Returns a list of connection strings in the format:
-    "R1.1 -> C1.2 [Net-0]"
+    Returns a list of JSON-serializable edges with structure:
+      { "net": NetName, "a": Endpoint, "b": Endpoint }
+
+    where Endpoint is one of:
+      - { "kind": "pin", "ref": Reference, "pin": PinNumber }
+      - { "kind": "label", "name": LabelName }
+
+    Notes:
+    - Labels (local/global/hierarchical) and power rails are first-class endpoints.
+    - NetName comes from any label present on the wire's endpoints; otherwise a stable
+      synthetic name (Net-<id>) is used based on wire connectivity groups.
+    - This function is read-only and reflects the schematic AS-IS.
     """
-    connections = []
+    # Spatial index of endpoints (pins and labels)
+    # (x, y) -> [endpoint_id], where endpoint_id is either "Ref.Pin" or label text (e.g., "GND")
+    pin_locations: Dict[Tuple[float, float], List[str]] = defaultdict(list)
+    label_locations: Dict[Tuple[float, float], List[str]] = defaultdict(list)
 
-    # Build a spatial index of component pins: (x, y) -> [(reference, pin_number), ...]
-    # Note: Power symbols are excluded as they don't have real pins
-    pin_locations: Dict[Tuple[float, float], List[Tuple[str, str]]] = defaultdict(list)
-
+    # Collect pins from symbols (exclude power symbols which have no real pins)
     if hasattr(schematic, 'symbol'):
         for symbol in schematic.symbol:
             try:
@@ -338,25 +356,22 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
                 if not reference:
                     continue
 
-                # Skip power symbols - they don't have real pins
                 lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '')
                 if lib_id and 'power' in lib_id.lower():
+                    # Power symbols don't expose real pins; skip for pin endpoints
                     continue
 
-                # Get pins from the symbol
                 if hasattr(symbol, 'pin'):
                     for pin in symbol.pin:
                         try:
                             pin_number = str(getattr(pin, 'number', ''))
                             if not pin_number:
                                 continue
-
-                            # Get absolute pin position
                             if hasattr(pin, 'location'):
                                 loc = pin.location
                                 x = round(float(loc.x), 1)
                                 y = round(float(loc.y), 1)
-                                pin_locations[(x, y)].append((reference, pin_number))
+                                pin_locations[(x, y)].append(f"{reference}.{pin_number}")
                         except Exception as e:
                             logger.warning(f"Error extracting pin location: {e}")
                             continue
@@ -364,194 +379,297 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
                 logger.warning(f"Error processing symbol for connection map: {e}")
                 continue
 
-    # Build a spatial index of wire endpoints and all intermediate points
-    # (x, y) -> [wire_indices]
+    # Collect labels (including power) with positions
+    labels = _extract_labels(schematic)
+    # Combine hierarchical and global labels
+    for group in ('hierarchical', 'global'):
+        for lbl in labels.get(group, []):
+            try:
+                name = lbl.get('name')
+                pos = lbl.get('position')
+                if name and pos is not None:
+                    x = round(float(pos[0]), 1)
+                    y = round(float(pos[1]), 1)
+                    label_locations[(x, y)].append(name)
+            except Exception as e:
+                logger.warning(f"Error indexing label '{lbl}': {e}")
+                continue
+
+    # Quick set to recognize which endpoint strings are labels
+    label_names_set: Set[str] = set()
+    for names in label_locations.values():
+        label_names_set.update(names)
+
+    # Helper to convert an endpoint string to a structured endpoint object
+    def _endpoint_obj(name: str) -> Dict[str, Any]:
+        if name in label_names_set:
+            return {"kind": "label", "name": name}
+        if "." in name:
+            ref, pin = name.split(".", 1)
+            return {"kind": "pin", "ref": ref, "pin": pin}
+        # Fallback to label if we cannot confidently parse as pin
+        return {"kind": "label", "name": name}
+
+    # Build wire endpoint list and a connectivity map for unlabeled net IDs
     wire_points: Dict[Tuple[float, float], List[int]] = defaultdict(list)
+    wire_endpoints: Dict[int, Tuple[Tuple[float, float], Tuple[float, float]]] = {}
 
     if hasattr(schematic, 'wire'):
         for wire_idx, wire in enumerate(schematic.wire):
             try:
                 if hasattr(wire, 'points'):
-                    points = wire.points
+                    points = list(wire.points)
                     if len(points) >= 2:
-                        # Add all points (start, end, and any intermediate points)
-                        for point in points:
-                            if hasattr(point, 'value'):
-                                coords = point.value
+                        # Index all points for connectivity grouping
+                        for pt in points:
+                            if hasattr(pt, 'value'):
+                                coords = pt.value
                                 if len(coords) >= 2:
                                     x = round(float(coords[0]), 1)
                                     y = round(float(coords[1]), 1)
                                     wire_points[(x, y)].append(wire_idx)
+                        # Also record only the two wire endpoints (first and last)
+                        p_start = points[0].value
+                        p_end = points[-1].value
+                        sx, sy = round(float(p_start[0]), 1), round(float(p_start[1]), 1)
+                        ex, ey = round(float(p_end[0]), 1), round(float(p_end[1]), 1)
+                        wire_endpoints[wire_idx] = ((sx, sy), (ex, ey))
             except Exception as e:
                 logger.warning(f"Error analyzing wire points: {e}")
                 continue
 
-    # Build a net map by grouping connected wires
+    # Group wires into nets (unlabeled naming fallback)
     wire_to_net: Dict[int, int] = {}
     net_counter = 0
 
     for point, wire_indices in wire_points.items():
         if len(wire_indices) > 1:
-            # Multiple wires meet at this point - they're on the same net
             existing_nets = set()
-            for wire_idx in wire_indices:
-                if wire_idx in wire_to_net:
-                    existing_nets.add(wire_to_net[wire_idx])
-
+            for widx in wire_indices:
+                if widx in wire_to_net:
+                    existing_nets.add(wire_to_net[widx])
             if existing_nets:
-                # Use the lowest net number
                 net_id = min(existing_nets)
-                # Merge all nets
-                for wire_idx in wire_indices:
-                    wire_to_net[wire_idx] = net_id
-                # Update all wires that were on the other nets
+                for widx in wire_indices:
+                    wire_to_net[widx] = net_id
                 for w_idx, n_id in list(wire_to_net.items()):
                     if n_id in existing_nets and n_id != net_id:
                         wire_to_net[w_idx] = net_id
             else:
-                # Create new net
-                for wire_idx in wire_indices:
-                    wire_to_net[wire_idx] = net_counter
+                for widx in wire_indices:
+                    wire_to_net[widx] = net_counter
                 net_counter += 1
         elif len(wire_indices) == 1:
-            # Single wire at this point
-            wire_idx = wire_indices[0]
-            if wire_idx not in wire_to_net:
-                wire_to_net[wire_idx] = net_counter
+            widx = wire_indices[0]
+            if widx not in wire_to_net:
+                wire_to_net[widx] = net_counter
                 net_counter += 1
 
-    # Map each point to its net ID
+    # Merge both pin and label locations into a single spatial index
+    node_locations: Dict[Tuple[float, float], List[str]] = defaultdict(list)
+    for pt, nodes in pin_locations.items():
+        node_locations[pt].extend(nodes)
+    for pt, names in label_locations.items():
+        node_locations[pt].extend(names)
+
+    # Build point->net_id map and collect nodes per net id
     point_to_net: Dict[Tuple[float, float], int] = {}
-    for point, wire_indices in wire_points.items():
-        if wire_indices:
-            # Use the net of the first wire at this point (they should all be the same after merging)
-            point_to_net[point] = wire_to_net.get(wire_indices[0], wire_indices[0])
+    net_to_nodes: Dict[int, Set[str]] = defaultdict(set)
+    for pt, widxs in wire_points.items():
+        if not widxs:
+            continue
+        net_id = wire_to_net.get(widxs[0], widxs[0])
+        point_to_net[pt] = net_id
+        for node in node_locations.get(pt, []):
+            net_to_nodes[net_id].add(node)
 
-    # Build pin-to-pin connections
-    # Group pins by net
-    net_to_pins: Dict[int, List[str]] = defaultdict(list)
+    # Determine label-based names for nets (if any)
+    net_label_name: Dict[int, str] = {}
+    for pt, names in label_locations.items():
+        if pt in point_to_net:
+            net_id = point_to_net[pt]
+            # Use the first label name (sorted for determinism) on this point
+            chosen = sorted(names)[0]
+            net_label_name.setdefault(net_id, chosen)
 
-    for point, pins in pin_locations.items():
-        # Check if this point is on a net
-        if point in point_to_net:
-            net_id = point_to_net[point]
-            for reference, pin_number in pins:
-                pin_ref = f"{reference}.{pin_number}"
-                net_to_pins[net_id].append(pin_ref)
+    # Emit all unordered pairs per net using appropriate net name
+    edge_keys: Set[Tuple[str, str, str]] = set()  # (net_name, a, b) canonicalized with a<=b
+    for net_id, nodes in sorted(net_to_nodes.items()):
+        node_list = sorted(nodes)
+        if len(node_list) < 2:
+            continue
+        # Prefer explicit label name if present on the net, else synthetic
+        net_name = net_label_name.get(net_id, f"Net-{net_id}")
+        # Unordered unique pairs
+        for i in range(len(node_list)):
+            for j in range(i + 1, len(node_list)):
+                a, b = node_list[i], node_list[j]
+                a_key, b_key = (a, b) if a <= b else (b, a)
+                edge_keys.add((net_name, a_key, b_key))
 
-    # Generate connection strings
-    for net_id, pins in sorted(net_to_pins.items()):
-        if len(pins) >= 2:
-            # Create connections between all pairs of pins on this net
-            for i in range(len(pins) - 1):
-                connections.append(f"{pins[i]} -> {pins[i+1]} [Net-{net_id}]")
-        elif len(pins) == 1:
-            # Single pin on this net (unconnected or connected to label/power)
-            connections.append(f"{pins[0]} [Net-{net_id}]")
+    # Build structured, deterministically sorted edge list
+    result: List[Dict[str, Any]] = []
+    for net_name, a_name, b_name in sorted(edge_keys, key=lambda t: (t[0], t[1], t[2])):
+        result.append({
+            "net": net_name,
+            "a": _endpoint_obj(a_name),
+            "b": _endpoint_obj(b_name),
+        })
 
-    return connections
+    return result
 
 
-def get_schematic_state(schematic: Schematic, show_details: bool = False) -> str:
+def get_schematic_state(schematic: Schematic, show_details: bool = False, output_format: str = "json") -> Any:
     """
-    Extract high-level schematic state representation as a text summary.
+    Extract high-level schematic state representation.
 
     Args:
         schematic: The schematic to analyze
         show_details: If False (default), shows only topology and electrical properties.
-                     If True, includes all visual layout details (coordinates, rotation, footprints).
+                      If True, includes all visual layout details (coordinates, rotation, footprints).
+        output_format: 'json' (default) returns structured data; 'text' returns a formatted summary string.
 
     Returns:
-        Text summary string representing the schematic state
+        Dict with JSON structure if output_format == 'json', else a text string.
     """
-    # Extract components
-    components = _extract_components(schematic)
+    # Extract raw data
+    raw_components = _extract_components(schematic)
+    raw_labels = _extract_labels(schematic)
 
-    # Extract labels
-    labels = _extract_labels(schematic)
+    # Build connection map as structured JSON edges
+    connections = _build_connection_map(schematic, raw_components)
 
-    # Build connection map
-    connections = _build_connection_map(schematic, components)
-
-    # Generate text summary
-    summary_lines = []
-    summary_lines.append("=== Schematic State ===\n")
-
-    # Components section
-    summary_lines.append("Allocated components and pins:")
-    for comp in components:
+    # Convert components to JSON-friendly form (and honor detail level)
+    components: List[Dict[str, Any]] = []
+    for comp in raw_components:
+        comp_json: Dict[str, Any] = {
+            "reference": comp.get("reference"),
+            "symbol": comp.get("symbol"),
+            "library": comp.get("library"),
+            "value": comp.get("value"),
+            "pins": [],
+        }
+        # Detailed-only fields
         if show_details:
-            # Detailed mode: Show library:symbol, value, footprint, position, rotation
-            comp_line = f"{comp['reference']}: {comp['symbol']}"
-            if comp['library']:
-                comp_line += f", {comp['library']}:{comp['symbol']}"
-            if comp['value']:
-                comp_line += f", {comp['value']}"
-            summary_lines.append(comp_line)
+            if comp.get("footprint"):
+                comp_json["footprint"] = comp.get("footprint")
+            if comp.get("position") is not None:
+                x, y = comp.get("position") or (None, None)
+                comp_json["position"] = {"x": x, "y": y}
+            if comp.get("rotation") is not None:
+                comp_json["rotation"] = comp.get("rotation")
+        # Pins
+        for pin in comp.get("pins", []):
+            pin_json: Dict[str, Any] = {
+                "number": pin.get("number"),
+                "type": pin.get("type"),
+                "name": pin.get("name", ""),
+            }
+            if show_details and pin.get("position") is not None:
+                px, py = pin.get("position") or (None, None)
+                pin_json["position"] = {"x": px, "y": py}
+            comp_json["pins"].append(pin_json)
+        components.append(comp_json)
 
-            # Show footprint
-            if comp['footprint']:
-                summary_lines.append(f"  Footprint: {comp['footprint']}")
+    # Convert labels to a flat list with kind and honor detail level
+    labels: List[Dict[str, Any]] = []
+    for kind in ("hierarchical", "global"):
+        for lbl in raw_labels.get(kind, []):
+            item: Dict[str, Any] = {
+                "kind": kind,
+                "name": lbl.get("name"),
+                "direction": lbl.get("direction", "passive"),
+            }
+            if show_details and lbl.get("position") is not None:
+                lx, ly = lbl.get("position") or (None, None)
+                item["position"] = {"x": lx, "y": ly}
+            labels.append(item)
 
-            # Show position and rotation
-            if comp['position'] is not None:
-                x, y = comp['position']
-                rot = comp['rotation'] if comp['rotation'] is not None else 0.0
-                summary_lines.append(f"  Position: ({x}, {y}), Rotation: {rot}°")
+    state_json: Dict[str, Any] = {
+        "mode": "detailed" if show_details else "simple",
+        "components": components,
+        "labels": labels,
+        "connections": connections,
+    }
 
-            # Show pins with positions
-            for pin in comp['pins']:
-                pin_line = f"  Pin {pin['number']}: {pin['type']}"
-                if pin['name']:
-                    pin_line += f" ({pin['name']})"
-                if pin['position'] is not None:
-                    px, py = pin['position']
-                    pin_line += f", Position: ({px}, {py})"
-                summary_lines.append(pin_line)
-        else:
-            # Simple mode: Show only symbol, value, and pin types
-            comp_line = f"{comp['reference']}: {comp['symbol']}"
-            if comp['value']:
-                comp_line += f", {comp['value']}"
-            summary_lines.append(comp_line)
+    if str(output_format).lower() == "json":
+        return state_json
 
-            # Show pins without positions
-            for pin in comp['pins']:
-                pin_line = f"  Pin {pin['number']}: {pin['type']}"
-                if pin['name']:
-                    pin_line += f" ({pin['name']})"
-                summary_lines.append(pin_line)
+    # Fallback: text post-process from JSON structure
+    def _format_schematic_state_text(state: Dict[str, Any], detailed: bool) -> str:
+        lines: List[str] = []
+        lines.append("=== Schematic State ===\n")
 
-    summary_lines.append("")
+        lines.append("Allocated components and pins:")
+        for comp in state.get("components", []):
+            ref = comp.get("reference") or ""
+            sym = comp.get("symbol") or ""
+            lib = comp.get("library") or ""
+            val = comp.get("value") or ""
+            if detailed:
+                comp_line = f"{ref}: {sym}"
+                if lib:
+                    comp_line += f", {lib}:{sym}"
+                if val:
+                    comp_line += f", {val}"
+                lines.append(comp_line)
+                if comp.get("footprint"):
+                    lines.append(f"  Footprint: {comp['footprint']}")
+                pos = comp.get("position")
+                rot = comp.get("rotation")
+                if pos is not None:
+                    lines.append(f"  Position: ({pos.get('x')}, {pos.get('y')}), Rotation: {rot or 0.0}°")
+                for pin in comp.get("pins", []):
+                    pin_line = f"  Pin {pin.get('number')}: {pin.get('type')}"
+                    if pin.get("name"):
+                        pin_line += f" ({pin['name']})"
+                    ppos = pin.get("position")
+                    if ppos is not None:
+                        pin_line += f", Position: ({ppos.get('x')}, {ppos.get('y')})"
+                    lines.append(pin_line)
+            else:
+                comp_line = f"{ref}: {sym}"
+                if val:
+                    comp_line += f", {val}"
+                lines.append(comp_line)
+                for pin in comp.get("pins", []):
+                    pin_line = f"  Pin {pin.get('number')}: {pin.get('type')}"
+                    if pin.get("name"):
+                        pin_line += f" ({pin['name']})"
+                    lines.append(pin_line)
 
-    # Labels section - always show full details (direction is electrical property)
-    has_labels = labels['hierarchical'] or labels['global']
-    if has_labels:
-        summary_lines.append("Labels:")
+        lines.append("")
 
-        # Hierarchical labels - show type since they're special
-        for label in labels['hierarchical']:
-            label_line = f"  {label['name']}: hierarchical, {label['direction']}"
-            if show_details and label['position'] is not None:
-                x, y = label['position']
-                label_line += f", Position: ({x}, {y})"
-            summary_lines.append(label_line)
+        lbls = state.get("labels", [])
+        if lbls:
+            lines.append("Labels:")
+            # Hierarchical first
+            for label in [l for l in lbls if l.get("kind") == "hierarchical"]:
+                label_line = f"  {label.get('name')}: hierarchical, {label.get('direction')}"
+                if detailed and label.get("position") is not None:
+                    lpos = label.get("position")
+                    label_line += f", Position: ({lpos.get('x')}, {lpos.get('y')})"
+                lines.append(label_line)
+            # Global next
+            for label in [l for l in lbls if l.get("kind") == "global"]:
+                label_line = f"  {label.get('name')}: {label.get('direction')}"
+                if detailed and label.get("position") is not None:
+                    lpos = label.get("position")
+                    label_line += f", Position: ({lpos.get('x')}, {lpos.get('y')})"
+                lines.append(label_line)
+            lines.append("")
 
-        # Global labels - show name and direction (electrical property)
-        for label in labels['global']:
-            label_line = f"  {label['name']}: {label['direction']}"
-            if show_details and label['position'] is not None:
-                x, y = label['position']
-                label_line += f", Position: ({x}, {y})"
-            summary_lines.append(label_line)
+        conns = state.get("connections", [])
+        if conns:
+            lines.append("Connection map:")
+            for edge in conns:
+                def _fmt_ep(ep: Dict[str, Any]) -> str:
+                    if ep.get("kind") == "pin":
+                        return f"{ep.get('ref')}.{ep.get('pin')}"
+                    return str(ep.get("name"))
+                lines.append(f"  {_fmt_ep(edge.get('a', {}))} - {_fmt_ep(edge.get('b', {}))} [{edge.get('net')}]")
 
-        summary_lines.append("")
+        return "\n".join(lines)
 
-    # Connection map section
-    if connections:
-        summary_lines.append("Connection map:")
-        for conn in connections:
-            summary_lines.append(f"  {conn}")
-
-    return '\n'.join(summary_lines)
+    return _format_schematic_state_text(state_json, show_details)
 
