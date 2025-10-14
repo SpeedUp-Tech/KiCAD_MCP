@@ -742,7 +742,10 @@ class ConnectionManager:
         target_pt = (round(target_point[0], 1), round(target_point[1], 1))
 
         # Find all wires that connect these two points
+        # Store wire points AND raw references to avoid accessing stale wrapper.raw later
         wires_to_remove = []
+        wire_points_map = {}  # wire -> list of points
+        wire_raw_map = {}  # wire -> raw S-expression
 
         for wire in schematic.wire:
             try:
@@ -761,11 +764,15 @@ class ConnectionManager:
                         # Check if this wire connects source and target
                         if source_pt in wire_points and target_pt in wire_points:
                             wires_to_remove.append(wire)
+                            wire_points_map[wire] = wire_points
+                            wire_raw_map[wire] = wire.raw  # Store raw reference NOW before any modifications
                         # Also check if wire endpoints match
                         elif len(wire_points) >= 2:
                             if (wire_points[0] == source_pt and wire_points[-1] == target_pt) or \
                                (wire_points[0] == target_pt and wire_points[-1] == source_pt):
                                 wires_to_remove.append(wire)
+                                wire_points_map[wire] = wire_points
+                                wire_raw_map[wire] = wire.raw  # Store raw reference NOW before any modifications
             except Exception as e:
                 logger.warning(f"Error analyzing wire for removal: {e}")
                 continue
@@ -774,21 +781,22 @@ class ConnectionManager:
             raise ValueError(f'No wires found connecting the specified points')
 
         # Collect wire points before removal for net analysis
+        # Use the stored points instead of calling _extract_wire_points which accesses wrapper.raw
         all_wire_points_before = []
         for wire in wires_to_remove:
-            raw_points = _extract_wire_points(wire)
-            all_wire_points_before.extend(raw_points)
+            all_wire_points_before.extend(wire_points_map[wire])
 
         # Build net info before removal
         net_info_before = _build_net_info(schematic, all_wire_points_before)
 
-        # Remove the wires
+        # Remove the wires using the stored raw references
+        # (raw references were collected earlier to avoid stale wrapper.raw access)
         removed_wrappers: List[WireWrapper] = []
 
         for wire in wires_to_remove:
-            parent = wire.raw_parent
-            if wire.raw in parent:
-                parent.remove(wire.raw)
+            raw_wire = wire_raw_map[wire]
+            if raw_wire in schematic.tree:
+                schematic.tree.remove(raw_wire)
             removed_wrappers.append(wire)
 
         schematic.wire._elements = [

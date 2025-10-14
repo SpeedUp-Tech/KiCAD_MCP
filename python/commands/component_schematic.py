@@ -520,8 +520,18 @@ class ComponentManager:
         component_ref: str,
         *,
         unit: Optional[Any] = None,
-    ) -> List[Dict[str, Any]]:
-        """Remove component instances that match the supplied reference/unit."""
+    ) -> Dict[str, Any]:
+        """
+        Remove component instances that match the supplied reference/unit.
+        Also removes all connections (wires) attached to the component's pins.
+
+        Returns:
+            Dict with:
+                - removedComponents: List of removed component payloads
+                - note: Message about connection removal
+                - removedConnections: List of formatted connection strings
+        """
+        from commands.connection_schematic import ConnectionManager
 
         if not isinstance(component_ref, str) or not component_ref.strip():
             raise ValueError('component_ref must be a non-empty string')
@@ -542,23 +552,147 @@ class ComponentManager:
         if not matches:
             raise ValueError(f"Component '{target_ref}' not found")
 
+        # Collect all pins from the component being removed
+        # pin_position -> (symbol, pin_number)
+        component_pins: Dict[Tuple[float, float], Tuple[Symbol, str]] = {}
+        for symbol in matches:
+            if hasattr(symbol, 'pin'):
+                for pin in symbol.pin:
+                    if hasattr(pin, 'location'):
+                        loc = pin.location
+                        x = round(float(loc.x), 1)
+                        y = round(float(loc.y), 1)
+                        pin_number = str(getattr(pin, 'number', ''))
+                        component_pins[(x, y)] = (symbol, pin_number)
+
+        # Find all wires connected to this component and remove them directly
+        removed_connection_strings = []
+        wires_to_remove = []
+        wire_data = []  # Store wire info before removal
+
+        if hasattr(schematic, 'wire') and component_pins:
+            from commands.connection_schematic import _build_net_info, _get_pin_type, _format_pin_with_type
+
+            # Build a map of all pin positions to (reference, pin_number, pin_type)
+            all_pin_info: Dict[Tuple[float, float], Tuple[str, str, str]] = {}
+            if hasattr(schematic, 'symbol'):
+                for other_symbol in schematic.symbol:
+                    other_ref = _reference_from_symbol(other_symbol)
+                    if hasattr(other_symbol, 'pin'):
+                        for other_pin in other_symbol.pin:
+                            if hasattr(other_pin, 'location'):
+                                other_loc = other_pin.location
+                                other_x = round(float(other_loc.x), 1)
+                                other_y = round(float(other_loc.y), 1)
+                                other_pin_num = str(getattr(other_pin, 'number', ''))
+                                other_pin_type = _get_pin_type(other_pin)
+                                all_pin_info[(other_x, other_y)] = (other_ref, other_pin_num, other_pin_type)
+
+            # Find wires connected to the component and collect their data
+            for wire in list(schematic.wire):
+                try:
+                    if hasattr(wire, 'points'):
+                        points = wire.points
+                        if len(points) >= 2:
+                            # Extract wire endpoints
+                            wire_points = []
+                            for pt in points:
+                                if hasattr(pt, 'value'):
+                                    coords = pt.value
+                                    if len(coords) >= 2:
+                                        x = round(float(coords[0]), 1)
+                                        y = round(float(coords[1]), 1)
+                                        wire_points.append((x, y))
+
+                            if len(wire_points) < 2:
+                                continue
+
+                            # Check if any endpoint is on the component being removed
+                            component_endpoint = None
+                            other_endpoint = None
+
+                            for pt in [wire_points[0], wire_points[-1]]:
+                                if pt in component_pins:
+                                    component_endpoint = pt
+                                elif pt in all_pin_info and pt not in component_pins:
+                                    other_endpoint = pt
+
+                            # If this wire connects to the component being removed
+                            if component_endpoint:
+                                # Get component pin info
+                                comp_ref, comp_pin_num, comp_pin_type = all_pin_info.get(
+                                    component_endpoint,
+                                    (target_ref, '?', 'passive')
+                                )
+                                comp_pin_desc = _format_pin_with_type(comp_ref, comp_pin_num, comp_pin_type)
+
+                                # Get other endpoint info
+                                if other_endpoint and other_endpoint in all_pin_info:
+                                    other_ref, other_pin_num, other_pin_type = all_pin_info[other_endpoint]
+                                    other_pin_desc = _format_pin_with_type(other_ref, other_pin_num, other_pin_type)
+                                else:
+                                    other_pin_desc = "(unconnected)"
+
+                                # Build net info
+                                net_info = _build_net_info(schematic, wire_points)
+
+                                # Format connection string
+                                connection_str = f"{comp_pin_desc} - {other_pin_desc} [{net_info['net']}]"
+
+                                # Store wire data before removal
+                                wire_data.append({
+                                    'wire': wire,
+                                    'raw': wire.raw,
+                                    'connection_str': connection_str
+                                })
+                                wires_to_remove.append(wire)
+                except Exception as e:
+                    logger.warning(f"Error analyzing wire for removal: {e}")
+                    continue
+
+            # Remove all wires at once
+            for data in wire_data:
+                raw_wire = data['raw']
+                if raw_wire in schematic.tree:
+                    schematic.tree.remove(raw_wire)
+                removed_connection_strings.append(data['connection_str'])
+
+            # Update the wire collection
+            if hasattr(schematic, 'wire') and hasattr(schematic.wire, '_elements'):
+                schematic.wire._elements = [
+                    wire for wire in schematic.wire._elements if wire not in wires_to_remove
+                ]
+
         removed_payloads: List[Dict[str, Any]] = []
         for symbol in matches:
             parent = symbol.raw_parent
             if symbol.raw in parent:
                 parent.remove(symbol.raw)
-            removed_payloads.append(_component_payload(symbol))
+            payload = _component_payload(symbol)
+            removed_payloads.append(payload)
 
         _refresh_symbol_collection(schematic)
 
         logger.info(
-            "Removed %d component(s) matching %s%s",
+            "Removed %d component(s) matching %s%s with %d connection(s)",
             len(removed_payloads),
             target_ref,
             f" unit {desired_unit}" if desired_unit is not None else '',
+            len(removed_connection_strings),
         )
 
-        return removed_payloads
+        # Determine the note message
+        if removed_connection_strings:
+            note = "Connections were removed along with the removal of the component"
+        else:
+            note = "No connections were removed (component had no connections)"
+
+        # Return the new format
+        return {
+            'removedComponents': removed_payloads,
+            'note': note,
+            'removedConnections': removed_connection_strings,
+        }
 
 
     @staticmethod

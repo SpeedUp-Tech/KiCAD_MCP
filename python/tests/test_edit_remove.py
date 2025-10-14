@@ -150,6 +150,106 @@ async def run_edit_remove_workflow() -> dict:
             }
 
 
+async def run_remove_component_with_connections_workflow() -> dict:
+    """Test removing a component that has connections - connections should be removed too."""
+    server_params = StdioServerParameters(
+        command='node',
+        args=[str(NODE_ENTRY), '--config', str(CONFIG_PATH)],
+        cwd=str(PROJECT_ROOT),
+    )
+
+    async with stdio_client(server_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_remove_with_conn_'))
+            schematic_name = 'remove_with_conn_test'
+            schematic_result = await session.call_tool(
+                name='create_schematic',
+                arguments={
+                    'projectName': schematic_name,
+                    'path': str(tmp_dir),
+                },
+            )
+            assert not schematic_result.isError, f"create_schematic error: {schematic_result.content}"
+            schematic_path = json.loads(schematic_result.content[0].text)['file_path']
+
+            # Add three components
+            comp_defs = [
+                {
+                    'type': 'R',
+                    'reference': 'R1',
+                    'value': '10k',
+                    'library': 'Device',
+                    'x': 40.0,
+                    'y': 40.0,
+                },
+                {
+                    'type': 'C',
+                    'reference': 'C1',
+                    'value': '100n',
+                    'library': 'Device',
+                    'x': 90.0,
+                    'y': 40.0,
+                },
+                {
+                    'type': 'R',
+                    'reference': 'R2',
+                    'value': '1k',
+                    'library': 'Device',
+                    'x': 40.0,
+                    'y': 70.0,
+                },
+            ]
+
+            for comp in comp_defs:
+                add_result = await session.call_tool(
+                    name='add_schematic_component',
+                    arguments={
+                        'schematicPath': schematic_path,
+                        'component': comp,
+                    },
+                )
+                assert not add_result.isError, f"add_schematic_component error: {add_result.content}"
+
+            # Connect R1.1 to C1.1
+            conn1_result = await session.call_tool(
+                name='connect_schematic_pins',
+                arguments={
+                    'schematicPath': schematic_path,
+                    'source': {'reference': 'R1', 'pin': '1'},
+                    'target': {'reference': 'C1', 'pin': '1'},
+                },
+            )
+            assert not conn1_result.isError, f"connect_schematic_pins error: {conn1_result.content}"
+
+            # Connect R1.2 to R2.1
+            conn2_result = await session.call_tool(
+                name='connect_schematic_pins',
+                arguments={
+                    'schematicPath': schematic_path,
+                    'source': {'reference': 'R1', 'pin': '2'},
+                    'target': {'reference': 'R2', 'pin': '1'},
+                },
+            )
+            assert not conn2_result.isError, f"connect_schematic_pins error: {conn2_result.content}"
+
+            # Now remove R1 - should remove both connections
+            remove_comp_result = await session.call_tool(
+                name='remove_schematic_component',
+                arguments={
+                    'schematicPath': schematic_path,
+                    'reference': 'R1',
+                },
+            )
+            assert not remove_comp_result.isError, f"remove_schematic_component error: {remove_comp_result.content}"
+            remove_comp_payload = json.loads(remove_comp_result.content[0].text)
+
+            return {
+                'removed_component': remove_comp_payload,
+            }
+
+
 class SchematicEditRemoveTests(unittest.TestCase):
     def test_edit_and_remove_flow(self) -> None:
         results = asyncio.run(run_edit_remove_workflow())
@@ -176,8 +276,43 @@ class SchematicEditRemoveTests(unittest.TestCase):
 
         removed_comp = results['removed_component']
         self.assertTrue(removed_comp['success'])
-        self.assertEqual(removed_comp['removedCount'], 1)
-        self.assertEqual(removed_comp['removed'][0]['reference'], 'C1')
+        # Verify new return format
+        self.assertIn('removedComponents', removed_comp)
+        self.assertIn('note', removed_comp)
+        self.assertIn('removedConnections', removed_comp)
+        self.assertEqual(len(removed_comp['removedComponents']), 1)
+        self.assertEqual(removed_comp['removedComponents'][0]['reference'], 'C1')
+        # Since connection was already removed, should have no connections
+        self.assertEqual(len(removed_comp['removedConnections']), 0)
+        self.assertEqual(removed_comp['note'], 'No connections were removed (component had no connections)')
+
+    def test_remove_component_with_connections(self) -> None:
+        """Test that removing a component also removes its connections and returns proper format."""
+        results = asyncio.run(run_remove_component_with_connections_workflow())
+
+        removed_comp = results['removed_component']
+
+        # Verify the return format
+        self.assertTrue(removed_comp['success'])
+        self.assertIn('removedComponents', removed_comp)
+        self.assertIn('note', removed_comp)
+        self.assertIn('removedConnections', removed_comp)
+
+        # Verify component was removed
+        self.assertEqual(len(removed_comp['removedComponents']), 1)
+        self.assertEqual(removed_comp['removedComponents'][0]['reference'], 'R1')
+
+        # Verify connections were removed
+        self.assertEqual(len(removed_comp['removedConnections']), 2)
+        self.assertEqual(removed_comp['note'], 'Connections were removed along with the removal of the component')
+
+        # Verify connection strings are in the correct format: "R1.1(passive) - C1.1(passive) [Net-X]"
+        for conn_str in removed_comp['removedConnections']:
+            self.assertIsInstance(conn_str, str)
+            self.assertIn('R1.', conn_str)  # Should contain R1 reference
+            self.assertIn(' - ', conn_str)  # Should have the separator
+            self.assertIn('[', conn_str)    # Should have net name in brackets
+            self.assertIn(']', conn_str)
 
 
 if __name__ == '__main__':

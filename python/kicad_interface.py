@@ -492,7 +492,7 @@ class KiCADInterface:
                 return {"success": False, "message": "Failed to load schematic"}
 
             try:
-                removed = ComponentManager.remove_component(
+                result = ComponentManager.remove_component(
                     schematic,
                     reference,
                     unit=unit,
@@ -510,10 +510,16 @@ class KiCADInterface:
                     "message": "Component removed but failed to save schematic",
                 }
 
+            # Extract the new return format
+            removed_components = result.get('removedComponents', [])
+            note = result.get('note', '')
+            removed_connections = result.get('removedConnections', [])
+
             return {
                 "success": True,
-                "removed": removed,
-                "removedCount": len(removed),
+                "removedComponents": removed_components,
+                "note": note,
+                "removedConnections": removed_connections,
             }
         except Exception as exc:
             logger.error(f"Error removing component: {exc}")
