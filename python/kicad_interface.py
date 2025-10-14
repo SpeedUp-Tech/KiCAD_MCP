@@ -718,8 +718,8 @@ class KiCADInterface:
             return {"success": False, "message": str(exc)}
 
     def _handle_connect_schematic_pins(self, params):
-        """Connect two schematic pins by drawing a wire between them"""
-        logger.info("Connecting schematic pins")
+        """Connect two schematic connection points (pins, labels, power) by drawing wire(s) between them"""
+        logger.info("Connecting schematic pins/labels/power")
         try:
             schematic_path = params.get("schematicPath")
             source_pin = params.get("source")
@@ -730,7 +730,7 @@ class KiCADInterface:
             if not schematic_path:
                 return {"success": False, "message": "Schematic path is required"}
             if not source_pin or not target_pin:
-                return {"success": False, "message": "Source and target pin definitions are required"}
+                return {"success": False, "message": "Source and target connection point definitions are required"}
 
             schematic = SchematicManager.load_schematic(schematic_path)
             if not schematic:

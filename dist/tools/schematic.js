@@ -79,10 +79,28 @@ const schematicLabelSchema = z
     label: z.string().optional().describe('Hierarchical label name'),
     labelName: z.string().optional().describe('Alternative field for hierarchical label name'),
 })
+    .refine((o) => !!(o.label || o.labelName), {
+    message: "Label specification must include 'label' or 'labelName'",
+})
     .describe('Hierarchical label specification for schematic connectivity');
+const schematicPowerSchema = z
+    .object({
+    power: z
+        .string()
+        .optional()
+        .describe('Power symbol or flag name (e.g., GND, VCC, +3V3, +5V, PWR_FLAG)'),
+    powerName: z
+        .string()
+        .optional()
+        .describe('Alternative field for power symbol/flag name'),
+})
+    .refine((o) => !!(o.power || o.powerName), {
+    message: "Power specification must include 'power' or 'powerName'",
+})
+    .describe('Power symbol/flag specification for schematic connectivity');
 const schematicConnectionPointSchema = z
-    .union([schematicPinSchema, schematicLabelSchema])
-    .describe('Connection point specification - either a component pin (with reference and pin fields) or a hierarchical label (with label/labelName field)');
+    .union([schematicPinSchema, schematicLabelSchema, schematicPowerSchema])
+    .describe('Connection point specification - component pin {reference, pin}, hierarchical label {label}, or power symbol/flag {power}');
 const coordinateListSchema = z.array(schematicPointSchema);
 const wireOptionsSchema = z
     .object({
@@ -210,8 +228,8 @@ export function registerSchematicTools(server, callKicadScript) {
     });
     server.tool('connect_schematic_pins', withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
-        source: schematicConnectionPointSchema.describe('Source connection point - either a component pin {reference, pin} or hierarchical label {label}'),
-        target: schematicConnectionPointSchema.describe('Target connection point - either a component pin {reference, pin} or hierarchical label {label}'),
+        source: schematicConnectionPointSchema.describe('Source connection point - component pin {reference, pin}, hierarchical label {label}, or power symbol/flag {power}'),
+        target: schematicConnectionPointSchema.describe('Target connection point - component pin {reference, pin}, hierarchical label {label}, or power symbol/flag {power}'),
         wire: wireOptionsSchema.optional().describe('Optional wire styling overrides'),
         routing: z
             .object({

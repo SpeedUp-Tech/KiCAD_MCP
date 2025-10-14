@@ -405,5 +405,70 @@ class ConnectionManagerTests(unittest.TestCase):
         self.assertIn('itself', str(context.exception).lower())
 
 
+    def test_connect_pin_to_global_label(self) -> None:
+        schematic = SchematicManager.create_schematic('PinToGlobalLabel')
+
+        # Add a component
+        ComponentManager.add_component(
+            schematic,
+            {
+                'type': 'R',
+                'reference': 'R1',
+                'x': 10,
+                'y': 10,
+            },
+        )
+
+        # Add a global label
+        glabel_node = [
+            Symbol('global_label'),
+            'GND',
+            [Symbol('shape'), Symbol('passive')],
+            [Symbol('at'), 50.0, 10.0, 0],
+            [Symbol('uuid'), Symbol('test-global-label')],
+        ]
+        schematic.tree.append(glabel_node)
+
+        wires = ConnectionManager.connect_pins(
+            schematic,
+            {'reference': 'R1', 'pin': '2'},
+            {'label': 'GND'},
+        )
+
+        self.assertIsInstance(wires, list)
+        self.assertGreater(len(wires), 0)
+
+    def test_connect_pin_to_local_label(self) -> None:
+        schematic = SchematicManager.create_schematic('PinToLocalLabel')
+
+        # Add a component
+        ComponentManager.add_component(
+            schematic,
+            {
+                'type': 'R',
+                'reference': 'R1',
+                'x': 20,
+                'y': 20,
+            },
+        )
+
+        # Add a local label
+        llabel_node = [
+            Symbol('label'),
+            'NET_LOCAL',
+            [Symbol('at'), 60.0, 20.0, 0],
+            [Symbol('uuid'), Symbol('test-local-label')],
+        ]
+        schematic.tree.append(llabel_node)
+
+        wires = ConnectionManager.connect_pins(
+            schematic,
+            {'reference': 'R1', 'pin': '1'},
+            {'label': 'NET_LOCAL'},
+        )
+
+        self.assertIsInstance(wires, list)
+        self.assertGreater(len(wires), 0)
+
 if __name__ == '__main__':
     unittest.main()

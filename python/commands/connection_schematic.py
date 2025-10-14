@@ -258,51 +258,81 @@ def _find_hierarchical_label(
     label_name: str,
 ) -> Tuple[str, Tuple[float, float]]:
     """
-    Find a hierarchical label in the schematic by name and return its position.
+    Find a connection label by name and return its position.
+
+    This searches, in order:
+    - hierarchical_label nodes
+    - global_label nodes
+    - local label nodes (label)
+    - power symbols (symbols from the "power" library whose Value matches)
 
     Args:
         schematic: The schematic to search
-        label_name: The name of the hierarchical label to find
+        label_name: The name of the label/power net to find
 
     Returns:
-        Tuple of (label_name, (x, y)) coordinates
+        Tuple of (matched_name, (x, y)) coordinates
 
     Raises:
-        ValueError: If the label is not found
+        ValueError: If the label or power symbol is not found
     """
     if not hasattr(schematic, 'tree') or not isinstance(schematic.tree, list):
         raise ValueError("Schematic tree is not accessible")
 
-    label_name_normalized = str(label_name).strip()
+    target = str(label_name).strip()
 
-    # Search through the schematic tree for hierarchical labels
+    # 1) Search hierarchical/global/local label nodes for a matching name
     for elem in schematic.tree:
         if not isinstance(elem, list) or len(elem) < 2:
             continue
 
-        # Check if this is a hierarchical_label element
-        if hasattr(elem[0], 'value') and elem[0].value() == 'hierarchical_label':
-            # The label name is the second element
-            current_label_name = str(elem[1]).strip()
+        head = getattr(elem[0], 'value', None)
+        if callable(head):
+            head = elem[0].value()
 
-            if current_label_name == label_name_normalized:
-                # Find the 'at' element which contains position
-                for sub_elem in elem:
-                    if (isinstance(sub_elem, list) and
-                        len(sub_elem) >= 3 and
-                        hasattr(sub_elem[0], 'value') and
-                        sub_elem[0].value() == 'at'):
-                        # Extract x, y coordinates (angle is at index 3)
-                        x = float(sub_elem[1])
-                        y = float(sub_elem[2])
-                        return (current_label_name, (x, y))
+        if head in {'hierarchical_label', 'global_label', 'label'}:
+            current_name = str(elem[1]).strip()
+            if current_name != target:
+                continue
 
-                # Found the label but no position - this shouldn't happen
-                raise ValueError(
-                    f"Hierarchical label '{label_name}' found but has no position information"
-                )
+            # Find the 'at' element which contains position
+            for sub in elem:
+                if (
+                    isinstance(sub, list)
+                    and len(sub) >= 3
+                    and hasattr(sub[0], 'value')
+                    and sub[0].value() == 'at'
+                ):
+                    x = float(sub[1])
+                    y = float(sub[2])
+                    return (current_name, (x, y))
 
-    raise ValueError(f"Hierarchical label '{label_name}' not found in schematic")
+            # Found the label but no position - this shouldn't happen
+            raise ValueError(
+                f"Label '{label_name}' found but has no position information"
+            )
+
+    # 2) Search power symbols by value (e.g., GND, VCC, +5V)
+    if hasattr(schematic, 'symbol'):
+        for symbol in getattr(schematic, 'symbol'):
+            try:
+                lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '') or ''
+                if 'power' not in lib_id.lower():
+                    continue
+                value = getattr(getattr(symbol, 'property', None), 'Value', None)
+                value_str = getattr(value, 'value', '') if value is not None else ''
+                if str(value_str).strip() != target:
+                    continue
+                # Position from the symbol's 'at' field
+                if hasattr(symbol, 'at') and getattr(symbol.at, 'value', None):
+                    coords = list(symbol.at.value)
+                    x = float(coords[0]) if len(coords) > 0 else 0.0
+                    y = float(coords[1]) if len(coords) > 1 else 0.0
+                    return (target, (x, y))
+            except Exception:
+                continue
+
+    raise ValueError(f"Label or power symbol '{label_name}' not found in schematic")
 
 
 def _resolve_connection_point(
@@ -314,19 +344,21 @@ def _resolve_connection_point(
     """
     Resolve a connection point specification to coordinates.
 
-    Supports both component pins and hierarchical labels:
+    Supports component pins and pin-less connection anchors:
     - Pin spec: { reference: "R1", pin: "1", unit?: 1 }
-    - Label spec: { label: "VBAT" } or { labelName: "VBAT" }
+    - Label spec: { label: "NET" } or { labelName: "NET" }
+      where NET can be a hierarchical label, a global label, a local label, or
+      the Value of a power symbol (e.g., "GND", "VCC", "+5V").
 
     Args:
         schematic: The schematic containing the connection point
-        spec: Dictionary specifying either a pin or a label
+        spec: Dictionary specifying either a pin or a label/power name
         label: Description for error messages (e.g., "source", "target")
 
     Returns:
         Tuple of (symbol_or_none, (x, y), connection_type)
         - For pins: (Symbol, (x, y), "pin")
-        - For labels: (None, (x, y), "label")
+        - For labels/power: (None, (x, y), "label")
 
     Raises:
         TypeError: If spec is not a dictionary
@@ -343,13 +375,13 @@ def _resolve_connection_point(
     if has_reference and has_label:
         raise ValueError(
             f"{label} specification is ambiguous: contains both 'reference' and 'label' fields. "
-            "Please specify either a component pin OR a hierarchical label, not both."
+            "Please specify either a component pin OR a label/power name, not both."
         )
 
     if not has_reference and not has_label:
         raise ValueError(
             f"{label} specification is invalid: must contain either 'reference' (for pin) "
-            "or 'label'/'labelName' (for hierarchical label)"
+            "or 'label'/'labelName' (for hierarchical/global label or power symbol)"
         )
 
     # Resolve as component pin
@@ -660,14 +692,16 @@ class ConnectionManager:
 
         Supports connecting:
         - Pin to pin: Both source and target specify component pins
-        - Pin to hierarchical label: One specifies a pin, the other a label
-        - Label to label: Both specify hierarchical labels
+        - Pin to label/power: One specifies a pin, the other a label or power net name
+        - Label to label: Both specify labels (hierarchical/global/local) or power net names
 
         Args:
             schematic: The schematic to modify
             source: Source connection point specification:
                     - Pin: { reference: "R1", pin: "1", unit?: 1 }
-                    - Label: { label: "VBAT" } or { labelName: "VBAT" }
+                    - Label/Power: { label: "NET" } or { labelName: "NET" } where NET
+                      can be a hierarchical label, a global label, a local label, or the
+                      Value of a power symbol (e.g., "GND", "VCC", "+5V").
             target: Target connection point specification (same format as source)
             wire: Optional wire styling properties (width, strokeType, etc.)
             routing: Optional routing hints (pattern: 'hv' or 'vh')
