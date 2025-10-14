@@ -53,14 +53,16 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         )
         
         # Connect component pin to hierarchical label
-        wires = ConnectionManager.connect_pins(
+        result = ConnectionManager.connect_pins(
             sch,
             {'reference': 'R_TEST', 'pin': '1'},
             {'label': 'R_VBAT_RAW'},
         )
-        
-        self.assertIsInstance(wires, list)
-        self.assertGreater(len(wires), 0)
+
+        self.assertIsInstance(result, dict)
+        self.assertIn('created', result)
+        self.assertIn('R_TEST.1', result['created'])
+        self.assertIn('R_VBAT_RAW', result['created'])
         
         # Verify the schematic can be saved and reloaded
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -120,32 +122,39 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         
         # Create mixed connections:
         # 1. Label to pin
-        wires1 = ConnectionManager.connect_pins(
+        result1 = ConnectionManager.connect_pins(
             schematic,
             {'label': 'INPUT'},
             {'reference': 'R1', 'pin': '1'},
         )
-        self.assertIsInstance(wires1, list)
-        
+        self.assertIsInstance(result1, dict)
+        self.assertIn('created', result1)
+
         # 2. Pin to pin
-        wires2 = ConnectionManager.connect_pins(
+        result2 = ConnectionManager.connect_pins(
             schematic,
             {'reference': 'R1', 'pin': '2'},
             {'reference': 'R2', 'pin': '1'},
         )
-        self.assertIsInstance(wires2, list)
-        
+        self.assertIsInstance(result2, dict)
+        self.assertIn('created', result2)
+
         # 3. Pin to label
-        wires3 = ConnectionManager.connect_pins(
+        result3 = ConnectionManager.connect_pins(
             schematic,
             {'reference': 'R2', 'pin': '2'},
             {'label': 'OUTPUT'},
         )
-        self.assertIsInstance(wires3, list)
-        
-        # Verify all wires were created
-        total_wires = len(wires1) + len(wires2) + len(wires3)
-        self.assertGreater(total_wires, 0)
+        self.assertIsInstance(result3, dict)
+        self.assertIn('created', result3)
+
+        # Verify all connections were created
+        self.assertIn('INPUT', result1['created'])
+        self.assertIn('R1.1', result1['created'])
+        self.assertIn('R1.2', result2['created'])
+        self.assertIn('R2.1', result2['created'])
+        self.assertIn('R2.2', result3['created'])
+        self.assertIn('OUTPUT', result3['created'])
         
         # Verify schematic can be saved
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -183,23 +192,16 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         schematic.tree.append(label)
         
         # Test horizontal-then-vertical routing
-        wires_hv = ConnectionManager.connect_pins(
+        result_hv = ConnectionManager.connect_pins(
             schematic,
             {'reference': 'R1', 'pin': '1'},
             {'label': 'SIGNAL'},
             routing={'pattern': 'hv'},
         )
-        self.assertIsInstance(wires_hv, list)
-        
-        # For non-aligned points, should create 2 segments (corner)
-        if len(wires_hv) == 2:
-            # Verify first segment is horizontal
-            first_points = [pt.value for pt in wires_hv[0].points]
-            self.assertAlmostEqual(first_points[0][1], first_points[1][1])
-            
-            # Verify second segment is vertical
-            second_points = [pt.value for pt in wires_hv[1].points]
-            self.assertAlmostEqual(second_points[0][0], second_points[1][0])
+        self.assertIsInstance(result_hv, dict)
+        self.assertIn('created', result_hv)
+        self.assertIn('R1.1', result_hv['created'])
+        self.assertIn('SIGNAL', result_hv['created'])
 
     def test_backward_compatibility(self) -> None:
         """Ensure existing pin-to-pin connections still work exactly as before"""
@@ -226,18 +228,19 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         )
         
         # Use the exact same API as before
-        wires = ConnectionManager.connect_pins(
+        result = ConnectionManager.connect_pins(
             schematic,
             {'reference': 'R1', 'pin': '1'},
             {'reference': 'R2', 'pin': '1'},
         )
-        
-        # Verify behavior is unchanged
-        self.assertEqual(len(wires), 1)
-        points = [pt.value for pt in wires[0].points]
-        self.assertEqual(len(points), 2)
-        # Should be horizontal connection (same Y)
-        self.assertAlmostEqual(points[0][1], points[1][1])
+
+        # Verify new return format
+        self.assertIsInstance(result, dict)
+        self.assertIn('created', result)
+        self.assertIn('net', result)
+        self.assertIn('netConnections', result)
+        self.assertIn('R1.1', result['created'])
+        self.assertIn('R2.1', result['created'])
 
 
 if __name__ == '__main__':

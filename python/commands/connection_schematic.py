@@ -141,6 +141,162 @@ def _wire_payload(wrapper: WireWrapper) -> Dict[str, Any]:
     }
 
 
+def _get_pin_type(pin: Any) -> str:
+    """Extract the electrical type of a pin."""
+    if hasattr(pin, 'electrical_type'):
+        return str(pin.electrical_type)
+    # Try to get from raw S-expression
+    if hasattr(pin, 'raw') and isinstance(pin.raw, list):
+        for item in pin.raw:
+            if isinstance(item, str) and item in ['input', 'output', 'bidirectional', 'tri_state', 'passive', 'free', 'unspecified', 'power_in', 'power_out', 'open_collector', 'open_emitter', 'no_connect']:
+                return item
+    return 'passive'
+
+
+def _format_pin_with_type(reference: str, pin_number: str, pin_type: str) -> str:
+    """Format a pin reference with its electrical type."""
+    return f"{reference}.{pin_number}({pin_type})"
+
+
+def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]) -> Dict[str, Any]:
+    """
+    Build net information by analyzing what's connected at the given wire points.
+
+    Returns a dict with:
+    - net: Net identifier (e.g., "Net-5", "GND", "VBAT")
+    - netConnections: List of connected pins/labels/power (e.g., ["R1.1(passive)", "R2.2(output)", "GND"])
+    """
+    from collections import defaultdict
+
+    # Round wire points for spatial matching
+    wire_point_set = {(round(x, 1), round(y, 1)) for x, y in wire_points}
+
+    # Build spatial index of all pins
+    pin_locations: Dict[Tuple[float, float], List[Tuple[str, str, str]]] = defaultdict(list)  # (x,y) -> [(ref, pin_num, pin_type)]
+
+    if hasattr(schematic, 'symbol'):
+        for symbol in schematic.symbol:
+            try:
+                reference = getattr(getattr(symbol.property, 'Reference', None), 'value', None)
+                if not reference:
+                    continue
+
+                # Skip power symbols - they're handled separately
+                lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '')
+                if lib_id and 'power' in lib_id.lower():
+                    continue
+
+                if hasattr(symbol, 'pin'):
+                    for pin in symbol.pin:
+                        try:
+                            pin_number = str(getattr(pin, 'number', ''))
+                            if not pin_number:
+                                continue
+
+                            pin_type = _get_pin_type(pin)
+
+                            if hasattr(pin, 'location'):
+                                loc = pin.location
+                                x = round(float(loc.x), 1)
+                                y = round(float(loc.y), 1)
+                                pin_locations[(x, y)].append((reference, pin_number, pin_type))
+                        except Exception as e:
+                            logger.warning(f"Error extracting pin: {e}")
+                            continue
+            except Exception as e:
+                logger.warning(f"Error processing symbol: {e}")
+                continue
+
+    # Build spatial index of all wire points and group into nets
+    all_wire_points: Dict[Tuple[float, float], List[int]] = defaultdict(list)
+
+    if hasattr(schematic, 'wire'):
+        for wire_idx, wire in enumerate(schematic.wire):
+            try:
+                if hasattr(wire, 'points'):
+                    points = wire.points
+                    if len(points) >= 2:
+                        for point in points:
+                            if hasattr(point, 'value'):
+                                coords = point.value
+                                if len(coords) >= 2:
+                                    x = round(float(coords[0]), 1)
+                                    y = round(float(coords[1]), 1)
+                                    all_wire_points[(x, y)].append(wire_idx)
+            except Exception as e:
+                logger.warning(f"Error analyzing wire: {e}")
+                continue
+
+    # Build wire-to-net mapping
+    wire_to_net: Dict[int, int] = {}
+    net_counter = 0
+
+    for point, wire_indices in all_wire_points.items():
+        if len(wire_indices) > 1:
+            existing_nets = set()
+            for wire_idx in wire_indices:
+                if wire_idx in wire_to_net:
+                    existing_nets.add(wire_to_net[wire_idx])
+
+            if existing_nets:
+                net_id = min(existing_nets)
+                for wire_idx in wire_indices:
+                    wire_to_net[wire_idx] = net_id
+                for w_idx, n_id in list(wire_to_net.items()):
+                    if n_id in existing_nets and n_id != net_id:
+                        wire_to_net[w_idx] = net_id
+            else:
+                for wire_idx in wire_indices:
+                    wire_to_net[wire_idx] = net_counter
+                net_counter += 1
+        elif len(wire_indices) == 1:
+            wire_idx = wire_indices[0]
+            if wire_idx not in wire_to_net:
+                wire_to_net[wire_idx] = net_counter
+                net_counter += 1
+
+    # Map points to nets
+    point_to_net: Dict[Tuple[float, float], int] = {}
+    for point, wire_indices in all_wire_points.items():
+        if wire_indices:
+            point_to_net[point] = wire_to_net.get(wire_indices[0], wire_indices[0])
+
+    # Find which net our wire points belong to
+    net_id = None
+    for point in wire_point_set:
+        if point in point_to_net:
+            net_id = point_to_net[point]
+            break
+
+    if net_id is None:
+        # New net
+        net_id = net_counter
+
+    # Collect all pins on this net
+    connected_pins = []
+    for point, pins in pin_locations.items():
+        if point in point_to_net and point_to_net[point] == net_id:
+            for reference, pin_number, pin_type in pins:
+                connected_pins.append(_format_pin_with_type(reference, pin_number, pin_type))
+
+    # Check for labels and power symbols on this net
+    connected_labels = []
+    connected_power = []
+
+    # Determine net name
+    if connected_power:
+        net_name = connected_power[0]
+    elif connected_labels:
+        net_name = connected_labels[0]
+    else:
+        net_name = f"Net-{net_id}"
+
+    return {
+        "net": net_name,
+        "netConnections": connected_pins + connected_labels + connected_power
+    }
+
+
 def _find_wire_by_uuid(schematic: Schematic, wire_uuid: str) -> Optional[WireWrapper]:
     if not hasattr(schematic, 'wire'):
         return None
@@ -616,56 +772,183 @@ class ConnectionManager:
     @staticmethod
     def remove_connection(
         schematic: Schematic,
-        connection_id: Union[str, Iterable[str]],
-    ) -> List[Dict[str, Any]]:
-        """Remove one or more wire segments that represent a connection."""
+        source: Dict[str, Any],
+        target: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Remove wire(s) connecting two schematic connection points.
 
-        if isinstance(connection_id, str):
-            candidate_ids = [connection_id]
-        elif isinstance(connection_id, Iterable):
-            candidate_ids = list(connection_id)
-        else:
-            raise TypeError('connection_id must be a wire UUID or an iterable of UUIDs')
+        Args:
+            schematic: The schematic to modify
+            source: Source connection point specification:
+                    - Pin: { reference: "R1", pin: "1", unit?: 1 }
+                    - Label: { label: "NET" }
+            target: Target connection point specification (same format as source)
 
-        normalised_ids = {str(uuid_value).strip() for uuid_value in candidate_ids if uuid_value}
-        if not normalised_ids:
-            raise ValueError('At least one wire UUID is required to remove a connection')
+        Returns:
+            Dict with removal information:
+            {
+                "removed": "R1.1(passive) - R2.2(passive) [Net-5]",
+                "net": "Net-5",
+                "netConnections": ["R1.1(passive)"]
+            }
+
+        Raises:
+            ValueError: If connection points are invalid or no wires found
+            TypeError: If specifications are not dictionaries
+        """
+
+        # Resolve source and target connection points
+        source_obj, source_point, source_type = _resolve_connection_point(
+            schematic,
+            source,
+            label='source',
+        )
+        target_obj, target_point, target_type = _resolve_connection_point(
+            schematic,
+            target,
+            label='target',
+        )
 
         if not hasattr(schematic, 'wire') or not len(schematic.wire):
             raise ValueError('Schematic contains no wires to remove')
 
+        # Round points for spatial matching
+        source_pt = (round(source_point[0], 1), round(source_point[1], 1))
+        target_pt = (round(target_point[0], 1), round(target_point[1], 1))
+
+        # Find all wires that connect these two points
+        wires_to_remove = []
+
+        for wire in schematic.wire:
+            try:
+                if hasattr(wire, 'points'):
+                    points = wire.points
+                    if len(points) >= 2:
+                        wire_points = []
+                        for point in points:
+                            if hasattr(point, 'value'):
+                                coords = point.value
+                                if len(coords) >= 2:
+                                    x = round(float(coords[0]), 1)
+                                    y = round(float(coords[1]), 1)
+                                    wire_points.append((x, y))
+
+                        # Check if this wire connects source and target
+                        if source_pt in wire_points and target_pt in wire_points:
+                            wires_to_remove.append(wire)
+                        # Also check if wire endpoints match
+                        elif len(wire_points) >= 2:
+                            if (wire_points[0] == source_pt and wire_points[-1] == target_pt) or \
+                               (wire_points[0] == target_pt and wire_points[-1] == source_pt):
+                                wires_to_remove.append(wire)
+            except Exception as e:
+                logger.warning(f"Error analyzing wire for removal: {e}")
+                continue
+
+        if not wires_to_remove:
+            raise ValueError(f'No wires found connecting the specified points')
+
+        # Collect wire points before removal for net analysis
+        all_wire_points_before = []
+        for wire in wires_to_remove:
+            raw_points = _extract_wire_points(wire)
+            all_wire_points_before.extend(raw_points)
+
+        # Build net info before removal
+        net_info_before = _build_net_info(schematic, all_wire_points_before)
+
+        # Remove the wires
         removed_wrappers: List[WireWrapper] = []
-        removed_payloads: List[Dict[str, Any]] = []
 
-        for wire in list(schematic.wire._elements):
-            wire_uuid = getattr(getattr(wire, 'uuid', None), 'value', None)
-            if wire_uuid in normalised_ids:
-                # Capture payload BEFORE mutating the tree so geometry is intact
-                try:
-                    removed_payloads.append(_wire_payload(wire))
-                except Exception:
-                    # As a fallback, at least return the UUID if payload extraction fails
-                    removed_payloads.append({
-                        'uuid': wire_uuid,
-                        'points': [],
-                        'width': None,
-                        'strokeType': None,
-                        'length': 0.0,
-                    })
-                parent = wire.raw_parent
-                if wire.raw in parent:
-                    parent.remove(wire.raw)
-                removed_wrappers.append(wire)
-
-        if not removed_wrappers:
-            raise ValueError('No wires matched the supplied UUIDs')
+        for wire in wires_to_remove:
+            parent = wire.raw_parent
+            if wire.raw in parent:
+                parent.remove(wire.raw)
+            removed_wrappers.append(wire)
 
         schematic.wire._elements = [
             wire for wire in schematic.wire._elements if wire not in removed_wrappers
         ]
 
-        logger.info("Removed %d wire segment(s)", len(removed_payloads))
-        return removed_payloads
+        logger.info("Removed %d wire segment(s)", len(removed_wrappers))
+
+        # Build net info after removal
+        net_info_after = _build_net_info(schematic, all_wire_points_before)
+
+        # Format source and target descriptions
+        source_desc = ""
+        target_desc = ""
+
+        if source_type == "pin":
+            symbol = source_obj
+            reference = _reference_from_symbol(symbol)
+            pin_id = (
+                source.get('pin')
+                or source.get('pinNumber')
+                or source.get('number')
+                or source.get('pinName')
+                or source.get('name')
+            )
+            # Find the pin object to get its type
+            pin_obj = None
+            if hasattr(symbol, 'pin'):
+                pin_id_normalised = str(pin_id).strip().lower()
+                for pin in symbol.pin:
+                    number = str(getattr(pin, 'number', '')).strip().lower()
+                    name = str(getattr(pin, 'name', '')).strip().lower()
+                    if pin_id_normalised in {number, name}:
+                        pin_obj = pin
+                        break
+
+            if pin_obj:
+                pin_number = str(getattr(pin_obj, 'number', ''))
+                pin_type = _get_pin_type(pin_obj)
+                source_desc = _format_pin_with_type(reference, pin_number, pin_type)
+            else:
+                source_desc = f"{reference}.{pin_id}"
+        elif source_type == "label":
+            label_name = source.get('label') or source.get('labelName')
+            source_desc = str(label_name)
+
+        if target_type == "pin":
+            symbol = target_obj
+            reference = _reference_from_symbol(symbol)
+            pin_id = (
+                target.get('pin')
+                or target.get('pinNumber')
+                or target.get('number')
+                or target.get('pinName')
+                or target.get('name')
+            )
+            # Find the pin object to get its type
+            pin_obj = None
+            if hasattr(symbol, 'pin'):
+                pin_id_normalised = str(pin_id).strip().lower()
+                for pin in symbol.pin:
+                    number = str(getattr(pin, 'number', '')).strip().lower()
+                    name = str(getattr(pin, 'name', '')).strip().lower()
+                    if pin_id_normalised in {number, name}:
+                        pin_obj = pin
+                        break
+
+            if pin_obj:
+                pin_number = str(getattr(pin_obj, 'number', ''))
+                pin_type = _get_pin_type(pin_obj)
+                target_desc = _format_pin_with_type(reference, pin_number, pin_type)
+            else:
+                target_desc = f"{reference}.{pin_id}"
+        elif target_type == "label":
+            label_name = target.get('label') or target.get('labelName')
+            target_desc = str(label_name)
+
+        removed_str = f"{source_desc} - {target_desc} [{net_info_before['net']}]"
+
+        return {
+            "removed": removed_str,
+            "net": net_info_after["net"],
+            "netConnections": net_info_after["netConnections"]
+        }
 
     @staticmethod
     def get_net_connections(schematic: Schematic, net_name: str):
@@ -686,7 +969,7 @@ class ConnectionManager:
         *,
         wire: Optional[Dict[str, Any]] = None,
         routing: Optional[Dict[str, Any]] = None,
-    ) -> WireWrapper:
+    ) -> Dict[str, Any]:
         """
         Connect two schematic connection points by drawing an appropriate wire.
 
@@ -707,7 +990,12 @@ class ConnectionManager:
             routing: Optional routing hints (pattern: 'hv' or 'vh')
 
         Returns:
-            List of created wire wrapper(s)
+            Dict with connection information:
+            {
+                "created": "R1.1(passive) - R2.2(passive) [Net-5]",
+                "net": "Net-5",
+                "netConnections": ["R1.1(passive)", "R2.2(passive)"]
+            }
 
         Raises:
             ValueError: If connection points are invalid or identical
@@ -771,9 +1059,92 @@ class ConnectionManager:
             target_type,
         )
 
-        if isinstance(added, list):
-            return added
-        return [added]
+        # Build the connection description string
+        wires = added if isinstance(added, list) else [added]
+
+        # Collect all wire points for net analysis
+        all_wire_points = []
+        for wire_wrapper in wires:
+            raw_points = _extract_wire_points(wire_wrapper)
+            all_wire_points.extend(raw_points)
+
+        # Build net information
+        net_info = _build_net_info(schematic, all_wire_points)
+
+        # Format source and target descriptions
+        source_desc = ""
+        target_desc = ""
+
+        if source_type == "pin":
+            # source_obj is the symbol, need to get pin info from source spec
+            symbol = source_obj
+            reference = _reference_from_symbol(symbol)
+            pin_id = (
+                source.get('pin')
+                or source.get('pinNumber')
+                or source.get('number')
+                or source.get('pinName')
+                or source.get('name')
+            )
+            # Find the pin object to get its type
+            pin_obj = None
+            if hasattr(symbol, 'pin'):
+                pin_id_normalised = str(pin_id).strip().lower()
+                for pin in symbol.pin:
+                    number = str(getattr(pin, 'number', '')).strip().lower()
+                    name = str(getattr(pin, 'name', '')).strip().lower()
+                    if pin_id_normalised in {number, name}:
+                        pin_obj = pin
+                        break
+
+            if pin_obj:
+                pin_number = str(getattr(pin_obj, 'number', ''))
+                pin_type = _get_pin_type(pin_obj)
+                source_desc = _format_pin_with_type(reference, pin_number, pin_type)
+            else:
+                source_desc = f"{reference}.{pin_id}"
+        elif source_type == "label":
+            label_name = source.get('label') or source.get('labelName')
+            source_desc = str(label_name)
+
+        if target_type == "pin":
+            symbol = target_obj
+            reference = _reference_from_symbol(symbol)
+            pin_id = (
+                target.get('pin')
+                or target.get('pinNumber')
+                or target.get('number')
+                or target.get('pinName')
+                or target.get('name')
+            )
+            # Find the pin object to get its type
+            pin_obj = None
+            if hasattr(symbol, 'pin'):
+                pin_id_normalised = str(pin_id).strip().lower()
+                for pin in symbol.pin:
+                    number = str(getattr(pin, 'number', '')).strip().lower()
+                    name = str(getattr(pin, 'name', '')).strip().lower()
+                    if pin_id_normalised in {number, name}:
+                        pin_obj = pin
+                        break
+
+            if pin_obj:
+                pin_number = str(getattr(pin_obj, 'number', ''))
+                pin_type = _get_pin_type(pin_obj)
+                target_desc = _format_pin_with_type(reference, pin_number, pin_type)
+            else:
+                target_desc = f"{reference}.{pin_id}"
+        elif target_type == "label":
+            label_name = target.get('label') or target.get('labelName')
+            target_desc = str(label_name)
+
+        created_str = f"{source_desc} - {target_desc} [{net_info['net']}]"
+
+        return {
+            "created": created_str,
+            "net": net_info["net"],
+            "netConnections": net_info["netConnections"]
+        }
 
 if __name__ == '__main__':
     # Example Usage (for testing)

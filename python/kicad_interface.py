@@ -674,31 +674,25 @@ class KiCADInterface:
             return {"success": False, "message": str(exc)}
 
     def _handle_remove_schematic_connection(self, params):
-        """Remove one or more wire segments."""
+        """Remove wire(s) connecting two schematic connection points."""
         logger.info("Removing schematic connection")
         try:
             schematic_path = params.get("schematicPath")
-            wire_uuid = params.get("wireUuid")
-            wire_uuids = params.get("wireUuids") or params.get("uuids")
+            source = params.get("source")
+            target = params.get("target")
 
             if not schematic_path:
                 return {"success": False, "message": "Schematic path is required"}
 
-            target_ids: List[str] = []
-            if wire_uuid:
-                target_ids.append(wire_uuid)
-            if isinstance(wire_uuids, (list, tuple)):
-                target_ids.extend(str(entry) for entry in wire_uuids if entry)
-
-            if not target_ids:
-                return {"success": False, "message": "At least one wire UUID must be provided"}
+            if not source or not target:
+                return {"success": False, "message": "Source and target connection point definitions are required"}
 
             schematic = SchematicManager.load_schematic(schematic_path)
             if not schematic:
                 return {"success": False, "message": "Failed to load schematic"}
 
             try:
-                removed = ConnectionManager.remove_connection(schematic, target_ids)
+                result = ConnectionManager.remove_connection(schematic, source, target)
             except (ValueError, TypeError) as exc:
                 logger.warning(f"Connection removal rejected: {exc}")
                 return {"success": False, "message": str(exc)}
@@ -712,7 +706,7 @@ class KiCADInterface:
                     "message": "Connection removed but failed to save schematic",
                 }
 
-            return {"success": True, "removed": removed, "removedCount": len(removed)}
+            return {"success": True, **result}
         except Exception as exc:
             logger.error(f"Error removing schematic connection: {exc}")
             return {"success": False, "message": str(exc)}
@@ -737,7 +731,7 @@ class KiCADInterface:
                 return {"success": False, "message": "Failed to load schematic"}
 
             try:
-                wire = ConnectionManager.connect_pins(
+                result = ConnectionManager.connect_pins(
                     schematic,
                     source_pin,
                     target_pin,
@@ -755,38 +749,7 @@ class KiCADInterface:
             if not save_ok:
                 return {"success": False, "message": "Pins connected but failed to save schematic"}
 
-            wires = wire if isinstance(wire, list) else [wire]
-
-            def _wire_dump(wrapper):
-                points = [[pt.value[0], pt.value[1]] for pt in wrapper.points]
-                return {
-                    "uuid": wrapper.uuid.value,
-                    "points": points,
-                    "width": wrapper.stroke.width.value,
-                    "strokeType": wrapper.stroke.type.value,
-                    "length": wrapper.length,
-                }
-
-            segment_payloads = [_wire_dump(wrapper) for wrapper in wires]
-            total_length = sum(segment["length"] for segment in segment_payloads)
-
-            path_points = []
-            for idx, payload in enumerate(segment_payloads):
-                segment_points = payload["points"]
-                if idx == 0:
-                    path_points.extend(segment_points)
-                else:
-                    path_points.extend(segment_points[1:])
-
-            response = {
-                "wire": segment_payloads[0],
-                "segments": segment_payloads,
-                "segmentCount": len(segment_payloads),
-                "totalLength": total_length,
-                "path": path_points,
-            }
-
-            return {"success": True, **response}
+            return {"success": True, **result}
         except Exception as e:
             logger.error(f"Error connecting schematic pins: {str(e)}")
             return {"success": False, "message": str(e)}

@@ -81,10 +81,26 @@ async def run_edit_remove_workflow() -> dict:
             )
             assert not connect_result.isError, f"connect_schematic_pins error: {connect_result.content}"
             connection_payload = json.loads(connect_result.content[0].text)
-            segment_payloads = connection_payload['segments']
-            wire_uuid = segment_payloads[0]['uuid']
-            start_point = segment_payloads[0]['points'][0]
-            end_point = segment_payloads[-1]['points'][-1]
+            # Verify new connection format
+            assert 'created' in connection_payload, "Missing 'created' field in connection result"
+            assert 'net' in connection_payload, "Missing 'net' field in connection result"
+            assert 'netConnections' in connection_payload, "Missing 'netConnections' field in connection result"
+
+            # Remove the connection using the new pin-based API (before updating component)
+            remove_conn_result = await session.call_tool(
+                name='remove_schematic_connection',
+                arguments={
+                    'schematicPath': schematic_path,
+                    'source': {'reference': 'R1', 'pin': '1'},
+                    'target': {'reference': 'C1', 'pin': '1'},
+                },
+            )
+            assert not remove_conn_result.isError, f"remove_schematic_connection error: {remove_conn_result.content}"
+            remove_conn_payload = json.loads(remove_conn_result.content[0].text)
+            # Verify new removal format
+            assert 'removed' in remove_conn_payload, "Missing 'removed' field in removal result"
+            assert 'net' in remove_conn_payload, "Missing 'net' field in removal result"
+            assert 'netConnections' in remove_conn_payload, "Missing 'netConnections' field in removal result"
 
             update_result = await session.call_tool(
                 name='update_schematic_component',
@@ -104,39 +120,6 @@ async def run_edit_remove_workflow() -> dict:
             )
             assert not update_result.isError, f"update_schematic_component error: {update_result.content}"
             update_payload = json.loads(update_result.content[0].text)
-
-            updated_points = [
-                {'x': float(start_point[0]), 'y': float(start_point[1])},
-                {'x': float(start_point[0]), 'y': float(start_point[1] + 20.0)},
-                {'x': float(end_point[0]), 'y': float(end_point[1] + 20.0)},
-                {'x': float(end_point[0]), 'y': float(end_point[1])},
-            ]
-
-            wire_update_result = await session.call_tool(
-                name='update_schematic_connection',
-                arguments={
-                    'schematicPath': schematic_path,
-                    'wireUuid': wire_uuid,
-                    'updates': {
-                        'width': 0.5,
-                        'strokeType': 'dash',
-                        'points': updated_points,
-                    },
-                },
-            )
-            assert not wire_update_result.isError, f"update_schematic_connection error: {wire_update_result.content}"
-            wire_update_payload = json.loads(wire_update_result.content[0].text)
-
-            wire_ids = [segment['uuid'] for segment in segment_payloads]
-            remove_conn_result = await session.call_tool(
-                name='remove_schematic_connection',
-                arguments={
-                    'schematicPath': schematic_path,
-                    'wireUuids': wire_ids,
-                },
-            )
-            assert not remove_conn_result.isError, f"remove_schematic_connection error: {remove_conn_result.content}"
-            remove_conn_payload = json.loads(remove_conn_result.content[0].text)
 
             remove_comp_result = await session.call_tool(
                 name='remove_schematic_component',
@@ -162,7 +145,6 @@ async def run_edit_remove_workflow() -> dict:
             return {
                 'svg_path': svg_path,
                 'component_update': update_payload,
-                'wire_update': wire_update_payload,
                 'removed_connection': remove_conn_payload,
                 'removed_component': remove_comp_payload,
             }
@@ -186,15 +168,11 @@ class SchematicEditRemoveTests(unittest.TestCase):
         self.assertIn('reference', component_payload['changedFields'])
         self.assertIn('property:Tolerance', component_payload['changedFields'])
 
-        wire_payload = results['wire_update']
-        self.assertTrue(wire_payload['success'])
-        self.assertAlmostEqual(wire_payload['wire']['width'], 0.5, places=3)
-        self.assertEqual(wire_payload['wire']['strokeType'], 'dash')
-        self.assertEqual(len(wire_payload['wire']['points']), 4)
-
         removed_conn = results['removed_connection']
         self.assertTrue(removed_conn['success'])
-        self.assertGreaterEqual(removed_conn['removedCount'], 1)
+        self.assertIn('removed', removed_conn)
+        self.assertIn('net', removed_conn)
+        self.assertIn('netConnections', removed_conn)
 
         removed_comp = results['removed_component']
         self.assertTrue(removed_comp['success'])

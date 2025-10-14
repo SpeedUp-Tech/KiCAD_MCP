@@ -76,31 +76,19 @@ const schematicPinSchema = z
     .describe('Pin specification for schematic connectivity');
 const schematicLabelSchema = z
     .object({
-    label: z.string().optional().describe('Hierarchical label name'),
-    labelName: z.string().optional().describe('Alternative field for hierarchical label name'),
-})
-    .refine((o) => !!(o.label || o.labelName), {
-    message: "Label specification must include 'label' or 'labelName'",
-})
-    .describe('Hierarchical label specification for schematic connectivity');
-const schematicPowerSchema = z
-    .object({
-    power: z
+    label: z
         .string()
         .optional()
-        .describe('Power symbol or flag name (e.g., GND, VCC, +3V3, +5V, PWR_FLAG)'),
-    powerName: z
+        .describe('Label or power net name (hierarchical/global/local label, or the Value of a power symbol like GND/VCC/+5V)'),
+    labelName: z
         .string()
         .optional()
-        .describe('Alternative field for power symbol/flag name'),
+        .describe('Alternative field for label/power net name'),
 })
-    .refine((o) => !!(o.power || o.powerName), {
-    message: "Power specification must include 'power' or 'powerName'",
-})
-    .describe('Power symbol/flag specification for schematic connectivity');
+    .describe('Label/power specification for schematic connectivity');
 const schematicConnectionPointSchema = z
-    .union([schematicPinSchema, schematicLabelSchema, schematicPowerSchema])
-    .describe('Connection point specification - component pin {reference, pin}, hierarchical label {label}, or power symbol/flag {power}');
+    .union([schematicPinSchema, schematicLabelSchema])
+    .describe('Connection point specification - either a component pin (with reference and pin fields) or a label/power name (with label/labelName field)');
 const coordinateListSchema = z.array(schematicPointSchema);
 const wireOptionsSchema = z
     .object({
@@ -216,20 +204,20 @@ export function registerSchematicTools(server, callKicadScript) {
     });
     server.tool('remove_schematic_connection', withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
-        wireUuid: z.string().optional().describe('Single wire UUID to remove'),
-        wireUuids: z.array(z.string()).optional().describe('Multiple wire UUIDs to remove'),
-    }), async ({ schematicPath, wireUuid, wireUuids }) => {
+        source: schematicConnectionPointSchema.describe('Source connection point - either a component pin {reference, pin} or label/power {label}'),
+        target: schematicConnectionPointSchema.describe('Target connection point - either a component pin {reference, pin} or label/power {label}'),
+    }), async ({ schematicPath, source, target }) => {
         const result = await callKicadScript('remove_schematic_connection', {
             schematicPath,
-            wireUuid,
-            wireUuids,
+            source,
+            target,
         });
         return formatToolResult(result);
     });
     server.tool('connect_schematic_pins', withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
-        source: schematicConnectionPointSchema.describe('Source connection point - component pin {reference, pin}, hierarchical label {label}, or power symbol/flag {power}'),
-        target: schematicConnectionPointSchema.describe('Target connection point - component pin {reference, pin}, hierarchical label {label}, or power symbol/flag {power}'),
+        source: schematicConnectionPointSchema.describe('Source connection point - either a component pin {reference, pin} or label/power {label}'),
+        target: schematicConnectionPointSchema.describe('Target connection point - either a component pin {reference, pin} or label/power {label}'),
         wire: wireOptionsSchema.optional().describe('Optional wire styling overrides'),
         routing: z
             .object({
@@ -332,15 +320,15 @@ export function registerSchematicTools(server, callKicadScript) {
     });
     server.tool('get_schematic_state', withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to analyze'),
-        format: z
-            .enum(['json', 'text'])
+        showDetails: z
+            .boolean()
             .optional()
-            .default('json')
-            .describe('Output format: "json" returns structured data with components, labels, and connections; "text" returns a human-readable summary'),
-    }), async ({ schematicPath, format }) => {
+            .default(false)
+            .describe('If false (default), shows only topology and electrical properties. If true, includes all visual layout details (coordinates, rotation, footprints)'),
+    }), async ({ schematicPath, showDetails }) => {
         const result = await callKicadScript('get_schematic_state', {
             schematicPath,
-            format,
+            showDetails,
         });
         return formatToolResult(result);
     });

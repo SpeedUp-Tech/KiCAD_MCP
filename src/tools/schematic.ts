@@ -265,14 +265,18 @@ export function registerSchematicTools(
     'remove_schematic_connection',
     withSessionParams({
       schematicPath: z.string().describe('Path to the schematic file to update'),
-      wireUuid: z.string().optional().describe('Single wire UUID to remove'),
-      wireUuids: z.array(z.string()).optional().describe('Multiple wire UUIDs to remove'),
+      source: schematicConnectionPointSchema.describe(
+        'Source connection point - either a component pin {reference, pin} or label/power {label}'
+      ),
+      target: schematicConnectionPointSchema.describe(
+        'Target connection point - either a component pin {reference, pin} or label/power {label}'
+      ),
     }),
-    async ({ schematicPath, wireUuid, wireUuids }) => {
+    async ({ schematicPath, source, target }) => {
       const result = await callKicadScript('remove_schematic_connection', {
         schematicPath,
-        wireUuid,
-        wireUuids,
+        source,
+        target,
       });
       return formatToolResult(result);
     }
