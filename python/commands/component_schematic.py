@@ -802,37 +802,17 @@ class ComponentManager:
             symbol.setAllReferences(new_reference)
             changed_fields.append('reference')
 
-        if 'unit' in updates and updates['unit'] is not None:
-            new_unit = _coerce_unit_identifier(updates['unit'])
-            if new_unit is None:
-                raise ValueError('unit must be convertible to an integer value')
-            if _coerce_unit_identifier(getattr(getattr(symbol, 'unit', None), 'value', None)) != new_unit:
-                symbol.unit.value = int(new_unit)
-                changed_fields.append('unit')
-
         if 'value' in updates and updates['value'] is not None:
             new_value = str(updates['value'])
             if getattr(symbol.property.Value, 'value', None) != new_value:
                 symbol.property.Value.value = new_value
                 changed_fields.append('value')
 
-        if 'footprint' in updates and updates['footprint'] is not None:
-            new_footprint = str(updates['footprint'])
-            if getattr(symbol.property.Footprint, 'value', None) != new_footprint:
-                symbol.property.Footprint.value = new_footprint
-                changed_fields.append('footprint')
-
         if 'datasheet' in updates and updates['datasheet'] is not None:
             new_datasheet = str(updates['datasheet'])
             if getattr(symbol.property.Datasheet, 'value', None) != new_datasheet:
                 symbol.property.Datasheet.value = new_datasheet
                 changed_fields.append('datasheet')
-
-        if 'excludeFromSim' in updates:
-            new_flag = _coerce_bool(updates['excludeFromSim'], symbol.exclude_from_sim.value)
-            if symbol.exclude_from_sim.value != new_flag:
-                symbol.exclude_from_sim.value = new_flag
-                changed_fields.append('excludeFromSim')
 
         if 'inBom' in updates:
             new_flag = _coerce_bool(updates['inBom'], symbol.in_bom.value)
@@ -851,12 +831,6 @@ class ComponentManager:
             if symbol.dnp.value != new_flag:
                 symbol.dnp.value = new_flag
                 changed_fields.append('dnp')
-
-        if 'fieldsAutoplaced' in updates:
-            new_flag = _coerce_bool(updates['fieldsAutoplaced'], symbol.fields_autoplaced.value)
-            if symbol.fields_autoplaced.value != new_flag:
-                symbol.fields_autoplaced.value = new_flag
-                changed_fields.append('fieldsAutoplaced')
 
         properties_updates = updates.get('properties')
         if properties_updates is not None:

@@ -38,7 +38,6 @@ const componentUpdateSchema = z
         .optional()
         .describe('Alternate field name for new reference designator'),
     value: z.string().optional().describe('Updated component value'),
-    footprint: z.string().optional().describe('Updated footprint name'),
     datasheet: z.string().optional().describe('Updated datasheet link'),
     x: z.number().optional().describe('Updated X coordinate'),
     y: z.number().optional().describe('Updated Y coordinate'),
@@ -52,12 +51,9 @@ const componentUpdateSchema = z
         .partial()
         .optional()
         .describe('Grouped position updates'),
-    unit: z.union([z.string(), z.number()]).optional().describe('Updated unit identifier'),
-    excludeFromSim: z.boolean().optional().describe('Exclude from simulation flag'),
     inBom: z.boolean().optional().describe('Include in BOM flag'),
     onBoard: z.boolean().optional().describe('Placed on board flag'),
     dnp: z.boolean().optional().describe('Do not populate flag'),
-    fieldsAutoplaced: z.boolean().optional().describe('Auto-place fields flag'),
     properties: z
         .record(componentUpdateValueSchema)
         .optional()
