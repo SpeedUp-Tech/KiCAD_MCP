@@ -85,14 +85,13 @@ Export (Board) (✅ 4, ⚠️ 1)
 - ✅ export_bom — CSV/XML/HTML/JSON BOM
 - ⚠️ export_3d — Uses 3D viewer; may fail headless
 
-Schematic (Create/Edit/Connect) (✅ 11)
+Schematic (Create/Edit/Connect) (✅ 10)
 - ✅ create_schematic — Blank KiCad 9 schematic via kicad-skip
 - ✅ load_schematic — Load .kicad_sch
 - ✅ add_schematic_component — Insert symbol by type/library/ref
 - ✅ update_schematic_component — Move/rotate/rename/value/footprint/etc
 - ✅ remove_schematic_component — Remove by reference/unit
 - ✅ add_schematic_wire — Straight wire between points
-- ✅ update_schematic_connection — Edit wire geometry/style by UUID
 - ✅ remove_schematic_connection — Remove wire(s) by UUID
 - ✅ connect_schematic_pins — Route HV/VH wire between pins
 - ✅ list_schematic_libraries — Glob known symbol paths

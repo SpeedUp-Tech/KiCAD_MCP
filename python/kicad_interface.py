@@ -262,7 +262,6 @@ class KiCADInterface:
             "update_schematic_component": self._handle_update_schematic_component,
             "remove_schematic_component": self._handle_remove_schematic_component,
             "add_schematic_wire": self._handle_add_schematic_wire,
-            "update_schematic_connection": self._handle_update_schematic_connection,
             "remove_schematic_connection": self._handle_remove_schematic_connection,
             "connect_schematic_pins": self._handle_connect_schematic_pins,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
@@ -633,45 +632,6 @@ class KiCADInterface:
         except Exception as e:
             logger.error(f"Error adding wire to schematic: {str(e)}")
             return {"success": False, "message": str(e)}
-
-    def _handle_update_schematic_connection(self, params):
-        """Update an existing wire segment."""
-        logger.info("Updating schematic connection")
-        try:
-            schematic_path = params.get("schematicPath")
-            wire_uuid = params.get("wireUuid") or params.get("uuid")
-            updates = params.get("updates") or params.get("wire")
-
-            if not schematic_path:
-                return {"success": False, "message": "Schematic path is required"}
-            if not wire_uuid:
-                return {"success": False, "message": "wireUuid is required"}
-            if not isinstance(updates, dict) or not updates:
-                return {"success": False, "message": "updates must be a non-empty object"}
-
-            schematic = SchematicManager.load_schematic(schematic_path)
-            if not schematic:
-                return {"success": False, "message": "Failed to load schematic"}
-
-            try:
-                payload = ConnectionManager.update_wire(schematic, wire_uuid, updates)
-            except (ValueError, TypeError) as exc:
-                logger.warning(f"Connection update rejected: {exc}")
-                return {"success": False, "message": str(exc)}
-            except Exception as exc:
-                logger.error(f"Unexpected error updating connection: {exc}")
-                return {"success": False, "message": str(exc)}
-
-            if not SchematicManager.save_schematic(schematic, schematic_path):
-                return {
-                    "success": False,
-                    "message": "Connection updated but failed to save schematic",
-                }
-
-            return {"success": True, "wire": payload}
-        except Exception as exc:
-            logger.error(f"Error updating schematic connection: {exc}")
-            return {"success": False, "message": str(exc)}
 
     def _handle_remove_schematic_connection(self, params):
         """Remove wire(s) connecting two schematic connection points."""

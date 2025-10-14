@@ -104,24 +104,6 @@ const wireOptionsSchema = z
 })
     .partial()
     .describe('Optional overrides for the generated wire');
-const wireUpdateSchema = z
-    .object({
-    startPoint: schematicPointSchema.optional().describe('Updated starting coordinate'),
-    endPoint: schematicPointSchema.optional().describe('Updated ending coordinate'),
-    points: coordinateListSchema.optional().describe('Replacement list of points'),
-    pointList: coordinateListSchema.optional().describe('Alternate key for points'),
-    segments: coordinateListSchema.optional().describe('Alternate key for points'),
-    midpoints: coordinateListSchema.optional().describe('Midpoints to insert'),
-    viaPoints: coordinateListSchema.optional().describe('Additional waypoints to include'),
-    width: z.number().optional().describe('Updated wire width'),
-    strokeType: z
-        .enum(['default', 'dash', 'dot'])
-        .optional()
-        .describe('Updated stroke style'),
-    style: z.string().optional().describe('Alternate field for stroke style'),
-})
-    .partial()
-    .describe('Wire update payload');
 export function registerSchematicTools(server, callKicadScript) {
     logger.info('Registering schematic tools');
     server.tool('create_schematic', withSessionParams({
@@ -187,18 +169,6 @@ export function registerSchematicTools(server, callKicadScript) {
             schematicPath,
             startPoint,
             endPoint,
-        });
-        return formatToolResult(result);
-    });
-    server.tool('update_schematic_connection', withSessionParams({
-        schematicPath: z.string().describe('Path to the schematic file to update'),
-        wireUuid: z.string().describe('Identifier of the wire segment to update'),
-        updates: wireUpdateSchema.describe('Updates to apply to the wire'),
-    }), async ({ schematicPath, wireUuid, updates }) => {
-        const result = await callKicadScript('update_schematic_connection', {
-            schematicPath,
-            wireUuid,
-            updates,
         });
         return formatToolResult(result);
     });
