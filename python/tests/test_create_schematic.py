@@ -36,7 +36,7 @@ async def run_empty_schematic_workflow() -> str:
             await session.initialize()
 
                         # create empty schematic in a temp directory
-            tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_empty_'))
+            tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_empty_', dir=str(EXPORT_DIR)))
             schematic_name = 'empty_demo'
             schematic_result = await session.call_tool(
                 name='create_schematic',

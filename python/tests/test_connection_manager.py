@@ -1,7 +1,12 @@
 import os
 import tempfile
 import unittest
+from pathlib import Path
+
 from sexpdata import Symbol
+EXPORT_DIR = Path(__file__).resolve().parents[2] / 'exported'
+EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
 
 from python.commands.schematic import SchematicManager
 from python.commands.connection_schematic import ConnectionManager
@@ -77,7 +82,7 @@ class ConnectionManagerTests(unittest.TestCase):
             },
         )
 
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=str(EXPORT_DIR)) as tmpdir:
             schematic_path = os.path.join(tmpdir, 'wires.kicad_sch')
             self.assertTrue(SchematicManager.save_schematic(schematic, schematic_path))
             reloaded = SchematicManager.load_schematic(schematic_path)

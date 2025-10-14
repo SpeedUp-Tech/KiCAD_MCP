@@ -35,7 +35,7 @@ async def run_workflow() -> None:
             await session.initialize()
 
             # 1. create schematic file in temp directory
-            tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_workflow_'))
+            tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_workflow_', dir=str(EXPORT_DIR)))
             schematic_name = 'workflow_demo'
             schematic_result = await session.call_tool(
                 name='create_schematic',

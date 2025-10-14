@@ -16,6 +16,9 @@ from python.commands.schematic import SchematicManager
 from python.commands.connection_schematic import ConnectionManager
 from python.commands.component_schematic import ComponentManager
 
+EXPORT_DIR = Path(__file__).resolve().parents[2] / 'exported'
+EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
 
 class HierarchicalLabelConnectionTests(unittest.TestCase):
     """Test suite for hierarchical label connection functionality"""
@@ -24,23 +27,23 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         """Test with a real hierarchical schematic file"""
         # Load the real hierarchical schematic
         sch_path = Path('test_cases/3A充电方案/kicad/sheets/M_Battery_Protection.kicad_sch')
-        
+
         if not sch_path.exists():
             self.skipTest(f"Test schematic not found: {sch_path}")
-        
+
         from skip import Schematic
         sch = Schematic(str(sch_path))
-        
+
         # Verify hierarchical labels exist
         label_names = []
         for elem in sch.tree:
             if isinstance(elem, list) and len(elem) > 0:
                 if hasattr(elem[0], 'value') and elem[0].value() == 'hierarchical_label':
                     label_names.append(elem[1])
-        
+
         self.assertIn('R_VBAT_RAW', label_names)
         self.assertIn('R_VBAT', label_names)
-        
+
         # Add a test component
         ComponentManager.add_component(
             sch,
@@ -51,7 +54,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
                 'y': 50,
             },
         )
-        
+
         # Connect component pin to hierarchical label
         result = ConnectionManager.connect_pins(
             sch,
@@ -63,12 +66,12 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         self.assertIn('created', result)
         self.assertIn('R_TEST.1', result['created'])
         self.assertIn('R_VBAT_RAW', result['created'])
-        
+
         # Verify the schematic can be saved and reloaded
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=str(EXPORT_DIR)) as tmpdir:
             temp_path = os.path.join(tmpdir, 'test_modified.kicad_sch')
             sch.write(temp_path)
-            
+
             reloaded = Schematic(temp_path)
             self.assertIsNotNone(reloaded)
             self.assertGreater(len(reloaded.wire), 0)
@@ -76,7 +79,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
     def test_mixed_connection_types(self) -> None:
         """Test a schematic with mixed pin-to-pin and pin-to-label connections"""
         schematic = SchematicManager.create_schematic('MixedConnections')
-        
+
         # Add components
         ComponentManager.add_component(
             schematic,
@@ -96,7 +99,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
                 'y': 50,
             },
         )
-        
+
         # Add hierarchical labels
         label1 = [
             Symbol('hierarchical_label'),
@@ -108,7 +111,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
             [Symbol('uuid'), Symbol('test-label-input')]
         ]
         schematic.tree.append(label1)
-        
+
         label2 = [
             Symbol('hierarchical_label'),
             'OUTPUT',
@@ -119,7 +122,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
             [Symbol('uuid'), Symbol('test-label-output')]
         ]
         schematic.tree.append(label2)
-        
+
         # Create mixed connections:
         # 1. Label to pin
         result1 = ConnectionManager.connect_pins(
@@ -155,19 +158,19 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         self.assertIn('R2.1', result2['created'])
         self.assertIn('R2.2', result3['created'])
         self.assertIn('OUTPUT', result3['created'])
-        
+
         # Verify schematic can be saved
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=str(EXPORT_DIR)) as tmpdir:
             temp_path = os.path.join(tmpdir, 'mixed_connections.kicad_sch')
             self.assertTrue(SchematicManager.save_schematic(schematic, temp_path))
-            
+
             reloaded = SchematicManager.load_schematic(temp_path)
             self.assertIsNotNone(reloaded)
 
     def test_routing_patterns_with_labels(self) -> None:
         """Test that routing patterns work correctly with hierarchical labels"""
         schematic = SchematicManager.create_schematic('RoutingPatterns')
-        
+
         # Add component
         ComponentManager.add_component(
             schematic,
@@ -178,7 +181,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
                 'y': 50,
             },
         )
-        
+
         # Add label at different position to require routing
         label = [
             Symbol('hierarchical_label'),
@@ -190,7 +193,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
             [Symbol('uuid'), Symbol('test-label-signal')]
         ]
         schematic.tree.append(label)
-        
+
         # Test horizontal-then-vertical routing
         result_hv = ConnectionManager.connect_pins(
             schematic,
@@ -206,7 +209,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
     def test_backward_compatibility(self) -> None:
         """Ensure existing pin-to-pin connections still work exactly as before"""
         schematic = SchematicManager.create_schematic('BackwardCompat')
-        
+
         # Add components
         ComponentManager.add_component(
             schematic,
@@ -226,7 +229,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
                 'y': 10,
             },
         )
-        
+
         # Use the exact same API as before
         result = ConnectionManager.connect_pins(
             schematic,

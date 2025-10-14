@@ -15,6 +15,9 @@ from mcp.client.stdio import stdio_client
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / 'config' / 'default-config.json'
 NODE_ENTRY = PROJECT_ROOT / 'dist' / 'index.js'
+EXPORT_DIR = PROJECT_ROOT / 'exported'
+EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
 
 
 async def run_load_and_wire_flow() -> dict:
@@ -30,7 +33,7 @@ async def run_load_and_wire_flow() -> dict:
 
 
             # 2) create schematic in temp dir
-            with tempfile.TemporaryDirectory(prefix='schematic_load_wire_') as tmpdir:
+            with tempfile.TemporaryDirectory(prefix='schematic_load_wire_', dir=str(EXPORT_DIR)) as tmpdir:
                 schematic_name = 'load_wire_demo'
                 create_sch = await session.call_tool(
                     name='create_schematic',

@@ -30,7 +30,7 @@ async def run_edit_remove_workflow() -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_edit_remove_'))
+            tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_edit_remove_', dir=str(EXPORT_DIR)))
             schematic_name = 'edit_remove_demo'
             schematic_result = await session.call_tool(
                 name='create_schematic',
@@ -162,7 +162,7 @@ async def run_remove_component_with_connections_workflow() -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_remove_with_conn_'))
+            tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_remove_with_conn_', dir=str(EXPORT_DIR)))
             schematic_name = 'remove_with_conn_test'
             schematic_result = await session.call_tool(
                 name='create_schematic',

@@ -31,7 +31,7 @@ async def run_export_flow() -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            with tempfile.TemporaryDirectory(prefix='schematic_export_') as tmpdir:
+            with tempfile.TemporaryDirectory(prefix='schematic_export_', dir=str(EXPORT_DIR)) as tmpdir:
                 # Create a simple schematic
                 name = 'export_demo'
                 create_sch = await session.call_tool(

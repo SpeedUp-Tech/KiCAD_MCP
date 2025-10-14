@@ -36,7 +36,7 @@ async def run_one_component_workflow() -> str:
             await session.initialize()
 
                         # create schematic
-            tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_one_comp_'))
+            tmp_dir = Path(tempfile.mkdtemp(prefix='schematic_one_comp_', dir=str(EXPORT_DIR)))
             schematic_name = 'one_component_demo'
             schematic_result = await session.call_tool(
                 name='create_schematic',

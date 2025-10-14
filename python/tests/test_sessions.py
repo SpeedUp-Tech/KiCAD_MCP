@@ -15,6 +15,9 @@ from mcp.client.stdio import stdio_client
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = PROJECT_ROOT / 'config' / 'default-config.json'
 NODE_ENTRY = PROJECT_ROOT / 'dist' / 'index.js'
+EXPORT_DIR = PROJECT_ROOT / 'exported'
+EXPORT_DIR.mkdir(parents=True, exist_ok=True)
+
 
 
 async def run_process_management_flow() -> dict:
@@ -36,7 +39,7 @@ async def run_process_management_flow() -> dict:
             # Create multiple schematics to verify process reuse
             results = []
             for i in range(3):
-                tmp_dir = Path(tempfile.mkdtemp(prefix=f'test_process_{i}_'))
+                tmp_dir = Path(tempfile.mkdtemp(prefix=f'test_process_{i}_', dir=str(EXPORT_DIR)))
                 result = await session.call_tool(
                     name='create_schematic',
                     arguments={
