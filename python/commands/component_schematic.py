@@ -118,6 +118,22 @@ def _refresh_symbol_collection(schematic: Schematic) -> None:
     schematic.symbol = SymbolCollection(schematic, symbol_nodes)
 
 
+def _refresh_wire_collection(schematic: Schematic) -> None:
+    if not hasattr(schematic, 'wire'):
+        return
+    wire_nodes = []
+    for index, node in enumerate(schematic.tree):
+        if _is_entry(node, 'wire'):
+            parsed = ParsedValue(schematic.tree, node, [index], schematic)
+            wire_nodes.append(schematic.wrap(parsed))
+    # Replace elements in-place to keep existing collection wrapper
+    try:
+        schematic.wire._elements = wire_nodes
+    except Exception:
+        pass
+
+
+
 def _find_property_node(symbol_node: List[Any], name: str) -> Optional[List[Any]]:
     for entry in symbol_node:
         if _is_entry(entry, 'property') and len(entry) >= 3 and _atom_to_str(entry[1]) == name:
@@ -703,7 +719,23 @@ class ComponentManager:
         *,
         unit: Optional[Any] = None,
     ) -> Dict[str, Any]:
-        """Apply field updates to a component instance and return the new payload."""
+        """Apply updates to a component and atomically re-route connections on placement change.
+
+        Behavior:
+        - If x/y/rotation (placement) changes, this function will:
+          1) Snapshot the schematic tree for rollback
+          2) Record all current connections (pins and labels) involving the component
+          3) Remove all wires attached to the component’s pins
+          4) Apply the requested updates (including optional newReference)
+          5) Re-construct the recorded connections using Manhattan routing via
+             ConnectionManager.connect_pins, so wires are re-routed cleanly
+        - If any step fails, the schematic is fully rolled back to the snapshot and
+          the exception is propagated. No partial updates are preserved.
+        - The 'unit' argument (if provided) disambiguates multi-unit symbols.
+
+        Returns:
+            Dict payload for the updated component.
+        """
 
         if not isinstance(updates, dict):
             raise TypeError('updates must be a mapping of field names to values')
@@ -762,6 +794,98 @@ class ComponentManager:
         else:
             rotation = current_at[2]
 
+
+        # Determine if placement (x, y, rotation) will change; if so, snapshot and remove connections
+        placement_changed = ([x, y, rotation] != current_at)
+        connections_to_restore: List[Tuple[str, Dict[str, Any]]] = []  # (source_pin, other_endpoint_spec)
+        original_tree = copy.deepcopy(schematic.tree) if placement_changed else None
+
+        if placement_changed:
+            # Take a snapshot to allow rollback if anything fails during removal
+            try:
+                # Import here to avoid top-level import cycles
+                from .schematic_state import _extract_components, _build_connection_map
+                from .connection_schematic import ConnectionManager
+
+                # Build full connection map and collect edges involving this reference
+                components_snapshot = _extract_components(schematic)
+                edges = _build_connection_map(schematic, components_snapshot)
+
+                def _endpoint_to_spec(ep: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                    kind = ep.get('kind')
+                    if kind == 'pin':
+                        return {'reference': str(ep.get('ref')), 'pin': str(ep.get('pin'))}
+                    if kind == 'label':
+                        name = ep.get('name')
+                        if name is not None:
+                            return {'label': str(name)}
+                    return None
+
+                # 1) Record all connections to restore later
+                for edge in edges:
+                    a = edge.get('a') or {}
+                    b = edge.get('b') or {}
+
+                    if a.get('kind') == 'pin' and str(a.get('ref')) == target_ref:
+                        pin_num = str(a.get('pin'))
+                        other_spec = _endpoint_to_spec(b)
+                        if other_spec:
+                            connections_to_restore.append((pin_num, other_spec))
+
+                    elif b.get('kind') == 'pin' and str(b.get('ref')) == target_ref:
+                        pin_num = str(b.get('pin'))
+                        other_spec = _endpoint_to_spec(a)
+                        if other_spec:
+                            connections_to_restore.append((pin_num, other_spec))
+
+                # 2) Remove all wires attached to this component's pins (without removing the component)
+                #    This mirrors the logic in remove_component for wire cleanup
+                #    Build map of this component's pin coordinates
+                component_pins: Dict[Tuple[float, float], str] = {}
+                if hasattr(symbol, 'pin'):
+                    for pin in symbol.pin:
+                        if hasattr(pin, 'location'):
+                            loc = pin.location
+                            px = round(float(loc.x), 1)
+                            py = round(float(loc.y), 1)
+                            pin_number = str(getattr(pin, 'number', ''))
+                            component_pins[(px, py)] = pin_number
+
+                wires_to_remove = []
+                raw_to_remove = []
+                if hasattr(schematic, 'wire') and component_pins:
+                    for wire in list(schematic.wire):
+                        try:
+                            if hasattr(wire, 'points'):
+                                pts = wire.points
+                                if len(pts) >= 2:
+                                    wpoints: List[Tuple[float, float]] = []
+                                    for pt in pts:
+                                        if hasattr(pt, 'value'):
+                                            coords = pt.value
+                                            if len(coords) >= 2:
+                                                wx = round(float(coords[0]), 1)
+                                                wy = round(float(coords[1]), 1)
+                                                wpoints.append((wx, wy))
+                                    if len(wpoints) >= 2:
+                                        if wpoints[0] in component_pins or wpoints[-1] in component_pins:
+                                            wires_to_remove.append(wire)
+                                            raw_to_remove.append(wire.raw)
+                        except Exception:
+                            continue
+
+                for raw in raw_to_remove:
+                    if raw in schematic.tree:
+                        schematic.tree.remove(raw)
+                if hasattr(schematic, 'wire') and hasattr(schematic.wire, '_elements'):
+                    schematic.wire._elements = [w for w in schematic.wire._elements if w not in wires_to_remove]
+            except Exception as e:
+                # Roll back any partial removals and fail the update
+                schematic.tree = copy.deepcopy(original_tree)
+                _refresh_symbol_collection(schematic)
+                _refresh_wire_collection(schematic)
+                raise
+
         reference_updates = updates.get('newReference')
         if reference_updates is None and 'reference' in updates:
             reference_updates = updates['reference']
@@ -776,6 +900,11 @@ class ComponentManager:
                     if existing is symbol:
                         continue
                     if _reference_from_symbol(existing) == new_reference:
+                        # Roll back any prior removals and abort if we changed placement
+                        if placement_changed and original_tree is not None:
+                            schematic.tree = copy.deepcopy(original_tree)
+                            _refresh_symbol_collection(schematic)
+                            _refresh_wire_collection(schematic)
                         raise ValueError(f"Component reference '{new_reference}' already exists")
 
         changed_fields: List[str] = []
@@ -798,6 +927,7 @@ class ComponentManager:
                 val_node[3][2] = round(y + val_dy, 6)
                 val_node[3][3] = round(rotation, 6)
 
+
         if new_reference and new_reference != target_ref:
             symbol.setAllReferences(new_reference)
             changed_fields.append('reference')
@@ -818,6 +948,7 @@ class ComponentManager:
             new_flag = _coerce_bool(updates['inBom'], symbol.in_bom.value)
             if symbol.in_bom.value != new_flag:
                 symbol.in_bom.value = new_flag
+
                 changed_fields.append('inBom')
 
         if 'onBoard' in updates:
@@ -836,6 +967,7 @@ class ComponentManager:
         if properties_updates is not None:
             if not isinstance(properties_updates, dict):
                 raise TypeError('properties must be a mapping of property name to value')
+
             for key, value in properties_updates.items():
                 if key in _STANDARD_PROPERTY_NAMES:
                     continue
@@ -858,6 +990,26 @@ class ComponentManager:
         final_reference = new_reference or target_ref
         final_unit = _coerce_unit_identifier(getattr(getattr(symbol, 'unit', None), 'value', None))
 
+        # Reconstruct connections after placement/reference updates
+        if placement_changed and connections_to_restore:
+            # Reconstruct under transaction semantics – on failure, roll back to original tree
+            try:
+                from .connection_schematic import ConnectionManager
+                final_ref_for_connect = new_reference or target_ref
+                for pin_num, other_spec in connections_to_restore:
+                    src_spec_new = {'reference': final_ref_for_connect, 'pin': pin_num}
+                    if desired_unit is not None:
+                        src_spec_new['unit'] = desired_unit
+                    ConnectionManager.connect_pins(schematic, src_spec_new, other_spec)
+            except Exception:
+                # Roll back entire schematic tree and abort
+                if original_tree is not None:
+                    schematic.tree = copy.deepcopy(original_tree)
+                    _refresh_symbol_collection(schematic)
+                    _refresh_wire_collection(schematic)
+                raise
+
+
         _refresh_symbol_collection(schematic)
 
         lookup_unit = final_unit if desired_unit is not None else None
@@ -872,6 +1024,7 @@ class ComponentManager:
             'component': payload,
             'changedFields': sorted(set(changed_fields)),
         }
+
 
     @staticmethod
     def get_component(

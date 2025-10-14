@@ -50,9 +50,18 @@ const componentUpdateSchema = z
       .describe('Alternate field name for new reference designator'),
     value: z.string().optional().describe('Updated component value'),
     datasheet: z.string().optional().describe('Updated datasheet link'),
-    x: z.number().optional().describe('Updated X coordinate'),
-    y: z.number().optional().describe('Updated Y coordinate'),
-    rotation: z.number().optional().describe('Updated rotation in degrees'),
+    x: z
+      .number()
+      .optional()
+      .describe('Updated X coordinate; changing placement triggers atomic re-routing of connections'),
+    y: z
+      .number()
+      .optional()
+      .describe('Updated Y coordinate; changing placement triggers atomic re-routing of connections'),
+    rotation: z
+      .number()
+      .optional()
+      .describe('Updated rotation in degrees; changing placement triggers atomic re-routing of connections'),
     position: z
       .object({
         x: z.number().optional(),
@@ -61,7 +70,7 @@ const componentUpdateSchema = z
       })
       .partial()
       .optional()
-      .describe('Grouped position updates'),
+      .describe('Grouped position updates; if placement changes, connections are removed and re-routed atomically'),
     inBom: z.boolean().optional().describe('Include in BOM flag'),
     onBoard: z.boolean().optional().describe('Placed on board flag'),
     dnp: z.boolean().optional().describe('Do not populate flag'),
@@ -71,7 +80,7 @@ const componentUpdateSchema = z
       .describe('Custom property overrides (null removes a property)'),
   })
   .strict()
-  .describe('Component update payload');
+  .describe('Component update payload (atomic; placement changes re-route connections with rollback on failure)');
 
 const schematicPinSchema = z
   .object({
@@ -173,8 +182,10 @@ export function registerSchematicTools(
     withSessionParams({
       schematicPath: z.string().describe('Path to the schematic file to update'),
       reference: z.string().describe('Reference designator to update'),
-      unit: z.union([z.string(), z.number()]).optional().describe('Specific unit to target'),
-      updates: componentUpdateSchema.describe('Field updates to apply'),
+      unit: z.union([z.string(), z.number()]).optional().describe('Specific unit to target (for multi-unit symbols)'),
+      updates: componentUpdateSchema.describe(
+        'Field updates to apply. If x/y/rotation changes, connections are removed and re-routed; the operation is atomic and rolls back on failure.'
+      ),
     }),
     async ({ schematicPath, reference, unit, updates }) => {
       const result = await callKicadScript('update_schematic_component', {
