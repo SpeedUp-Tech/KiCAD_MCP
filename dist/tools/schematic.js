@@ -153,6 +153,11 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
+    // Returns (JSON): {
+    //   removedComponents: ComponentPayload[],
+    //   note: string,
+    //   removedConnections: Array<{ source: Endpoint, target: Endpoint, net: string, summary: string }>
+    // }
     server.tool('remove_schematic_component', withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
         reference: z.string().describe('Reference designator to remove'),
@@ -177,6 +182,11 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
+    // Returns (JSON): {
+    //   removed: { source: Endpoint, target: Endpoint, net: string, summary: string },
+    //   net: string,
+    //   netConnections: string[]
+    // }
     server.tool('remove_schematic_connection', withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
         source: schematicConnectionPointSchema.describe('Source connection point - either a component pin {reference, pin} or label/power {label}'),
@@ -189,6 +199,11 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
+    // Returns (JSON): {
+    //   created: { source: Endpoint, target: Endpoint, net: string, summary: string },
+    //   net: string,
+    //   netConnections: string[]
+    // }
     server.tool('connect_schematic_pins', withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
         source: schematicConnectionPointSchema.describe('Source connection point - either a component pin {reference, pin} or label/power {label}'),

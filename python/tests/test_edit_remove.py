@@ -306,13 +306,22 @@ class SchematicEditRemoveTests(unittest.TestCase):
         self.assertEqual(len(removed_comp['removedConnections']), 2)
         self.assertEqual(removed_comp['note'], 'Connections were removed along with the removal of the component')
 
-        # Verify connection strings are in the correct format: "R1.1(passive) - C1.1(passive) [Net-X]"
-        for conn_str in removed_comp['removedConnections']:
-            self.assertIsInstance(conn_str, str)
-            self.assertIn('R1.', conn_str)  # Should contain R1 reference
-            self.assertIn(' - ', conn_str)  # Should have the separator
-            self.assertIn('[', conn_str)    # Should have net name in brackets
-            self.assertIn(']', conn_str)
+        # Verify connection objects are in the correct structured format
+        for conn in removed_comp['removedConnections']:
+            self.assertIsInstance(conn, dict)
+            self.assertIn('source', conn)
+            self.assertIn('target', conn)
+            self.assertIn('net', conn)
+            self.assertIn('summary', conn)
+            # Should contain R1 reference in one endpoint
+            src = conn['source']
+            tgt = conn['target']
+            refs = []
+            if src.get('kind') == 'pin':
+                refs.append(src.get('reference'))
+            if tgt.get('kind') == 'pin':
+                refs.append(tgt.get('reference'))
+            self.assertIn('R1', refs)
 
 
 if __name__ == '__main__':

@@ -541,13 +541,18 @@ class ComponentManager:
         Remove component instances that match the supplied reference/unit.
         Also removes all connections (wires) attached to the component's pins.
 
-        Returns:
+        Returns (structured JSON):
             Dict with:
                 - removedComponents: List of removed component payloads
                 - note: Message about connection removal
-                - removedConnections: List of formatted connection strings
+                - removedConnections: List of connection objects with shape:
+                    { "source": Endpoint, "target": Endpoint, "net": str, "summary": str }
+                  where Endpoint is one of:
+                    - { "kind": "pin", "reference": Ref, "pin": Pin, "unit"?: str, "pinType"?: str }
+                    - { "kind": "label", "label": Name }
         """
         from commands.connection_schematic import ConnectionManager
+        from .schematic_state import _extract_components, _build_connection_map
 
         if not isinstance(component_ref, str) or not component_ref.strip():
             raise ValueError('component_ref must be a non-empty string')
@@ -581,36 +586,49 @@ class ComponentManager:
                         pin_number = str(getattr(pin, 'number', ''))
                         component_pins[(x, y)] = (symbol, pin_number)
 
-        # Find all wires connected to this component and remove them directly
-        removed_connection_strings = []
+        # Build connection map BEFORE removal to report structured removedConnections
+        components_snapshot = _extract_components(schematic)
+        edges = _build_connection_map(schematic, components_snapshot)
+        removed_connections_structured: List[Dict[str, Any]] = []
+
+        def _to_endpoint(ep: Dict[str, Any]) -> Dict[str, Any]:
+            if ep.get('kind') == 'pin':
+                out: Dict[str, Any] = {"kind": "pin", "reference": str(ep.get('ref')), "pin": str(ep.get('pin'))}
+                return out
+            if ep.get('kind') == 'label':
+                return {"kind": "label", "label": str(ep.get('name'))}
+            return {"kind": "label", "label": str(ep)}
+
+        for edge in edges:
+            a = edge.get('a') or {}
+            b = edge.get('b') or {}
+            if (a.get('kind') == 'pin' and str(a.get('ref')) == target_ref) or (b.get('kind') == 'pin' and str(b.get('ref')) == target_ref):
+                ep_a = _to_endpoint(a)
+                ep_b = _to_endpoint(b)
+                # Simple human summary without electrical type (types may be inferred client-side if needed)
+                def _fmt(ep: Dict[str, Any]) -> str:
+                    if ep.get('kind') == 'pin':
+                        return f"{ep.get('reference')}.{ep.get('pin')}"
+                    return str(ep.get('label'))
+                summary = f"{_fmt(ep_a)} - {_fmt(ep_b)} [{edge.get('net')}]"
+                removed_connections_structured.append({
+                    'source': ep_a,
+                    'target': ep_b,
+                    'net': edge.get('net'),
+                    'summary': summary,
+                })
+
+        # Find all wires connected to this component and remove them directly (physical cleanup)
         wires_to_remove = []
         wire_data = []  # Store wire info before removal
 
         if hasattr(schematic, 'wire') and component_pins:
-            from commands.connection_schematic import _build_net_info, _get_pin_type, _format_pin_with_type
-
-            # Build a map of all pin positions to (reference, pin_number, pin_type)
-            all_pin_info: Dict[Tuple[float, float], Tuple[str, str, str]] = {}
-            if hasattr(schematic, 'symbol'):
-                for other_symbol in schematic.symbol:
-                    other_ref = _reference_from_symbol(other_symbol)
-                    if hasattr(other_symbol, 'pin'):
-                        for other_pin in other_symbol.pin:
-                            if hasattr(other_pin, 'location'):
-                                other_loc = other_pin.location
-                                other_x = round(float(other_loc.x), 1)
-                                other_y = round(float(other_loc.y), 1)
-                                other_pin_num = str(getattr(other_pin, 'number', ''))
-                                other_pin_type = _get_pin_type(other_pin)
-                                all_pin_info[(other_x, other_y)] = (other_ref, other_pin_num, other_pin_type)
-
-            # Find wires connected to the component and collect their data
+            # Find wires connected to the component and collect their raw nodes
             for wire in list(schematic.wire):
                 try:
                     if hasattr(wire, 'points'):
                         points = wire.points
                         if len(points) >= 2:
-                            # Extract wire endpoints
                             wire_points = []
                             for pt in points:
                                 if hasattr(pt, 'value'):
@@ -623,44 +641,9 @@ class ComponentManager:
                             if len(wire_points) < 2:
                                 continue
 
-                            # Check if any endpoint is on the component being removed
-                            component_endpoint = None
-                            other_endpoint = None
-
-                            for pt in [wire_points[0], wire_points[-1]]:
-                                if pt in component_pins:
-                                    component_endpoint = pt
-                                elif pt in all_pin_info and pt not in component_pins:
-                                    other_endpoint = pt
-
-                            # If this wire connects to the component being removed
-                            if component_endpoint:
-                                # Get component pin info
-                                comp_ref, comp_pin_num, comp_pin_type = all_pin_info.get(
-                                    component_endpoint,
-                                    (target_ref, '?', 'passive')
-                                )
-                                comp_pin_desc = _format_pin_with_type(comp_ref, comp_pin_num, comp_pin_type)
-
-                                # Get other endpoint info
-                                if other_endpoint and other_endpoint in all_pin_info:
-                                    other_ref, other_pin_num, other_pin_type = all_pin_info[other_endpoint]
-                                    other_pin_desc = _format_pin_with_type(other_ref, other_pin_num, other_pin_type)
-                                else:
-                                    other_pin_desc = "(unconnected)"
-
-                                # Build net info
-                                net_info = _build_net_info(schematic, wire_points)
-
-                                # Format connection string
-                                connection_str = f"{comp_pin_desc} - {other_pin_desc} [{net_info['net']}]"
-
-                                # Store wire data before removal
-                                wire_data.append({
-                                    'wire': wire,
-                                    'raw': wire.raw,
-                                    'connection_str': connection_str
-                                })
+                            # If this wire endpoints touch the component, mark for removal
+                            if wire_points[0] in component_pins or wire_points[-1] in component_pins:
+                                wire_data.append({'wire': wire, 'raw': wire.raw})
                                 wires_to_remove.append(wire)
                 except Exception as e:
                     logger.warning(f"Error analyzing wire for removal: {e}")
@@ -671,7 +654,6 @@ class ComponentManager:
                 raw_wire = data['raw']
                 if raw_wire in schematic.tree:
                     schematic.tree.remove(raw_wire)
-                removed_connection_strings.append(data['connection_str'])
 
             # Update the wire collection
             if hasattr(schematic, 'wire') and hasattr(schematic.wire, '_elements'):
@@ -694,20 +676,20 @@ class ComponentManager:
             len(removed_payloads),
             target_ref,
             f" unit {desired_unit}" if desired_unit is not None else '',
-            len(removed_connection_strings),
+            len(removed_connections_structured),
         )
 
         # Determine the note message
-        if removed_connection_strings:
+        if removed_connections_structured:
             note = "Connections were removed along with the removal of the component"
         else:
             note = "No connections were removed (component had no connections)"
 
-        # Return the new format
+        # Return the new structured format
         return {
             'removedComponents': removed_payloads,
             'note': note,
-            'removedConnections': removed_connection_strings,
+            'removedConnections': removed_connections_structured,
         }
 
 
@@ -734,7 +716,11 @@ class ComponentManager:
         - The 'unit' argument (if provided) disambiguates multi-unit symbols.
 
         Returns:
-            Dict payload for the updated component.
+            Dict with updated component information:
+            {
+                'component': { ...component payload... },
+                'changedFields': [ 'x', 'y', 'rotation', 'reference', 'property:Key', ... ]
+            }
         """
 
         if not isinstance(updates, dict):

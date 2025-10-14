@@ -710,9 +710,14 @@ class ConnectionManager:
             target: Target connection point specification (same format as source)
 
         Returns:
-            Dict with removal information:
+            Dict with removal information (structured JSON):
             {
-                "removed": "R1.1(passive) - R2.2(passive) [Net-5]",
+                "removed": {
+                    "source": Endpoint,    # { kind: "pin", reference, pin, unit?, pinType? } or { kind: "label", label }
+                    "target": Endpoint,    # same as source
+                    "net": "Net-5",
+                    "summary": "R1.1(passive) - R2.2(passive) [Net-5]"
+                },
                 "net": "Net-5",
                 "netConnections": ["R1.1(passive)"]
             }
@@ -876,8 +881,48 @@ class ConnectionManager:
 
         removed_str = f"{source_desc} - {target_desc} [{net_info_before['net']}]"
 
+        # Build structured endpoint objects for removal summary
+        def _endpoint_from_context(kind: str, spec: Dict[str, Any], symbol_obj: Any) -> Dict[str, Any]:
+            if kind == "pin":
+                ref = _reference_from_symbol(symbol_obj)
+                pin_id = (
+                    spec.get('pin')
+                    or spec.get('pinNumber')
+                    or spec.get('number')
+                    or spec.get('pinName')
+                    or spec.get('name')
+                )
+                # Try to locate actual pin to get pin number and type
+                pin_number = str(pin_id)
+                pin_type = None
+                if hasattr(symbol_obj, 'pin'):
+                    pid_norm = str(pin_id).strip().lower()
+                    for p in symbol_obj.pin:
+                        number = str(getattr(p, 'number', '')).strip().lower()
+                        name = str(getattr(p, 'name', '')).strip().lower()
+                        if pid_norm in {number, name}:
+                            pin_number = str(getattr(p, 'number', pin_id))
+                            pin_type = _get_pin_type(p)
+                            break
+                ep: Dict[str, Any] = {"kind": "pin", "reference": ref, "pin": str(pin_number)}
+                if spec.get('unit') is not None:
+                    ep['unit'] = _coerce_unit_value(spec.get('unit'))
+                if pin_type:
+                    ep['pinType'] = pin_type
+                return ep
+            else:
+                label_name = spec.get('label') or spec.get('labelName')
+                return {"kind": "label", "label": str(label_name)}
+
+        removed_obj = {
+            "source": _endpoint_from_context(source_type, source, source_obj),
+            "target": _endpoint_from_context(target_type, target, target_obj),
+            "net": net_info_before["net"],
+            "summary": removed_str,
+        }
+
         return {
-            "removed": removed_str,
+            "removed": removed_obj,
             "net": net_info_after["net"],
             "netConnections": net_info_after["netConnections"]
         }
@@ -922,11 +967,16 @@ class ConnectionManager:
             routing: Optional routing hints (pattern: 'hv' or 'vh')
 
         Returns:
-            Dict with connection information:
+            Dict with connection information (structured JSON):
             {
-                "created": "R1.1(passive) - R2.2(passive) [Net-5]",
-                "net": "Net-5",
-                "netConnections": ["R1.1(passive)", "R2.2(passive)"]
+                "created": {
+                    "source": Endpoint,    # { kind: "pin", reference, pin, unit?, pinType? } or { kind: "label", label }
+                    "target": Endpoint,    # same as source
+                    "net": "Net-7",       # resolved net name/id
+                    "summary": "R1.1(passive) - R2.2(input) [Net-7]"  # human-friendly
+                },
+                "net": "Net-7",
+                "netConnections": ["R1.1(passive)", "R2.2(input)"]
             }
 
         Raises:
@@ -949,11 +999,8 @@ class ConnectionManager:
         # Validate that we're not connecting something to itself
         if source_type == target_type:
             if source_type == "pin" and source_obj == target_obj:
-                # Same symbol - need to check if it's the same pin
-                # This is a simplified check; the original checked pin objects
                 raise ValueError('Cannot connect a pin to itself')
             elif source_type == "label" and source_point == target_point:
-                # Same label position means same label
                 raise ValueError('Cannot connect a label to itself')
 
         properties = dict(wire or {})
@@ -991,7 +1038,7 @@ class ConnectionManager:
             target_type,
         )
 
-        # Build the connection description string
+        # Build the connection description and structured endpoints
         wires = added if isinstance(added, list) else [added]
 
         # Collect all wire points for net analysis
@@ -1003,79 +1050,84 @@ class ConnectionManager:
         # Build net information
         net_info = _build_net_info(schematic, all_wire_points)
 
-        # Format source and target descriptions
+        # Build structured endpoints and human summary
+        def _pin_id_from_spec(spec: Dict[str, Any]) -> Any:
+            return (
+                spec.get('pin')
+                or spec.get('pinNumber')
+                or spec.get('number')
+                or spec.get('pinName')
+                or spec.get('name')
+            )
+
+        created_source: Dict[str, Any]
+        created_target: Dict[str, Any]
         source_desc = ""
         target_desc = ""
 
         if source_type == "pin":
-            # source_obj is the symbol, need to get pin info from source spec
             symbol = source_obj
-            reference = _reference_from_symbol(symbol)
-            pin_id = (
-                source.get('pin')
-                or source.get('pinNumber')
-                or source.get('number')
-                or source.get('pinName')
-                or source.get('name')
-            )
-            # Find the pin object to get its type
+            ref = _reference_from_symbol(symbol)
+            pin_id = _pin_id_from_spec(source)
             pin_obj = None
             if hasattr(symbol, 'pin'):
-                pin_id_normalised = str(pin_id).strip().lower()
-                for pin in symbol.pin:
-                    number = str(getattr(pin, 'number', '')).strip().lower()
-                    name = str(getattr(pin, 'name', '')).strip().lower()
-                    if pin_id_normalised in {number, name}:
-                        pin_obj = pin
+                pid_norm = str(pin_id).strip().lower()
+                for p in symbol.pin:
+                    number = str(getattr(p, 'number', '')).strip().lower()
+                    name = str(getattr(p, 'name', '')).strip().lower()
+                    if pid_norm in {number, name}:
+                        pin_obj = p
                         break
-
-            if pin_obj:
-                pin_number = str(getattr(pin_obj, 'number', ''))
-                pin_type = _get_pin_type(pin_obj)
-                source_desc = _format_pin_with_type(reference, pin_number, pin_type)
-            else:
-                source_desc = f"{reference}.{pin_id}"
-        elif source_type == "label":
+            pin_number = str(getattr(pin_obj, 'number', pin_id)) if pin_obj else str(pin_id)
+            pin_type = _get_pin_type(pin_obj) if pin_obj else None
+            created_source = {"kind": "pin", "reference": ref, "pin": str(pin_number)}
+            if source.get('unit') is not None:
+                created_source['unit'] = _coerce_unit_value(source.get('unit'))
+            if pin_type:
+                created_source['pinType'] = pin_type
+            source_desc = _format_pin_with_type(ref, str(pin_number), pin_type or 'passive')
+        else:
             label_name = source.get('label') or source.get('labelName')
+            created_source = {"kind": "label", "label": str(label_name)}
             source_desc = str(label_name)
 
         if target_type == "pin":
             symbol = target_obj
-            reference = _reference_from_symbol(symbol)
-            pin_id = (
-                target.get('pin')
-                or target.get('pinNumber')
-                or target.get('number')
-                or target.get('pinName')
-                or target.get('name')
-            )
-            # Find the pin object to get its type
+            ref = _reference_from_symbol(symbol)
+            pin_id = _pin_id_from_spec(target)
             pin_obj = None
             if hasattr(symbol, 'pin'):
-                pin_id_normalised = str(pin_id).strip().lower()
-                for pin in symbol.pin:
-                    number = str(getattr(pin, 'number', '')).strip().lower()
-                    name = str(getattr(pin, 'name', '')).strip().lower()
-                    if pin_id_normalised in {number, name}:
-                        pin_obj = pin
+                pid_norm = str(pin_id).strip().lower()
+                for p in symbol.pin:
+                    number = str(getattr(p, 'number', '')).strip().lower()
+                    name = str(getattr(p, 'name', '')).strip().lower()
+                    if pid_norm in {number, name}:
+                        pin_obj = p
                         break
-
-            if pin_obj:
-                pin_number = str(getattr(pin_obj, 'number', ''))
-                pin_type = _get_pin_type(pin_obj)
-                target_desc = _format_pin_with_type(reference, pin_number, pin_type)
-            else:
-                target_desc = f"{reference}.{pin_id}"
-        elif target_type == "label":
+            pin_number = str(getattr(pin_obj, 'number', pin_id)) if pin_obj else str(pin_id)
+            pin_type = _get_pin_type(pin_obj) if pin_obj else None
+            created_target = {"kind": "pin", "reference": ref, "pin": str(pin_number)}
+            if target.get('unit') is not None:
+                created_target['unit'] = _coerce_unit_value(target.get('unit'))
+            if pin_type:
+                created_target['pinType'] = pin_type
+            target_desc = _format_pin_with_type(ref, str(pin_number), pin_type or 'passive')
+        else:
             label_name = target.get('label') or target.get('labelName')
+            created_target = {"kind": "label", "label": str(label_name)}
             target_desc = str(label_name)
 
         created_str = f"{source_desc} - {target_desc} [{net_info['net']}]"
 
         return {
-            "created": created_str,
+            "created": {
+                "source": created_source,
+                "target": created_target,
+                "net": net_info["net"],
+                "summary": created_str,
+            },
             "net": net_info["net"],
-            "netConnections": net_info["netConnections"]
+            "netConnections": net_info["netConnections"],
         }
 
 if __name__ == '__main__':

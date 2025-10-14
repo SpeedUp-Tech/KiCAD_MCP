@@ -198,6 +198,11 @@ export function registerSchematicTools(
     }
   );
 
+  // Returns (JSON): {
+  //   removedComponents: ComponentPayload[],
+  //   note: string,
+  //   removedConnections: Array<{ source: Endpoint, target: Endpoint, net: string, summary: string }>
+  // }
   server.tool(
     'remove_schematic_component',
     withSessionParams({
@@ -232,6 +237,11 @@ export function registerSchematicTools(
     }
   );
 
+  // Returns (JSON): {
+  //   removed: { source: Endpoint, target: Endpoint, net: string, summary: string },
+  //   net: string,
+  //   netConnections: string[]
+  // }
   server.tool(
     'remove_schematic_connection',
     withSessionParams({
@@ -253,6 +263,11 @@ export function registerSchematicTools(
     }
   );
 
+  // Returns (JSON): {
+  //   created: { source: Endpoint, target: Endpoint, net: string, summary: string },
+  //   net: string,
+  //   netConnections: string[]
+  // }
   server.tool(
     'connect_schematic_pins',
     withSessionParams({

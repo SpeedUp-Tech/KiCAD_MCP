@@ -64,8 +64,8 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
 
         self.assertIsInstance(result, dict)
         self.assertIn('created', result)
-        self.assertIn('R_TEST.1', result['created'])
-        self.assertIn('R_VBAT_RAW', result['created'])
+        self.assertIn('R_TEST.1', result['created']['summary'])
+        self.assertIn('R_VBAT_RAW', result['created']['summary'])
 
         # Verify the schematic can be saved and reloaded
         with tempfile.TemporaryDirectory(dir=str(EXPORT_DIR)) as tmpdir:
@@ -152,12 +152,12 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         self.assertIn('created', result3)
 
         # Verify all connections were created
-        self.assertIn('INPUT', result1['created'])
-        self.assertIn('R1.1', result1['created'])
-        self.assertIn('R1.2', result2['created'])
-        self.assertIn('R2.1', result2['created'])
-        self.assertIn('R2.2', result3['created'])
-        self.assertIn('OUTPUT', result3['created'])
+        self.assertIn('INPUT', result1['created']['summary'])
+        self.assertIn('R1.1', result1['created']['summary'])
+        self.assertIn('R1.2', result2['created']['summary'])
+        self.assertIn('R2.1', result2['created']['summary'])
+        self.assertIn('R2.2', result3['created']['summary'])
+        self.assertIn('OUTPUT', result3['created']['summary'])
 
         # Verify schematic can be saved
         with tempfile.TemporaryDirectory(dir=str(EXPORT_DIR)) as tmpdir:
@@ -203,8 +203,8 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         )
         self.assertIsInstance(result_hv, dict)
         self.assertIn('created', result_hv)
-        self.assertIn('R1.1', result_hv['created'])
-        self.assertIn('SIGNAL', result_hv['created'])
+        self.assertIn('R1.1', result_hv['created']['summary'])
+        self.assertIn('SIGNAL', result_hv['created']['summary'])
 
     def test_backward_compatibility(self) -> None:
         """Ensure existing pin-to-pin connections still work exactly as before"""
@@ -242,8 +242,8 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         self.assertIn('created', result)
         self.assertIn('net', result)
         self.assertIn('netConnections', result)
-        self.assertIn('R1.1', result['created'])
-        self.assertIn('R2.1', result['created'])
+        self.assertIn('R1.1', result['created']['summary'])
+        self.assertIn('R2.1', result['created']['summary'])
 
 
 if __name__ == '__main__':

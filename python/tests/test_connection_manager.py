@@ -125,8 +125,13 @@ class ConnectionManagerTests(unittest.TestCase):
         self.assertIn('created', result)
         self.assertIn('net', result)
         self.assertIn('netConnections', result)
-        self.assertIn('R1.1', result['created'])
-        self.assertIn('R2.1', result['created'])
+        self.assertIsInstance(result['created'], dict)
+        self.assertIn('source', result['created'])
+        self.assertIn('target', result['created'])
+        self.assertIn('net', result['created'])
+        self.assertIn('summary', result['created'])
+        self.assertIn('R1.1', result['created']['summary'])
+        self.assertIn('R2.1', result['created']['summary'])
 
     def test_connect_pins_generates_manhattan_corner(self) -> None:
         schematic = SchematicManager.create_schematic('ConnectPinsCorner')
@@ -160,8 +165,10 @@ class ConnectionManagerTests(unittest.TestCase):
         self.assertIn('net', result)
         self.assertIn('netConnections', result)
         # Verify both pins are in the connection
-        self.assertIn('R1.2', result['created'])
-        self.assertIn('R2.1', result['created'])
+        self.assertIsInstance(result['created'], dict)
+        self.assertIn('summary', result['created'])
+        self.assertIn('R1.2', result['created']['summary'])
+        self.assertIn('R2.1', result['created']['summary'])
 
     def test_connect_pins_requires_valid_input(self) -> None:
         schematic = SchematicManager.create_schematic('ConnectPinsInvalid')
@@ -228,8 +235,10 @@ class ConnectionManagerTests(unittest.TestCase):
         self.assertIn('net', result)
         self.assertIn('netConnections', result)
         # Verify pin and label are in the connection
-        self.assertIn('R1.2', result['created'])
-        self.assertIn('VBAT', result['created'])
+        self.assertIsInstance(result['created'], dict)
+        self.assertIn('summary', result['created'])
+        self.assertIn('R1.2', result['created']['summary'])
+        self.assertIn('VBAT', result['created']['summary'])
 
     def test_connect_hierarchical_label_to_pin(self) -> None:
         """Test connecting a hierarchical label to a component pin"""
@@ -267,8 +276,10 @@ class ConnectionManagerTests(unittest.TestCase):
 
         self.assertIsInstance(result, dict)
         self.assertIn('created', result)
-        self.assertIn('GND', result['created'])
-        self.assertIn('C1.1', result['created'])
+        self.assertIsInstance(result['created'], dict)
+        self.assertIn('summary', result['created'])
+        self.assertIn('GND', result['created']['summary'])
+        self.assertIn('C1.1', result['created']['summary'])
 
     def test_connect_hierarchical_label_to_hierarchical_label(self) -> None:
         """Test connecting two hierarchical labels"""
@@ -306,8 +317,10 @@ class ConnectionManagerTests(unittest.TestCase):
 
         self.assertIsInstance(result, dict)
         self.assertIn('created', result)
-        self.assertIn('VCC', result['created'])
-        self.assertIn('VDD', result['created'])
+        self.assertIsInstance(result['created'], dict)
+        self.assertIn('summary', result['created'])
+        self.assertIn('VCC', result['created']['summary'])
+        self.assertIn('VDD', result['created']['summary'])
 
     def test_hierarchical_label_not_found(self) -> None:
         """Test error handling when hierarchical label is not found"""
@@ -440,8 +453,10 @@ class ConnectionManagerTests(unittest.TestCase):
 
         self.assertIsInstance(result, dict)
         self.assertIn('created', result)
-        self.assertIn('R1.2', result['created'])
-        self.assertIn('GND', result['created'])
+        self.assertIsInstance(result['created'], dict)
+        self.assertIn('summary', result['created'])
+        self.assertIn('R1.2', result['created']['summary'])
+        self.assertIn('GND', result['created']['summary'])
 
     def test_connect_pin_to_local_label(self) -> None:
         schematic = SchematicManager.create_schematic('PinToLocalLabel')
@@ -474,8 +489,10 @@ class ConnectionManagerTests(unittest.TestCase):
 
         self.assertIsInstance(result, dict)
         self.assertIn('created', result)
-        self.assertIn('R1.1', result['created'])
-        self.assertIn('NET_LOCAL', result['created'])
+        self.assertIsInstance(result['created'], dict)
+        self.assertIn('summary', result['created'])
+        self.assertIn('R1.1', result['created']['summary'])
+        self.assertIn('NET_LOCAL', result['created']['summary'])
 
 if __name__ == '__main__':
     unittest.main()
