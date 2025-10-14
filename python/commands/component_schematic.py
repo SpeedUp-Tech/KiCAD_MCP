@@ -168,6 +168,67 @@ def _component_payload(symbol: Symbol) -> Dict[str, Any]:
     return payload
 
 
+def _find_similar_library_names(
+    requested_library: str,
+    search_roots: List[Path],
+    max_suggestions: int = 3,
+) -> List[str]:
+    """
+    Find similar library names in the search paths.
+    Prioritizes case-insensitive exact matches, then other similar names.
+    """
+    available_libraries: List[str] = []
+
+    # Collect all available library names from search roots
+    for root in search_roots:
+        if not root.exists() or not root.is_dir():
+            continue
+        try:
+            for lib_file in root.glob('*.kicad_sym'):
+                lib_name = lib_file.stem  # filename without extension
+                available_libraries.append(lib_name)
+        except (OSError, PermissionError):
+            continue
+
+    if not available_libraries:
+        return []
+
+    requested_lower = requested_library.lower()
+
+    # First, check for case-insensitive exact match
+    for lib_name in available_libraries:
+        if lib_name.lower() == requested_lower and lib_name != requested_library:
+            return [lib_name]  # Return immediately with the exact match
+
+    # If no exact match, find similar names using simple heuristics
+    suggestions: List[Tuple[str, int]] = []
+
+    for lib_name in available_libraries:
+        lib_lower = lib_name.lower()
+        score = 0
+
+        # Check if one is a substring of the other
+        if requested_lower in lib_lower or lib_lower in requested_lower:
+            score += 10
+
+        # Check for common prefix
+        common_prefix_len = 0
+        for i, (c1, c2) in enumerate(zip(requested_lower, lib_lower)):
+            if c1 == c2:
+                common_prefix_len = i + 1
+            else:
+                break
+        score += common_prefix_len
+
+        # Only consider libraries with some similarity
+        if score > 0:
+            suggestions.append((lib_name, score))
+
+    # Sort by score (descending) and return top suggestions
+    suggestions.sort(key=lambda x: x[1], reverse=True)
+    return [name for name, _ in suggestions[:max_suggestions]]
+
+
 def _resolve_library_path(
     library: Optional[str],
     explicit_path: Optional[str],
@@ -239,9 +300,24 @@ def _resolve_library_path(
                     return path
                 attempted.append(path)
 
-    raise FileNotFoundError(
-        f"Could not locate library '{library}'. Checked: {', '.join(str(p) for p in attempted)}"
-    )
+    # Library not found - try to provide helpful suggestions
+    similar_names = _find_similar_library_names(library, search_roots)
+
+    error_msg = f"Could not locate library '{library}'."
+
+    if similar_names:
+        if len(similar_names) == 1:
+            error_msg += f" Did you mean '{similar_names[0]}'?"
+        else:
+            suggestions_str = "', '".join(similar_names)
+            error_msg += f" Did you mean one of: '{suggestions_str}'?"
+    else:
+        # No suggestions found, provide the list of attempted paths
+        error_msg += f" Checked: {', '.join(str(p) for p in attempted[:5])}"
+        if len(attempted) > 5:
+            error_msg += f" ... and {len(attempted) - 5} more locations"
+
+    raise FileNotFoundError(error_msg)
 
 
 def _find_library_symbol(tree: List[Any], symbol_name: str) -> List[Any]:
