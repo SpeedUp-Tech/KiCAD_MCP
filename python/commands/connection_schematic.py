@@ -4,6 +4,8 @@ import logging
 import uuid
 import math
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+import heapq
+
 
 from skip import Schematic
 from sexpdata import Symbol as SSymbol
@@ -578,6 +580,540 @@ def _build_manhattan_path(
 
     return [start, corner, end]
 
+# --- Safe Manhattan routing that avoids pin/node collisions and avoids crossing symbol bodies ---
+from .grid_utils import KICAD_SCHEMATIC_GRID_MM
+
+
+def _collect_pin_coords(schematic: Schematic) -> List[Tuple[float, float]]:
+    coords: List[Tuple[float, float]] = []
+    try:
+        if hasattr(schematic, 'symbol') and schematic.symbol is not None:
+            for sym in schematic.symbol:
+                if hasattr(sym, 'pin') and sym.pin is not None:
+                    for pin in sym.pin:
+                        if hasattr(pin, 'location') and pin.location is not None:
+                            try:
+                                x = round(float(pin.location.x), 1)
+                                y = round(float(pin.location.y), 1)
+                                coords.append((x, y))
+                            except Exception:
+                                continue
+    except Exception:
+        pass
+    return coords
+
+
+def _collect_wire_vertices(schematic: Schematic) -> List[Tuple[float, float]]:
+    pts: List[Tuple[float, float]] = []
+    try:
+        if hasattr(schematic, 'wire') and schematic.wire is not None:
+            for w in schematic.wire:
+                if hasattr(w, 'points') and w.points is not None:
+                    for pt in w.points:
+                        if hasattr(pt, 'value') and len(pt.value) >= 2:
+                            try:
+                                x = round(float(pt.value[0]), 1)
+                                y = round(float(pt.value[1]), 1)
+                                pts.append((x, y))
+                            except Exception:
+                                continue
+    except Exception:
+        pass
+    return pts
+def _is_entry(node: Any, name: str) -> bool:
+    try:
+        return isinstance(node, list) and node and hasattr(node[0], 'value') and node[0].value() == name
+    except Exception:
+        return False
+
+
+def _atom_to_str(atom: Any) -> str:
+    try:
+        if hasattr(atom, 'value') and callable(atom.value):
+            return str(atom.value())
+        return str(atom)
+    except Exception:
+        return str(atom)
+
+
+def _find_lib_symbols_node(schematic: Schematic) -> Optional[List[Any]]:
+    try:
+        for node in getattr(schematic, 'tree', []):
+            if _is_entry(node, 'lib_symbols'):
+                return node
+    except Exception:
+        pass
+    return None
+
+
+def _extract_poly_points_from_lib_symbol(symbol_node: List[Any]) -> List[Tuple[float, float]]:
+    """Collect all polyline points (xy ...) under the given library symbol node (library space)."""
+    pts: List[Tuple[float, float]] = []
+
+    def visit(n: Any) -> None:
+        if not isinstance(n, list):
+            return
+        if _is_entry(n, 'polyline'):
+            # find (pts ...)
+            for child in n:
+                if _is_entry(child, 'pts'):
+                    for item in child[1:]:
+                        if isinstance(item, list) and item and _atom_to_str(item[0]) == 'xy' and len(item) >= 3:
+                            try:
+                                px = float(item[1])
+                                py = float(item[2])
+                                pts.append((px, py))
+                            except Exception:
+                                continue
+        else:
+            for child in n:
+                visit(child)
+
+    visit(symbol_node)
+    return pts
+
+
+def _rotate_offset(dx: float, dy: float, rotation_deg: float) -> Tuple[float, float]:
+    radians = math.radians(rotation_deg % 360)
+    cos_theta = math.cos(radians)
+    sin_theta = math.sin(radians)
+    return (
+        dx * cos_theta - dy * sin_theta,
+        dx * sin_theta + dy * cos_theta,
+    )
+
+
+def _symbol_body_bbox_from_lib(schematic: Schematic, sym: Symbol) -> Optional[Tuple[float, float, float, float]]:
+    """Compute the instance bbox of the symbol's body using its library geometry (no margin)."""
+    try:
+        lib_id = getattr(getattr(sym, 'lib_id', None), 'value', '') or ''
+        if not lib_id:
+            return None
+        lib_symbols_node = _find_lib_symbols_node(schematic)
+        if not lib_symbols_node:
+            return None
+        # Find matching library symbol definition
+        symbol_name_only = lib_id.split(':')[-1] if ':' in lib_id else lib_id
+        target_node: Optional[List[Any]] = None
+        for child in lib_symbols_node:
+            if not _is_entry(child, 'symbol') or len(child) < 2:
+                continue
+            sym_name = _atom_to_str(child[1])
+            if sym_name == lib_id or sym_name.startswith(lib_id + '_') or sym_name == symbol_name_only:
+                target_node = child
+                break
+        if target_node is None:
+            return None
+        lib_pts = _extract_poly_points_from_lib_symbol(target_node)
+        if not lib_pts:
+            return None
+        # Transform library points to instance coordinates using (at x y rot)
+        at_vals = list(getattr(getattr(sym, 'at', None), 'value', []) or [])
+        x0 = float(at_vals[0]) if len(at_vals) > 0 else 0.0
+        y0 = float(at_vals[1]) if len(at_vals) > 1 else 0.0
+        rot = float(at_vals[2]) if len(at_vals) > 2 else 0.0
+        xs: List[float] = []
+        ys: List[float] = []
+        for (lx, ly) in lib_pts:
+            dx, dy = _rotate_offset(lx, ly, rot)
+            xs.append(x0 + dx)
+            ys.append(y0 + dy)
+        return (round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1))
+    except Exception:
+        return None
+
+
+
+def _collect_symbol_bboxes(schematic: Schematic) -> List[Tuple[Tuple[float, float, float, float], Symbol]]:
+    """Compute each symbol body's axis-aligned bbox from library geometry and expand by a fixed clearance.
+
+    Fallback to pin-extents only if library geometry is unavailable. Power symbols are skipped.
+    """
+    boxes: List[Tuple[Tuple[float, float, float, float], Symbol]] = []
+    clearance = KICAD_SCHEMATIC_GRID_MM  # fixed, non-configurable visual clearance
+    try:
+        if hasattr(schematic, 'symbol') and schematic.symbol is not None:
+            for sym in schematic.symbol:
+                # Skip power symbols as obstacles
+                try:
+                    lib_id = getattr(getattr(sym, 'lib_id', None), 'value', '') or ''
+                    if lib_id and 'power' in lib_id.lower():
+                        continue
+                except Exception:
+                    pass
+
+                rect = _symbol_body_bbox_from_lib(schematic, sym)
+                if rect is None:
+                    # Fallback: derive bbox from pins
+                    pts: List[Tuple[float, float]] = []
+                    if hasattr(sym, 'pin') and sym.pin is not None:
+                        for pin in sym.pin:
+                            if hasattr(pin, 'location') and pin.location is not None:
+                                try:
+                                    pts.append((float(pin.location.x), float(pin.location.y)))
+                                except Exception:
+                                    continue
+                    if not pts:
+                        continue
+                    xs = [p[0] for p in pts]
+                    ys = [p[1] for p in pts]
+                    rect = (min(xs), min(ys), max(xs), max(ys))
+                # Expand by fixed clearance
+                xmin, ymin, xmax, ymax = rect
+                xmin = round(xmin - clearance, 1)
+                ymin = round(ymin - clearance, 1)
+                xmax = round(xmax + clearance, 1)
+                ymax = round(ymax + clearance, 1)
+                boxes.append(((xmin, ymin, xmax, ymax), sym))
+    except Exception:
+        pass
+    return boxes
+
+
+def _point_on_axis_segment_interior(a: Tuple[float, float], b: Tuple[float, float], p: Tuple[float, float]) -> bool:
+    ax, ay = a
+    bx, by = b
+    px, py = p
+    if ax == bx and ay == by:
+        return False
+    # horizontal
+    if ay == by and py == ay:
+        lo, hi = (ax, bx) if ax <= bx else (bx, ax)
+        return lo < px < hi
+    # vertical
+    if ax == bx and px == ax:
+        lo, hi = (ay, by) if ay <= by else (by, ay)
+        return lo < py < hi
+    return False
+
+
+def _segment_intersects_rect(a: Tuple[float, float], b: Tuple[float, float], rect: Tuple[float, float, float, float]) -> bool:
+    x1, y1 = a
+    x2, y2 = b
+    xmin, ymin, xmax, ymax = rect
+    # horizontal segment: treat touching rectangle boundary as intersection
+    if y1 == y2:
+        y = y1
+        if not (ymin <= y <= ymax):
+            return False
+        lo, hi = (x1, x2) if x1 <= x2 else (x2, x1)
+        return not (hi <= xmin or lo >= xmax)
+    # vertical segment: treat touching rectangle boundary as intersection
+    if x1 == x2:
+        x = x1
+        if not (xmin <= x <= xmax):
+            return False
+        lo, hi = (y1, y2) if y1 <= y2 else (y2, y1)
+        return not (hi <= ymin or lo >= ymax)
+    return False
+
+def _astar_grid_route(
+    schematic: Schematic,
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+    step: float,
+    bboxes: List[Tuple[Tuple[float, float, float, float], Symbol]],
+    forbidden_points: Iterable[Tuple[float, float]],
+    max_expansions: int = 12000,
+    bend_penalty: float = 0.2,
+) -> Optional[List[Tuple[float, float]]]:
+    """Bounded Manhattan A* on grid with rectangle obstacles and forbidden grid points.
+
+    - Obstacles are the interiors of symbol body rectangles.
+    - Start/end are always allowed, even if inside a body (to allow exiting/entering at pins).
+    - Returns a list of points including start and end, or None if not found within limits.
+    """
+    sx, sy = start
+    ex, ey = end
+
+    # Convert to integer grid coordinates
+    def to_grid(pt: Tuple[float, float]) -> Tuple[int, int]:
+        return (int(round(pt[0] / step)), int(round(pt[1] / step)))
+
+    def from_grid(g: Tuple[int, int]) -> Tuple[float, float]:
+        return (round(g[0] * step, 2), round(g[1] * step, 2))
+
+    gs = to_grid((sx, sy))
+    ge = to_grid((ex, ey))
+
+    # Search window bounds
+    span_x = abs(gs[0] - ge[0])
+    span_y = abs(gs[1] - ge[1])
+    margin = max(10, max(span_x, span_y) + 6)  # fixed extra search band in grid units
+    xmin = min(gs[0], ge[0]) - margin
+    xmax = max(gs[0], ge[0]) + margin
+    ymin = min(gs[1], ge[1]) - margin
+    ymax = max(gs[1], ge[1]) + margin
+
+    # Prepare obstacles in grid space
+    rects: List[Tuple[float, float, float, float]] = [r for (r, _sym) in bboxes]
+
+    def is_inside_rect_interior(x_mm: float, y_mm: float, rect: Tuple[float, float, float, float]) -> bool:
+        xmin_r, ymin_r, xmax_r, ymax_r = rect
+        return (xmin_r < x_mm < xmax_r) and (ymin_r < y_mm < ymax_r)
+
+    forb_set = {to_grid(p) for p in set(forbidden_points) if p != start and p != end}
+
+    def blocked(gx: int, gy: int) -> bool:
+        if gx < xmin or gx > xmax or gy < ymin or gy > ymax:
+            return True
+        if (gx, gy) in forb_set and (gx, gy) not in {gs, ge}:
+            return True
+        x_mm = gx * step
+        y_mm = gy * step
+        # Allow start/end even if inside a rect interior
+        if (gx, gy) in {gs, ge}:
+            return False
+        for rect in rects:
+            if is_inside_rect_interior(x_mm, y_mm, rect):
+                return True
+        return False
+
+    # A* search
+    DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
+
+    def heuristic(x: int, y: int) -> float:
+        return abs(x - ge[0]) + abs(y - ge[1])
+
+    start_state = (gs[0], gs[1], -1)  # (x, y, dir_idx)
+    open_heap: List[Tuple[float, float, Tuple[int, int, int]]] = []
+    heapq.heappush(open_heap, (heuristic(gs[0], gs[1]), 0.0, start_state))
+    came_from: Dict[Tuple[int, int, int], Tuple[int, int, int]] = {}
+    gscore: Dict[Tuple[int, int, int], float] = {start_state: 0.0}
+
+    expansions = 0
+
+    def state_key(x: int, y: int, d: int) -> Tuple[int, int, int]:
+        return (x, y, d)
+
+    while open_heap and expansions < max_expansions:
+        f, g, (x, y, dprev) = heapq.heappop(open_heap)
+        expansions += 1
+        if (x, y) == ge:
+            # Reconstruct path
+            path: List[Tuple[int, int]] = [(x, y)]
+            state = (x, y, dprev)
+            while state in came_from:
+                state = came_from[state]
+                path.append((state[0], state[1]))
+            path.reverse()
+            # Convert to mm and simplify collinear
+            pts = [from_grid(pt) for pt in path]
+            simplified: List[Tuple[float, float]] = []
+            for p in pts:
+                if not simplified:
+                    simplified.append(p)
+                else:
+                    simplified.append(p)
+                    # drop middle if collinear
+                    if len(simplified) >= 3:
+                        a, b, c = simplified[-3], simplified[-2], simplified[-1]
+                        if (a[0] == b[0] == c[0]) or (a[1] == b[1] == c[1]):
+                            simplified.pop(-2)
+            return simplified
+
+        for i, (dx, dy) in enumerate(DIRS):
+            nx, ny = x + dx, y + dy
+            if blocked(nx, ny):
+                continue
+            # Cost: unit step + bend penalty for direction change
+            cost = 1.0
+            if dprev != -1 and dprev != i:
+                cost += bend_penalty
+            ng = g + cost
+            ns = state_key(nx, ny, i)
+            if ng < gscore.get(ns, float('inf')):
+                gscore[ns] = ng
+                came_from[ns] = (x, y, dprev)
+                nf = ng + heuristic(nx, ny)
+                heapq.heappush(open_heap, (nf, ng, ns))
+
+    return None
+
+
+def _safe_manhattan_route(
+    schematic: Schematic,
+    start: Tuple[float, float],
+    end: Tuple[float, float],
+    pattern_hint: str = 'hv',
+    exclude_symbols: Optional[Iterable[Symbol]] = None,
+) -> List[Tuple[float, float]]:
+    # Work with grid-snapped coordinates throughout
+    s = tuple(snap_point_to_grid(start[0], start[1]))
+    e = tuple(snap_point_to_grid(end[0], end[1]))
+
+    if s == e:
+        raise ValueError('Pins share the same coordinates; cannot connect')
+
+    pin_coords = set(_collect_pin_coords(schematic))
+    node_coords = set(_collect_wire_vertices(schematic))
+    bboxes = _collect_symbol_bboxes(schematic)
+    excluded_set = set(exclude_symbols or [])
+
+    # Allow using the endpoints themselves
+    allowed_endpoints = { (round(s[0], 1), round(s[1], 1)), (round(e[0], 1), round(e[1], 1)) }
+
+    forbidden_vertices = (pin_coords | node_coords) - allowed_endpoints
+
+    def ok_route(points: List[Tuple[float, float]]) -> bool:
+        # Snap all points to grid the same way add_wire will
+        pts = snap_points_to_grid(points)
+        pts_r = [(round(x, 1), round(y, 1)) for (x, y) in pts]
+        # 1) internal vertices cannot coincide with forbidden nodes
+        for v in pts_r[1:-1]:
+            if v in forbidden_vertices:
+                return False
+        # 2) no segment may pass through another pin coordinate in its interior
+        for a, b in zip(pts_r, pts_r[1:]):
+            for pc in pin_coords - allowed_endpoints:
+                if _point_on_axis_segment_interior(a, b, pc):
+                    return False
+        # 3) no segment may cross a symbol body bbox (approx) except for endpoint symbols
+        for a, b in zip(pts_r, pts_r[1:]):
+            for (rect, sym) in bboxes:
+                if sym in excluded_set:
+                    continue
+                if _segment_intersects_rect(a, b, rect):
+                    return False
+        return True
+
+    # 0) Straight segment
+    if s[0] == e[0] or s[1] == e[1]:
+        candidate = [s, e]
+        if ok_route(candidate):
+            return snap_points_to_grid(candidate)
+
+    # 1) Try hinted pattern then alternate
+    ordered = []
+    ph = (pattern_hint or 'hv').lower()
+    ordered.append(ph if ph in ('hv', 'vh') else 'hv')
+    ordered.append('vh' if ordered[0] == 'hv' else 'hv')
+
+    for pat in ordered:
+        if pat == 'hv':
+            corner = (e[0], s[1])
+        else:
+            corner = (s[0], e[1])
+        candidate = [s, corner, e]
+        if ok_route(candidate):
+            return snap_points_to_grid(candidate)
+
+    # 2) Corridor-based detour (choose a clear y for horizontal or clear x for vertical)
+    step = KICAD_SCHEMATIC_GRID_MM
+    x_lo, x_hi = (s[0], e[0]) if s[0] <= e[0] else (e[0], s[0])
+    y_lo, y_hi = (s[1], e[1]) if s[1] <= e[1] else (e[1], s[1])
+
+    def merged_bands_horiz():
+        bands = []
+        for (xmin, ymin, xmax, ymax), sym in bboxes:
+            if sym in excluded_set:
+                continue
+            if xmax <= x_lo or xmin >= x_hi:
+                continue
+            bands.append((ymin, ymax))
+        if not bands:
+            return []
+        bands.sort()
+        merged = [bands[0]]
+        for a, b in bands[1:]:
+            ly0, ly1 = merged[-1]
+            if a <= ly1:
+                merged[-1] = (ly0, max(ly1, b))
+            else:
+                merged.append((a, b))
+        return merged
+
+    def merged_bands_vert():
+        bands = []
+        for (xmin, ymin, xmax, ymax), sym in bboxes:
+            if sym in excluded_set:
+                continue
+            if ymax <= y_lo or ymin >= y_hi:
+                continue
+            bands.append((xmin, xmax))
+        if not bands:
+            return []
+        bands.sort()
+        merged = [bands[0]]
+        for a, b in bands[1:]:
+            lx0, lx1 = merged[-1]
+            if a <= lx1:
+                merged[-1] = (lx0, max(lx1, b))
+            else:
+                merged.append((a, b))
+        return merged
+
+    # Try horizontal corridor (choose y above/below merged bands)
+    bands_y = merged_bands_horiz()
+    if bands_y:
+        top = max(b[1] for b in bands_y)
+        bot = min(b[0] for b in bands_y)
+        y_up = round(top + step, 2)
+        y_dn = round(bot - step, 2)
+        for yc in (y_up, y_dn):
+            candidate = [s, (s[0], yc), (e[0], yc), e]
+            if ok_route(candidate):
+                return snap_points_to_grid(candidate)
+
+    # Try vertical corridor (choose x left/right of merged bands)
+    bands_x = merged_bands_vert()
+    if bands_x:
+        right = max(b[1] for b in bands_x)
+        left = min(b[0] for b in bands_x)
+        x_rt = round(right + step, 2)
+        x_lt = round(left - step, 2)
+        for xc in (x_rt, x_lt):
+            candidate = [s, (xc, s[1]), (xc, e[1]), e]
+            if ok_route(candidate):
+                return snap_points_to_grid(candidate)
+
+    # 3) Bounded A* fallback for multi-bend paths
+    astar_route = _astar_grid_route(
+        schematic,
+        s,
+        e,
+        step,
+        [(r, sym) for (r, sym) in bboxes if sym not in excluded_set],
+        forbidden_vertices,
+    )
+    if astar_route is not None and ok_route(astar_route):
+        return snap_points_to_grid(astar_route)
+
+    # 4) Fallback: simple one-step escape stubs from start and from end
+
+    escape_vectors = [ (0, step), (0, -step), (step, 0), (-step, 0) ]
+
+    def try_escape(from_start: bool, pat: str) -> Optional[List[Tuple[float, float]]]:
+        for dx, dy in escape_vectors:
+            esc = ( (s[0] + dx, s[1] + dy) if from_start else (e[0] + dx, e[1] + dy) )
+            esc = tuple(snap_point_to_grid(esc[0], esc[1]))
+            # Build 3-segment route using the escape point
+            if pat == 'hv':
+                if from_start:
+                    points = [s, esc, (e[0], esc[1]), e]
+                else:
+                    points = [s, (s[0], esc[1]), esc, e]
+            else:  # 'vh'
+                if from_start:
+                    points = [s, esc, (esc[0], e[1]), e]
+                else:
+                    points = [s, (esc[0], s[1]), esc, e]
+            if ok_route(points):
+                return snap_points_to_grid(points)
+        return None
+
+    for pat in ordered:
+        r = try_escape(True, pat) or try_escape(False, pat)
+        if r is not None:
+            return r
+
+    # If all attempts failed, raise with guidance
+    raise ValueError(
+        'Routing failed: could not find a Manhattan path that avoids pin endpoints/nodes and symbol bodies. '
+        'Try repositioning or rotating one of the components to provide clearance.'
+    )
+
+
 
 class ConnectionManager:
     """Manage connections between components"""
@@ -1017,7 +1553,19 @@ class ConnectionManager:
                 if isinstance(requested, str):
                     pattern = requested
 
-            route_points = _build_manhattan_path(source_point, target_point, pattern=pattern)
+            exclude_syms = []
+            if source_type == 'pin' and source_obj is not None:
+                exclude_syms.append(source_obj)
+            if target_type == 'pin' and target_obj is not None:
+                exclude_syms.append(target_obj)
+
+            route_points = _safe_manhattan_route(
+                schematic,
+                tuple(source_point),
+                tuple(target_point),
+                pattern_hint=pattern,
+                exclude_symbols=exclude_syms,
+            )
             properties['points'] = [[p[0], p[1]] for p in route_points]
 
         start = [source_point[0], source_point[1]]
