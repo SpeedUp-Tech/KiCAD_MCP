@@ -3,7 +3,7 @@ from sexpdata import Symbol
 
 from python.commands.schematic import SchematicManager
 from python.commands.component_schematic import ComponentManager
-from python.commands.connection_schematic import ConnectionManager
+from python.commands.connection_schematic import ConnectionManager, _collect_symbol_bboxes
 from python.commands.grid_utils import KICAD_SCHEMATIC_GRID_MM
 
 
@@ -18,28 +18,6 @@ def add_hlabel(schematic, name: str, x: float, y: float):
         [Symbol('uuid'), Symbol(f'label-{name}')]
     ]
     schematic.tree.append(node)
-
-
-def compute_symbol_bbox_from_pins(schematic, reference: str):
-    # Find symbol by reference, collect pin positions, inflate by grid
-    syms = [sym for sym in getattr(schematic, 'symbol', []) if getattr(getattr(sym, 'property', None), 'Reference', None) is not None and getattr(sym.property.Reference, 'value', None) == reference]
-    assert syms, f"Symbol {reference} not found"
-    sym = syms[0]
-    pts = []
-    if hasattr(sym, 'pin') and sym.pin is not None:
-        for pin in sym.pin:
-            if hasattr(pin, 'location') and pin.location is not None:
-                pts.append((float(pin.location.x), float(pin.location.y)))
-    assert pts, f"No pins found for {reference}"
-    xs = [p[0] for p in pts]
-    ys = [p[1] for p in pts]
-    margin = KICAD_SCHEMATIC_GRID_MM
-    return (
-        min(xs) - margin,
-        min(ys) - margin,
-        max(xs) + margin,
-        max(ys) + margin,
-    )
 
 
 def seg_intersects_rect(a, b, rect):
@@ -70,14 +48,23 @@ class RoutingAvoidsSymbolBodiesTests(unittest.TestCase):
 
         # Place a resistor roughly in the middle along the straight path
         ComponentManager.add_component(sch, { 'type': 'R', 'reference': 'Rmid', 'x': 45.0, 'y': 10.0 })
-        bbox = compute_symbol_bbox_from_pins(sch, 'Rmid')
+
+        # Get bbox using the same method as the routing code
+        bboxes = _collect_symbol_bboxes(sch)
+        rmid_bbox = None
+        for (bbox_rect, sym) in bboxes:
+            if hasattr(sym, 'property') and hasattr(sym.property, 'Reference'):
+                if sym.property.Reference.value == 'Rmid':
+                    rmid_bbox = bbox_rect
+                    break
+        assert rmid_bbox is not None, "Rmid bbox not found"
+        bbox = rmid_bbox
 
         before_wires = len(getattr(sch, 'wire', []))
         ConnectionManager.connect_pins(
             sch,
             {'label': 'A'},
             {'label': 'B'},
-            routing={'pattern': 'hv'},
         )
         after_wires = len(sch.wire)
         self.assertGreater(after_wires, before_wires)

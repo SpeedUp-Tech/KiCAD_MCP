@@ -627,7 +627,7 @@ class ComponentManager:
                     - { "kind": "pin", "reference": Ref, "pin": Pin, "unit"?: str, "pinType"?: str }
                     - { "kind": "label", "label": Name }
         """
-        from commands.connection_schematic import ConnectionManager
+        from .connection_schematic import ConnectionManager
         from .schematic_state import _extract_components, _build_connection_map
 
         if not isinstance(component_ref, str) or not component_ref.strip():
@@ -694,48 +694,34 @@ class ComponentManager:
                     'summary': summary,
                 })
 
-        # Find all wires connected to this component and remove them directly (physical cleanup)
-        wires_to_remove = []
-        wire_data = []  # Store wire info before removal
+        # Remove all connections involving this component's pins
+        # Use ConnectionManager.remove_connection to properly remove entire
+        # connection paths (including all segments with multiple bends)
+        for conn in removed_connections_structured:
+            source_ep = conn.get('source', {})
+            target_ep = conn.get('target', {})
 
-        if hasattr(schematic, 'wire') and component_pins:
-            # Find wires connected to the component and collect their raw nodes
-            for wire in list(schematic.wire):
+            # Convert endpoints back to connection specs
+            def _endpoint_to_spec(ep: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+                if ep.get('kind') == 'pin':
+                    spec = {'reference': ep.get('reference'), 'pin': ep.get('pin')}
+                    if 'unit' in ep:
+                        spec['unit'] = ep['unit']
+                    return spec
+                elif ep.get('kind') == 'label':
+                    return {'label': ep.get('label')}
+                return None
+
+            source_spec = _endpoint_to_spec(source_ep)
+            target_spec = _endpoint_to_spec(target_ep)
+
+            if source_spec and target_spec:
                 try:
-                    if hasattr(wire, 'points'):
-                        points = wire.points
-                        if len(points) >= 2:
-                            wire_points = []
-                            for pt in points:
-                                if hasattr(pt, 'value'):
-                                    coords = pt.value
-                                    if len(coords) >= 2:
-                                        x = round(float(coords[0]), 1)
-                                        y = round(float(coords[1]), 1)
-                                        wire_points.append((x, y))
-
-                            if len(wire_points) < 2:
-                                continue
-
-                            # If this wire endpoints touch the component, mark for removal
-                            if wire_points[0] in component_pins or wire_points[-1] in component_pins:
-                                wire_data.append({'wire': wire, 'raw': wire.raw})
-                                wires_to_remove.append(wire)
+                    ConnectionManager.remove_connection(schematic, source_spec, target_spec)
                 except Exception as e:
-                    logger.warning(f"Error analyzing wire for removal: {e}")
+                    # If removal fails (e.g., connection already broken), log and continue
+                    logger.warning(f"Could not remove connection {conn.get('summary')}: {e}")
                     continue
-
-            # Remove all wires at once
-            for data in wire_data:
-                raw_wire = data['raw']
-                if raw_wire in schematic.tree:
-                    schematic.tree.remove(raw_wire)
-
-            # Update the wire collection
-            if hasattr(schematic, 'wire') and hasattr(schematic.wire, '_elements'):
-                schematic.wire._elements = [
-                    wire for wire in schematic.wire._elements if wire not in wires_to_remove
-                ]
 
         removed_payloads: List[Dict[str, Any]] = []
         for symbol in matches:
@@ -900,47 +886,21 @@ class ComponentManager:
                         if other_spec:
                             connections_to_restore.append((pin_num, other_spec))
 
-                # 2) Remove all wires attached to this component's pins (without removing the component)
-                #    This mirrors the logic in remove_component for wire cleanup
-                #    Build map of this component's pin coordinates
-                component_pins: Dict[Tuple[float, float], str] = {}
-                if hasattr(symbol, 'pin'):
-                    for pin in symbol.pin:
-                        if hasattr(pin, 'location'):
-                            loc = pin.location
-                            px = round(float(loc.x), 1)
-                            py = round(float(loc.y), 1)
-                            pin_number = str(getattr(pin, 'number', ''))
-                            component_pins[(px, py)] = pin_number
+                # 2) Remove all connections involving this component's pins
+                #    Use ConnectionManager.remove_connection to properly remove entire
+                #    connection paths (including all segments with multiple bends)
+                from .connection_schematic import ConnectionManager
 
-                wires_to_remove = []
-                raw_to_remove = []
-                if hasattr(schematic, 'wire') and component_pins:
-                    for wire in list(schematic.wire):
-                        try:
-                            if hasattr(wire, 'points'):
-                                pts = wire.points
-                                if len(pts) >= 2:
-                                    wpoints: List[Tuple[float, float]] = []
-                                    for pt in pts:
-                                        if hasattr(pt, 'value'):
-                                            coords = pt.value
-                                            if len(coords) >= 2:
-                                                wx = round(float(coords[0]), 1)
-                                                wy = round(float(coords[1]), 1)
-                                                wpoints.append((wx, wy))
-                                    if len(wpoints) >= 2:
-                                        if wpoints[0] in component_pins or wpoints[-1] in component_pins:
-                                            wires_to_remove.append(wire)
-                                            raw_to_remove.append(wire.raw)
-                        except Exception:
-                            continue
-
-                for raw in raw_to_remove:
-                    if raw in schematic.tree:
-                        schematic.tree.remove(raw)
-                if hasattr(schematic, 'wire') and hasattr(schematic.wire, '_elements'):
-                    schematic.wire._elements = [w for w in schematic.wire._elements if w not in wires_to_remove]
+                for pin_num, other_spec in connections_to_restore:
+                    try:
+                        src_spec = {'reference': target_ref, 'pin': pin_num}
+                        if desired_unit is not None:
+                            src_spec['unit'] = desired_unit
+                        ConnectionManager.remove_connection(schematic, src_spec, other_spec)
+                    except Exception as e:
+                        # If removal fails (e.g., connection already broken), log and continue
+                        logger.warning(f"Could not remove connection {target_ref}.{pin_num} to {other_spec}: {e}")
+                        continue
             except Exception as e:
                 # Roll back any partial removals and fail the update
                 schematic.tree = copy.deepcopy(original_tree)
@@ -1056,7 +1016,6 @@ class ComponentManager:
         if placement_changed and connections_to_restore:
             # Reconstruct under transaction semantics – on failure, roll back to original tree
             try:
-                from .connection_schematic import ConnectionManager
                 final_ref_for_connect = new_reference or target_ref
                 for pin_num, other_spec in connections_to_restore:
                     src_spec_new = {'reference': final_ref_for_connect, 'pin': pin_num}

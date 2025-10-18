@@ -45,7 +45,6 @@ class SafeRoutingCollisionAvoidanceTests(unittest.TestCase):
             sch,
             {'label': 'A'},
             {'label': 'B'},
-            routing={'pattern': 'hv'},
         )
         self.assertIsInstance(result, dict)
 
@@ -113,7 +112,6 @@ class SafeRoutingCollisionAvoidanceTests(unittest.TestCase):
                 sch,
                 {'label': 'A'},
                 {'label': 'B'},
-                routing={'pattern': 'hv'},
             )
         msg = str(ctx.exception).lower()
         self.assertIn('routing failed', msg)

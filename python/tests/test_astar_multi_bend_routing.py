@@ -78,7 +78,6 @@ class ManhattanAStarRoutingTests(unittest.TestCase):
             sch,
             {'label': 'A'},
             {'label': 'B'},
-            routing={'pattern': 'hv'},
         )
         new_wires = sch.wire[before:]
         flat = []
@@ -110,7 +109,6 @@ class ManhattanAStarRoutingTests(unittest.TestCase):
             sch,
             {'label': 'A'},
             {'label': 'B'},
-            routing={'pattern': 'vh'},
         )
         flat = []
         for seg in sch.wire[before:]:

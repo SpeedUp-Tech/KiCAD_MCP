@@ -194,12 +194,11 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         ]
         schematic.tree.append(label)
 
-        # Test horizontal-then-vertical routing
+        # Test routing
         result_hv = ConnectionManager.connect_pins(
             schematic,
             {'reference': 'R1', 'pin': '1'},
             {'label': 'SIGNAL'},
-            routing={'pattern': 'hv'},
         )
         self.assertIsInstance(result_hv, dict)
         self.assertIn('created', result_hv)

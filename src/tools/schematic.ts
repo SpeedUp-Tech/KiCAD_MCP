@@ -279,23 +279,13 @@ export function registerSchematicTools(
         'Target connection point - either a component pin {reference, pin} or label/power {label}'
       ),
       wire: wireOptionsSchema.optional().describe('Optional wire styling overrides'),
-      routing: z
-        .object({
-          pattern: z
-            .enum(['hv', 'vh'])
-            .optional()
-            .describe('Preferred Manhattan routing order (horizontal-then-vertical or vice versa)'),
-        })
-        .optional()
-        .describe('Routing hints for the connection'),
     }),
-    async ({ schematicPath, source, target, wire, routing }) => {
+    async ({ schematicPath, source, target, wire }) => {
       const result = await callKicadScript('connect_schematic_pins', {
         schematicPath,
         source,
         target,
         wireOptions: wire,
-        routing,
       });
       return formatToolResult(result);
     }

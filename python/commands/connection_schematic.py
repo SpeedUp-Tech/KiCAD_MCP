@@ -22,6 +22,10 @@ logger = logging.getLogger('kicad_interface')
 _DEFAULT_WIRE_WIDTH = 0.254
 _VALID_STROKE_TYPES = {'default', 'dash', 'dot'}
 
+# Stub configuration
+KICAD_SCHEMATIC_GRID_MM = 1.27  # Standard KiCAD grid spacing
+DEFAULT_STUB_LENGTH_MM = 3.81  # 3 grids = 3.81mm
+
 
 def _coerce_point(value: Any, *, label: str) -> Tuple[float, float]:
     if value is None:
@@ -411,6 +415,58 @@ def _resolve_pin(
     return symbol, target_pin, point
 
 
+def _calculate_stub_end(pin_obj: Any, stub_length: float = DEFAULT_STUB_LENGTH_MM) -> Tuple[float, float]:
+    """
+    Calculate the stub end point for a pin based on its rotation.
+
+    The pin rotation indicates the direction the pin points outward from the symbol body.
+    The stub extends in the same direction as the pin points.
+
+    Args:
+        pin_obj: Pin object with location attribute (x, y, rotation)
+        stub_length: Length of stub in mm (default: 2.54mm = 2 grids)
+
+    Returns:
+        (stub_end_x, stub_end_y): Grid-snapped coordinates of the stub end point
+
+    Pin rotation mapping:
+        0° → Pin points RIGHT → stub extends in +X direction
+        90° → Pin points UP → stub extends in +Y direction
+        180° → Pin points LEFT → stub extends in -X direction
+        270° → Pin points DOWN → stub extends in -Y direction
+    """
+    loc = pin_obj.location
+    pin_x = float(loc.x)
+    pin_y = float(loc.y)
+    pin_rotation = float(loc.rotation)
+
+    # Map rotation to direction vector
+    if pin_rotation == 0:
+        # Pin points RIGHT → stub extends RIGHT
+        dx, dy = 1.0, 0.0
+    elif pin_rotation == 90:
+        # Pin points UP → stub extends UP
+        dx, dy = 0.0, 1.0
+    elif pin_rotation == 180:
+        # Pin points LEFT → stub extends LEFT
+        dx, dy = -1.0, 0.0
+    elif pin_rotation == 270:
+        # Pin points DOWN → stub extends DOWN
+        dx, dy = 0.0, -1.0
+    else:
+        # Handle non-standard rotations (shouldn't happen in practice)
+        angle_rad = math.radians(pin_rotation)
+        dx = math.cos(angle_rad)
+        dy = math.sin(angle_rad)
+
+    # Calculate stub end point
+    stub_end_x = pin_x + dx * stub_length
+    stub_end_y = pin_y + dy * stub_length
+
+    # Snap to grid
+    return snap_point_to_grid(stub_end_x, stub_end_y)
+
+
 def _find_hierarchical_label(
     schematic: Schematic,
     label_name: str,
@@ -498,7 +554,7 @@ def _resolve_connection_point(
     spec: Dict[str, Any],
     *,
     label: str,
-) -> Tuple[Optional[Any], Tuple[float, float], str]:
+) -> Tuple[Optional[Any], Optional[Any], Tuple[float, float], str]:
     """
     Resolve a connection point specification to coordinates.
 
@@ -514,9 +570,9 @@ def _resolve_connection_point(
         label: Description for error messages (e.g., "source", "target")
 
     Returns:
-        Tuple of (symbol_or_none, (x, y), connection_type)
-        - For pins: (Symbol, (x, y), "pin")
-        - For labels/power: (None, (x, y), "label")
+        Tuple of (symbol_or_none, pin_or_none, (x, y), connection_type)
+        - For pins: (Symbol, Pin, (x, y), "pin")
+        - For labels/power: (None, None, (x, y), "label")
 
     Raises:
         TypeError: If spec is not a dictionary
@@ -545,40 +601,13 @@ def _resolve_connection_point(
     # Resolve as component pin
     if has_reference:
         symbol, pin, point = _resolve_pin(schematic, spec, label=label)
-        return (symbol, point, "pin")
+        return (symbol, pin, point, "pin")
 
     # Resolve as hierarchical label
     label_name = spec.get('label') or spec.get('labelName')
     _, point = _find_hierarchical_label(schematic, label_name)
-    return (None, point, "label")
+    return (None, None, point, "label")
 
-
-def _build_manhattan_path(
-    start: Tuple[float, float],
-    end: Tuple[float, float],
-    pattern: str = 'hv',
-) -> List[Tuple[float, float]]:
-    sx, sy = start
-    ex, ey = end
-
-    if sx == ex or sy == ey:
-        if (sx, sy) == (ex, ey):
-            raise ValueError('Pins share the same coordinates; cannot connect')
-        return [start, end]
-
-    pattern = pattern.lower()
-    if pattern not in {'hv', 'vh'}:
-        pattern = 'hv'
-
-    if pattern == 'hv':
-        corner = (ex, sy)
-    else:
-        corner = (sx, ey)
-
-    if corner == start or corner == end:
-        return [start, end]
-
-    return [start, corner, end]
 
 # --- Safe Manhattan routing that avoids pin/node collisions and avoids crossing symbol bodies ---
 from .grid_utils import KICAD_SCHEMATIC_GRID_MM
@@ -647,14 +676,22 @@ def _find_lib_symbols_node(schematic: Schematic) -> Optional[List[Any]]:
 
 
 def _extract_poly_points_from_lib_symbol(symbol_node: List[Any]) -> List[Tuple[float, float]]:
-    """Collect all polyline points (xy ...) under the given library symbol node (library space)."""
+    """Collect all geometry points from the library symbol node (library space).
+
+    Extracts points from:
+    - Polylines (pts with xy coordinates)
+    - Rectangles (start and end corners)
+    - Circles (center ± radius to get bounding box)
+    - Arcs (start, mid, end points)
+    """
     pts: List[Tuple[float, float]] = []
 
     def visit(n: Any) -> None:
         if not isinstance(n, list):
             return
+
+        # Extract polyline points
         if _is_entry(n, 'polyline'):
-            # find (pts ...)
             for child in n:
                 if _is_entry(child, 'pts'):
                     for item in child[1:]:
@@ -665,6 +702,67 @@ def _extract_poly_points_from_lib_symbol(symbol_node: List[Any]) -> List[Tuple[f
                                 pts.append((px, py))
                             except Exception:
                                 continue
+
+        # Extract rectangle corners
+        elif _is_entry(n, 'rectangle'):
+            start_pt = None
+            end_pt = None
+            for child in n:
+                if isinstance(child, list) and len(child) >= 3:
+                    tag = _atom_to_str(child[0])
+                    if tag == 'start':
+                        try:
+                            start_pt = (float(child[1]), float(child[2]))
+                        except Exception:
+                            pass
+                    elif tag == 'end':
+                        try:
+                            end_pt = (float(child[1]), float(child[2]))
+                        except Exception:
+                            pass
+            if start_pt:
+                pts.append(start_pt)
+            if end_pt:
+                pts.append(end_pt)
+
+        # Extract circle bounding box
+        elif _is_entry(n, 'circle'):
+            center = None
+            radius = None
+            for child in n:
+                if isinstance(child, list) and len(child) >= 3:
+                    tag = _atom_to_str(child[0])
+                    if tag == 'center':
+                        try:
+                            center = (float(child[1]), float(child[2]))
+                        except Exception:
+                            pass
+                elif isinstance(child, list) and len(child) >= 2:
+                    tag = _atom_to_str(child[0])
+                    if tag == 'radius':
+                        try:
+                            radius = float(child[1])
+                        except Exception:
+                            pass
+            if center and radius:
+                # Add 4 corners of bounding box
+                pts.append((center[0] - radius, center[1] - radius))
+                pts.append((center[0] + radius, center[1] - radius))
+                pts.append((center[0] - radius, center[1] + radius))
+                pts.append((center[0] + radius, center[1] + radius))
+
+        # Extract arc points
+        elif _is_entry(n, 'arc'):
+            for child in n:
+                if isinstance(child, list) and len(child) >= 3:
+                    tag = _atom_to_str(child[0])
+                    if tag in ('start', 'mid', 'end'):
+                        try:
+                            pts.append((float(child[1]), float(child[2])))
+                        except Exception:
+                            pass
+
+        # Recurse into children
         else:
             for child in n:
                 visit(child)
@@ -758,13 +856,13 @@ def _collect_symbol_bboxes(schematic: Schematic) -> List[Tuple[Tuple[float, floa
                     xs = [p[0] for p in pts]
                     ys = [p[1] for p in pts]
                     rect = (min(xs), min(ys), max(xs), max(ys))
-                # Expand by fixed clearance
+                # Expand by fixed clearance (no grid snapping - A* handles grid internally)
                 xmin, ymin, xmax, ymax = rect
-                xmin = round(xmin - clearance, 1)
-                ymin = round(ymin - clearance, 1)
-                xmax = round(xmax + clearance, 1)
-                ymax = round(ymax + clearance, 1)
-                boxes.append(((xmin, ymin, xmax, ymax), sym))
+                xmin_expanded = xmin - clearance
+                ymin_expanded = ymin - clearance
+                xmax_expanded = xmax + clearance
+                ymax_expanded = ymax + clearance
+                boxes.append(((xmin_expanded, ymin_expanded, xmax_expanded, ymax_expanded), sym))
     except Exception:
         pass
     return boxes
@@ -788,6 +886,11 @@ def _point_on_axis_segment_interior(a: Tuple[float, float], b: Tuple[float, floa
 
 
 def _segment_intersects_rect(a: Tuple[float, float], b: Tuple[float, float], rect: Tuple[float, float, float, float]) -> bool:
+    """Check if a Manhattan segment intersects or touches a rectangle.
+
+    Treats touching the rectangle boundary as an intersection to prevent wires
+    from running along symbol edges.
+    """
     x1, y1 = a
     x2, y2 = b
     xmin, ymin, xmax, ymax = rect
@@ -807,7 +910,56 @@ def _segment_intersects_rect(a: Tuple[float, float], b: Tuple[float, float], rec
         return not (hi <= ymin or lo >= ymax)
     return False
 
-def _astar_grid_route(
+
+def _segment_runs_along_rect_edge(
+    a: Tuple[float, float],
+    b: Tuple[float, float],
+    rect: Tuple[float, float, float, float],
+    tolerance: float = 0.15,
+) -> bool:
+    """Check if a segment runs along (parallel to and touching) a rectangle edge.
+
+    This is stricter than _segment_intersects_rect - it specifically detects when
+    a segment is running along the boundary of a rectangle, which we want to prevent
+    even for excluded symbols.
+
+    Args:
+        a: First endpoint (x, y)
+        b: Second endpoint (x, y)
+        rect: Rectangle (xmin, ymin, xmax, ymax)
+        tolerance: Tolerance for floating point comparison (default 0.15 to account for rounding to 1 decimal place)
+
+    Returns:
+        True if the segment runs along any edge of the rectangle
+    """
+    x1, y1 = a
+    x2, y2 = b
+    xmin, ymin, xmax, ymax = rect
+
+    # Horizontal segment
+    if y1 == y2:
+        y = y1
+        # Check if segment is on top or bottom edge
+        if abs(y - ymin) < tolerance or abs(y - ymax) < tolerance:
+            lo, hi = (x1, x2) if x1 <= x2 else (x2, x1)
+            # Check if segment overlaps with rectangle in x direction
+            if not (hi <= xmin or lo >= xmax):
+                return True
+
+    # Vertical segment
+    if x1 == x2:
+        x = x1
+        # Check if segment is on left or right edge
+        if abs(x - xmin) < tolerance or abs(x - xmax) < tolerance:
+            lo, hi = (y1, y2) if y1 <= y2 else (y2, y1)
+            # Check if segment overlaps with rectangle in y direction
+            if not (hi <= ymin or lo >= ymax):
+                return True
+
+    return False
+
+
+def _manhattan_astar_route(
     schematic: Schematic,
     start: Tuple[float, float],
     end: Tuple[float, float],
@@ -815,13 +967,14 @@ def _astar_grid_route(
     bboxes: List[Tuple[Tuple[float, float, float, float], Symbol]],
     forbidden_points: Iterable[Tuple[float, float]],
     max_expansions: int = 12000,
-    bend_penalty: float = 0.2,
+    bend_penalty: float = 1.0,  # Increased to prioritize fewer corners
 ) -> Optional[List[Tuple[float, float]]]:
-    """Bounded Manhattan A* on grid with rectangle obstacles and forbidden grid points.
+    """Manhattan A* on grid with rectangle obstacles and forbidden grid points.
 
     - Obstacles are the interiors of symbol body rectangles.
     - Start/end are always allowed, even if inside a body (to allow exiting/entering at pins).
     - Returns a list of points including start and end, or None if not found within limits.
+    - Cost function prioritizes: 1) Minimizing bends (highest), 2) Minimizing distance (second)
     """
     sx, sy = start
     ex, ey = end
@@ -848,9 +1001,13 @@ def _astar_grid_route(
     # Prepare obstacles in grid space
     rects: List[Tuple[float, float, float, float]] = [r for (r, _sym) in bboxes]
 
-    def is_inside_rect_interior(x_mm: float, y_mm: float, rect: Tuple[float, float, float, float]) -> bool:
+    def is_inside_or_on_rect(x_mm: float, y_mm: float, rect: Tuple[float, float, float, float]) -> bool:
+        """Check if point is inside or on the boundary of a rectangle.
+
+        This prevents wires from running along symbol edges or through symbol bodies.
+        """
         xmin_r, ymin_r, xmax_r, ymax_r = rect
-        return (xmin_r < x_mm < xmax_r) and (ymin_r < y_mm < ymax_r)
+        return (xmin_r <= x_mm <= xmax_r) and (ymin_r <= y_mm <= ymax_r)
 
     forb_set = {to_grid(p) for p in set(forbidden_points) if p != start and p != end}
 
@@ -861,11 +1018,11 @@ def _astar_grid_route(
             return True
         x_mm = gx * step
         y_mm = gy * step
-        # Allow start/end even if inside a rect interior
+        # Allow start/end even if inside or on a rect boundary (to allow exiting/entering at pins)
         if (gx, gy) in {gs, ge}:
             return False
         for rect in rects:
-            if is_inside_rect_interior(x_mm, y_mm, rect):
+            if is_inside_or_on_rect(x_mm, y_mm, rect):
                 return True
         return False
 
@@ -935,9 +1092,21 @@ def _safe_manhattan_route(
     schematic: Schematic,
     start: Tuple[float, float],
     end: Tuple[float, float],
-    pattern_hint: str = 'hv',
     exclude_symbols: Optional[Iterable[Symbol]] = None,
 ) -> List[Tuple[float, float]]:
+    """Simplified two-level routing logic using bidirectional A* and adaptive stubs.
+
+    Priority levels:
+    1. Bidirectional Manhattan A* - Primary pathfinding algorithm
+    2. Adaptive stubs - Fallback when A* fails
+
+    Ensures:
+    - Wires never collide with symbol bodies (except source/target symbols)
+    - Wires never collide with pins (except source/target pins)
+    - Wires never go along edges of symbols
+    - Clear clearances between wires and symbol bodies
+    - Minimized corners/segments (highest priority) and wire length (second priority)
+    """
     # Work with grid-snapped coordinates throughout
     s = tuple(snap_point_to_grid(start[0], start[1]))
     e = tuple(snap_point_to_grid(end[0], end[1]))
@@ -956,9 +1125,14 @@ def _safe_manhattan_route(
     forbidden_vertices = (pin_coords | node_coords) - allowed_endpoints
 
     def ok_route(points: List[Tuple[float, float]]) -> bool:
+        """Validate that a route meets all collision avoidance requirements."""
         # Snap all points to grid the same way add_wire will
         pts = snap_points_to_grid(points)
         pts_r = [(round(x, 1), round(y, 1)) for (x, y) in pts]
+
+        # Round bboxes to match the precision of pts_r to avoid floating-point comparison issues
+        bboxes_r = [((round(rect[0], 1), round(rect[1], 1), round(rect[2], 1), round(rect[3], 1)), sym) for (rect, sym) in bboxes]
+
         # 1) internal vertices cannot coincide with forbidden nodes
         for v in pts_r[1:-1]:
             if v in forbidden_vertices:
@@ -968,144 +1142,112 @@ def _safe_manhattan_route(
             for pc in pin_coords - allowed_endpoints:
                 if _point_on_axis_segment_interior(a, b, pc):
                     return False
-        # 3) no segment may cross a symbol body bbox (approx) except for endpoint symbols
-        for a, b in zip(pts_r, pts_r[1:]):
-            for (rect, sym) in bboxes:
+        # 3) no segment may cross or run along a symbol body bbox
+        for i, (a, b) in enumerate(zip(pts_r, pts_r[1:])):
+            for (rect, sym) in bboxes_r:
+                # For excluded symbols (source/target), we need special handling:
+                # - Allow segments to touch at endpoints (for pin connections)
+                # - But don't allow segments to run along edges or pass through interior
                 if sym in excluded_set:
-                    continue
-                if _segment_intersects_rect(a, b, rect):
-                    return False
+                    # Check if this segment runs along the symbol boundary
+                    if _segment_runs_along_rect_edge(a, b, rect):
+                        return False
+                    # Check if segment passes through the interior (not just touching at endpoints)
+                    # We need to allow the endpoint to be on/near the symbol for pin connection
+                    # but reject segments that cross through the body
+                    if _segment_intersects_rect(a, b, rect):
+                        # Allow if one of the endpoints is the start/end of the entire route
+                        # (these are the pin connection points)
+                        is_first_segment = (i == 0)
+                        is_last_segment = (i == len(pts_r) - 2)
+
+                        # If this is the first or last segment, it's allowed to touch the excluded symbol
+                        # at the endpoint (for pin connection)
+                        if not (is_first_segment or is_last_segment):
+                            # Middle segments should not intersect excluded symbols
+                            return False
+                else:
+                    # For non-excluded symbols, no intersection allowed at all
+                    if _segment_intersects_rect(a, b, rect):
+                        return False
         return True
 
-    # 0) Straight segment
-    if s[0] == e[0] or s[1] == e[1]:
-        candidate = [s, e]
-        if ok_route(candidate):
-            return snap_points_to_grid(candidate)
-
-    # 1) Try hinted pattern then alternate
-    ordered = []
-    ph = (pattern_hint or 'hv').lower()
-    ordered.append(ph if ph in ('hv', 'vh') else 'hv')
-    ordered.append('vh' if ordered[0] == 'hv' else 'hv')
-
-    for pat in ordered:
-        if pat == 'hv':
-            corner = (e[0], s[1])
-        else:
-            corner = (s[0], e[1])
-        candidate = [s, corner, e]
-        if ok_route(candidate):
-            return snap_points_to_grid(candidate)
-
-    # 2) Corridor-based detour (choose a clear y for horizontal or clear x for vertical)
     step = KICAD_SCHEMATIC_GRID_MM
-    x_lo, x_hi = (s[0], e[0]) if s[0] <= e[0] else (e[0], s[0])
-    y_lo, y_hi = (s[1], e[1]) if s[1] <= e[1] else (e[1], s[1])
 
-    def merged_bands_horiz():
-        bands = []
-        for (xmin, ymin, xmax, ymax), sym in bboxes:
-            if sym in excluded_set:
-                continue
-            if xmax <= x_lo or xmin >= x_hi:
-                continue
-            bands.append((ymin, ymax))
-        if not bands:
-            return []
-        bands.sort()
-        merged = [bands[0]]
-        for a, b in bands[1:]:
-            ly0, ly1 = merged[-1]
-            if a <= ly1:
-                merged[-1] = (ly0, max(ly1, b))
-            else:
-                merged.append((a, b))
-        return merged
-
-    def merged_bands_vert():
-        bands = []
-        for (xmin, ymin, xmax, ymax), sym in bboxes:
-            if sym in excluded_set:
-                continue
-            if ymax <= y_lo or ymin >= y_hi:
-                continue
-            bands.append((xmin, xmax))
-        if not bands:
-            return []
-        bands.sort()
-        merged = [bands[0]]
-        for a, b in bands[1:]:
-            lx0, lx1 = merged[-1]
-            if a <= lx1:
-                merged[-1] = (lx0, max(lx1, b))
-            else:
-                merged.append((a, b))
-        return merged
-
-    # Try horizontal corridor (choose y above/below merged bands)
-    bands_y = merged_bands_horiz()
-    if bands_y:
-        top = max(b[1] for b in bands_y)
-        bot = min(b[0] for b in bands_y)
-        y_up = round(top + step, 2)
-        y_dn = round(bot - step, 2)
-        for yc in (y_up, y_dn):
-            candidate = [s, (s[0], yc), (e[0], yc), e]
-            if ok_route(candidate):
-                return snap_points_to_grid(candidate)
-
-    # Try vertical corridor (choose x left/right of merged bands)
-    bands_x = merged_bands_vert()
-    if bands_x:
-        right = max(b[1] for b in bands_x)
-        left = min(b[0] for b in bands_x)
-        x_rt = round(right + step, 2)
-        x_lt = round(left - step, 2)
-        for xc in (x_rt, x_lt):
-            candidate = [s, (xc, s[1]), (xc, e[1]), e]
-            if ok_route(candidate):
-                return snap_points_to_grid(candidate)
-
-    # 3) Bounded A* fallback for multi-bend paths
-    astar_route = _astar_grid_route(
+    # LEVEL 1: Manhattan A* - Primary routing algorithm
+    # Pass ALL bboxes including excluded symbols - the A* will allow start/end to be inside them
+    astar_route = _manhattan_astar_route(
         schematic,
         s,
         e,
         step,
-        [(r, sym) for (r, sym) in bboxes if sym not in excluded_set],
+        bboxes,  # Include all symbols - A* allows start/end inside rects
         forbidden_vertices,
+        max_expansions=12000,
+        bend_penalty=1.0,  # High penalty to minimize corners
     )
     if astar_route is not None and ok_route(astar_route):
         return snap_points_to_grid(astar_route)
 
-    # 4) Fallback: simple one-step escape stubs from start and from end
-
+    # LEVEL 2: Adaptive stubs - Fallback when A* fails
+    # Try escaping from start or end point in all four directions
     escape_vectors = [ (0, step), (0, -step), (step, 0), (-step, 0) ]
 
-    def try_escape(from_start: bool, pat: str) -> Optional[List[Tuple[float, float]]]:
+    def try_escape(from_start: bool) -> Optional[List[Tuple[float, float]]]:
+        """Try to escape from start or end point and route via A* from the escape point."""
         for dx, dy in escape_vectors:
             esc = ( (s[0] + dx, s[1] + dy) if from_start else (e[0] + dx, e[1] + dy) )
             esc = tuple(snap_point_to_grid(esc[0], esc[1]))
-            # Build 3-segment route using the escape point
-            if pat == 'hv':
-                if from_start:
-                    points = [s, esc, (e[0], esc[1]), e]
-                else:
-                    points = [s, (s[0], esc[1]), esc, e]
-            else:  # 'vh'
-                if from_start:
-                    points = [s, esc, (esc[0], e[1]), e]
-                else:
-                    points = [s, (esc[0], s[1]), esc, e]
-            if ok_route(points):
-                return snap_points_to_grid(points)
+
+            # Check if escape point is valid (not blocked)
+            esc_grid = (int(round(esc[0] / step)), int(round(esc[1] / step)))
+            esc_rounded = (round(esc[0], 1), round(esc[1], 1))
+
+            # Skip if escape point is forbidden
+            if esc_rounded in forbidden_vertices:
+                continue
+
+            # Try routing from/to the escape point using A*
+            if from_start:
+                # Route from escape point to end
+                escape_route = _manhattan_astar_route(
+                    schematic,
+                    esc,
+                    e,
+                    step,
+                    bboxes,  # Include all symbols
+                    forbidden_vertices,
+                    max_expansions=8000,
+                    bend_penalty=1.0,
+                )
+                if escape_route is not None:
+                    # Prepend the stub from start to escape
+                    full_route = [s] + escape_route
+                    if ok_route(full_route):
+                        return snap_points_to_grid(full_route)
+            else:
+                # Route from start to escape point
+                escape_route = _manhattan_astar_route(
+                    schematic,
+                    s,
+                    esc,
+                    step,
+                    bboxes,  # Include all symbols
+                    forbidden_vertices,
+                    max_expansions=8000,
+                    bend_penalty=1.0,
+                )
+                if escape_route is not None:
+                    # Append the stub from escape to end
+                    full_route = escape_route + [e]
+                    if ok_route(full_route):
+                        return snap_points_to_grid(full_route)
         return None
 
-    for pat in ordered:
-        r = try_escape(True, pat) or try_escape(False, pat)
-        if r is not None:
-            return r
+    # Try escaping from start or end
+    r = try_escape(True) or try_escape(False)
+    if r is not None:
+        return r
 
     # If all attempts failed, raise with guidance
     raise ValueError(
@@ -1236,13 +1378,22 @@ class ConnectionManager:
         target: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
-        Remove wire(s) connecting two schematic connection points.
+        Remove all wire segments forming a connection between two schematic points.
+
+        Finds and removes all wire segments that form a connected path between the
+        source and target points. Uses graph traversal (BFS) to identify all segments
+        in the path, handling multi-segment connections with multiple bends correctly.
+
+        Supports the same connection point types as connect_pins:
+        - Pin to pin: Both source and target specify component pins
+        - Pin to label: One specifies a pin, the other a label or power net name
+        - Label to label: Both specify labels (hierarchical/global/local) or power net names
 
         Args:
             schematic: The schematic to modify
             source: Source connection point specification:
                     - Pin: { reference: "R1", pin: "1", unit?: 1 }
-                    - Label: { label: "NET" }
+                    - Label: { label: "NET" } or { labelName: "NET" }
             target: Target connection point specification (same format as source)
 
         Returns:
@@ -1259,17 +1410,18 @@ class ConnectionManager:
             }
 
         Raises:
-            ValueError: If connection points are invalid or no wires found
+            ValueError: If connection points are invalid, no wires found at endpoints,
+                       or no connected path exists between the points
             TypeError: If specifications are not dictionaries
         """
 
         # Resolve source and target connection points
-        source_obj, source_point, source_type = _resolve_connection_point(
+        source_obj, source_pin, source_point, source_type = _resolve_connection_point(
             schematic,
             source,
             label='source',
         )
-        target_obj, target_point, target_type = _resolve_connection_point(
+        target_obj, target_pin, target_point, target_type = _resolve_connection_point(
             schematic,
             target,
             label='target',
@@ -1282,9 +1434,9 @@ class ConnectionManager:
         source_pt = (round(source_point[0], 1), round(source_point[1], 1))
         target_pt = (round(target_point[0], 1), round(target_point[1], 1))
 
-        # Find all wires that connect these two points
-        # Store wire points AND raw references to avoid accessing stale wrapper.raw later
-        wires_to_remove = []
+        # Build a graph of wire connectivity
+        # Each wire segment connects two points, so we build an adjacency list
+        wire_graph = {}  # point -> list of (connected_point, wire)
         wire_points_map = {}  # wire -> list of points
         wire_raw_map = {}  # wire -> raw S-expression
 
@@ -1302,24 +1454,55 @@ class ConnectionManager:
                                     y = round(float(coords[1]), 1)
                                     wire_points.append((x, y))
 
-                        # Check if this wire connects source and target
-                        if source_pt in wire_points and target_pt in wire_points:
-                            wires_to_remove.append(wire)
+                        if len(wire_points) >= 2:
                             wire_points_map[wire] = wire_points
-                            wire_raw_map[wire] = wire.raw  # Store raw reference NOW before any modifications
-                        # Also check if wire endpoints match
-                        elif len(wire_points) >= 2:
-                            if (wire_points[0] == source_pt and wire_points[-1] == target_pt) or \
-                               (wire_points[0] == target_pt and wire_points[-1] == source_pt):
-                                wires_to_remove.append(wire)
-                                wire_points_map[wire] = wire_points
-                                wire_raw_map[wire] = wire.raw  # Store raw reference NOW before any modifications
+                            wire_raw_map[wire] = wire.raw
+
+                            # Add edges to the graph (wire segments connect their endpoints)
+                            start_pt = wire_points[0]
+                            end_pt = wire_points[-1]
+
+                            if start_pt not in wire_graph:
+                                wire_graph[start_pt] = []
+                            if end_pt not in wire_graph:
+                                wire_graph[end_pt] = []
+
+                            wire_graph[start_pt].append((end_pt, wire))
+                            wire_graph[end_pt].append((start_pt, wire))
             except Exception as e:
                 logger.warning(f"Error analyzing wire for removal: {e}")
                 continue
 
-        if not wires_to_remove:
-            raise ValueError(f'No wires found connecting the specified points')
+        # Find all wire segments that form a path from source to target using BFS
+        if source_pt not in wire_graph:
+            raise ValueError(f'No wires found at source point {source_pt}')
+        if target_pt not in wire_graph:
+            raise ValueError(f'No wires found at target point {target_pt}')
+
+        # BFS to find path and collect all wires in the path
+        from collections import deque
+
+        queue = deque([(source_pt, [])]) # (current_point, wires_in_path)
+        visited = {source_pt}
+        wires_to_remove = None
+
+        while queue:
+            current_pt, path_wires = queue.popleft()
+
+            if current_pt == target_pt:
+                # Found the target! Collect all wires in this path
+                wires_to_remove = path_wires
+                break
+
+            # Explore neighbors
+            if current_pt in wire_graph:
+                for next_pt, wire in wire_graph[current_pt]:
+                    if next_pt not in visited:
+                        visited.add(next_pt)
+                        queue.append((next_pt, path_wires + [wire]))
+
+        if wires_to_remove is None:
+            raise ValueError(f'No connected path found between source and target points')
 
         # Collect wire points before removal for net analysis
         # Use the stored points instead of calling _extract_wire_points which accesses wrapper.raw
@@ -1481,10 +1664,17 @@ class ConnectionManager:
         target: Dict[str, Any],
         *,
         wire: Optional[Dict[str, Any]] = None,
-        routing: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Connect two schematic connection points by drawing an appropriate wire.
+
+        Automatically routes wires using Manhattan (horizontal/vertical) pathfinding with
+        intelligent obstacle avoidance. The routing algorithm:
+        - Adds stubs extending from component pins for proper clearance
+        - Uses A* pathfinding to find optimal paths that avoid symbol bodies
+        - Minimizes corners and wire length
+        - Ensures wires never run along symbol edges or through symbol bodies
+        - Snaps all coordinates to KiCAD's standard grid (1.27mm)
 
         Supports connecting:
         - Pin to pin: Both source and target specify component pins
@@ -1500,7 +1690,6 @@ class ConnectionManager:
                       Value of a power symbol (e.g., "GND", "VCC", "+5V").
             target: Target connection point specification (same format as source)
             wire: Optional wire styling properties (width, strokeType, etc.)
-            routing: Optional routing hints (pattern: 'hv' or 'vh')
 
         Returns:
             Dict with connection information (structured JSON):
@@ -1516,17 +1705,17 @@ class ConnectionManager:
             }
 
         Raises:
-            ValueError: If connection points are invalid or identical
+            ValueError: If connection points are invalid, identical, or no valid route exists
             TypeError: If specifications are not dictionaries
         """
 
         # Resolve source and target connection points
-        source_obj, source_point, source_type = _resolve_connection_point(
+        source_obj, source_pin, source_point, source_type = _resolve_connection_point(
             schematic,
             source,
             label='source',
         )
-        target_obj, target_point, target_type = _resolve_connection_point(
+        target_obj, target_pin, target_point, target_type = _resolve_connection_point(
             schematic,
             target,
             label='target',
@@ -1547,26 +1736,57 @@ class ConnectionManager:
         )
 
         if not has_manual_points:
-            pattern = 'hv'
-            if routing and isinstance(routing, dict):
-                requested = routing.get('pattern') or routing.get('route')
-                if isinstance(requested, str):
-                    pattern = requested
+            # Calculate stub ends for pins
+            # Stubs extend from pins in the direction the pin points
+            # This provides clearance from symbol bodies
+            source_stub_end = None
+            target_stub_end = None
 
+            if source_type == 'pin' and source_pin is not None:
+                source_stub_end = _calculate_stub_end(source_pin)
+
+            if target_type == 'pin' and target_pin is not None:
+                target_stub_end = _calculate_stub_end(target_pin)
+
+            # Determine routing start and end points
+            # If we have stubs, route between stub ends; otherwise use pin/label locations
+            route_start = source_stub_end if source_stub_end is not None else tuple(source_point)
+            route_end = target_stub_end if target_stub_end is not None else tuple(target_point)
+
+            # With stubs, we don't need to exclude source/target symbols from collision detection
+            # because stubs extend the connection points outside the collision boxes.
+            # The route between stub ends should avoid ALL symbols (including source/target).
             exclude_syms = []
-            if source_type == 'pin' and source_obj is not None:
-                exclude_syms.append(source_obj)
-            if target_type == 'pin' and target_obj is not None:
-                exclude_syms.append(target_obj)
 
             route_points = _safe_manhattan_route(
                 schematic,
-                tuple(source_point),
-                tuple(target_point),
-                pattern_hint=pattern,
+                route_start,
+                route_end,
                 exclude_symbols=exclude_syms,
             )
-            properties['points'] = [[p[0], p[1]] for p in route_points]
+
+            # Build complete wire path including stubs
+            # Format: pin → stub_end → route_points → stub_end → pin
+            complete_path = []
+
+            # Add source pin and stub
+            complete_path.append(tuple(source_point))
+            if source_stub_end is not None:
+                complete_path.append(source_stub_end)
+
+            # Add route points (excluding endpoints if they match stub ends)
+            for pt in route_points:
+                if complete_path and pt == complete_path[-1]:
+                    continue  # Skip duplicate points
+                complete_path.append(pt)
+
+            # Add target stub and pin
+            if target_stub_end is not None and (not complete_path or target_stub_end != complete_path[-1]):
+                complete_path.append(target_stub_end)
+            if tuple(target_point) != complete_path[-1]:
+                complete_path.append(tuple(target_point))
+
+            properties['points'] = [[p[0], p[1]] for p in complete_path]
 
         start = [source_point[0], source_point[1]]
         end = [target_point[0], target_point[1]]

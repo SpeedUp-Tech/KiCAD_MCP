@@ -691,7 +691,6 @@ class KiCADInterface:
             source_pin = params.get("source")
             target_pin = params.get("target")
             wire_options = params.get("wireOptions") or params.get("wire")
-            routing = params.get("routing")
 
             if not schematic_path:
                 return {"success": False, "message": "Schematic path is required"}
@@ -708,7 +707,6 @@ class KiCADInterface:
                     source_pin,
                     target_pin,
                     wire=wire_options,
-                    routing=routing,
                 )
             except (ValueError, TypeError) as exc:
                 logger.warning(f"Pin connection rejected: {exc}")
