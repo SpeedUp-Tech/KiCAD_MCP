@@ -24,7 +24,13 @@ _VALID_STROKE_TYPES = {'default', 'dash', 'dot'}
 
 # Stub configuration
 KICAD_SCHEMATIC_GRID_MM = 1.27  # Standard KiCAD grid spacing
-DEFAULT_STUB_LENGTH_MM = 3.81  # 3 grids = 3.81mm
+DEFAULT_STUB_LENGTH_MM = 1.27  # 1 grid = 1.27mm
+
+# Routing configuration
+BBOX_CLEARANCE_MM = 0.5 * KICAD_SCHEMATIC_GRID_MM  # 0.5 grid = 0.635mm clearance around symbols
+DISTANCE_PENALTY_WEIGHT = 2.0  # Penalty weight for getting close to symbols (reduced to allow tighter routing)
+CLEARANCE_THRESHOLD_MM = 1.0 * KICAD_SCHEMATIC_GRID_MM  # Encourage staying 1 grid away from symbols
+INSIDE_BBOX_PENALTY = 10.0  # Heavy penalty for routing inside symbol bboxes (but not hard-blocked)
 
 
 def _coerce_point(value: Any, *, label: str) -> Tuple[float, float]:
@@ -828,7 +834,7 @@ def _collect_symbol_bboxes(schematic: Schematic) -> List[Tuple[Tuple[float, floa
     Fallback to pin-extents only if library geometry is unavailable. Power symbols are skipped.
     """
     boxes: List[Tuple[Tuple[float, float, float, float], Symbol]] = []
-    clearance = KICAD_SCHEMATIC_GRID_MM  # fixed, non-configurable visual clearance
+    clearance = BBOX_CLEARANCE_MM  # 0.5 grid clearance for routing
     try:
         if hasattr(schematic, 'symbol') and schematic.symbol is not None:
             for sym in schematic.symbol:
@@ -883,6 +889,42 @@ def _point_on_axis_segment_interior(a: Tuple[float, float], b: Tuple[float, floa
         lo, hi = (ay, by) if ay <= by else (by, ay)
         return lo < py < hi
     return False
+
+
+def _distance_to_rect_edge(px: float, py: float, rect: Tuple[float, float, float, float]) -> float:
+    """Calculate the shortest distance from a point to the edge of a rectangle.
+
+    Args:
+        px, py: Point coordinates
+        rect: Rectangle as (xmin, ymin, xmax, ymax)
+
+    Returns:
+        Distance to nearest edge. Returns 0 if point is inside or on the rectangle.
+    """
+    xmin, ymin, xmax, ymax = rect
+
+    # Distance in X direction
+    if px < xmin:
+        dx = xmin - px
+    elif px > xmax:
+        dx = px - xmax
+    else:
+        dx = 0.0  # Inside X range
+
+    # Distance in Y direction
+    if py < ymin:
+        dy = ymin - py
+    elif py > ymax:
+        dy = py - ymax
+    else:
+        dy = 0.0  # Inside Y range
+
+    # If both dx and dy are 0, point is inside rectangle
+    if dx == 0.0 and dy == 0.0:
+        return 0.0
+
+    # Euclidean distance to nearest edge
+    return math.sqrt(dx * dx + dy * dy)
 
 
 def _segment_intersects_rect(a: Tuple[float, float], b: Tuple[float, float], rect: Tuple[float, float, float, float]) -> bool:
@@ -998,32 +1040,21 @@ def _manhattan_astar_route(
     ymin = min(gs[1], ge[1]) - margin
     ymax = max(gs[1], ge[1]) + margin
 
-    # Prepare obstacles in grid space
+    # Prepare obstacles in grid space - bboxes are now soft penalties, not hard blocks
     rects: List[Tuple[float, float, float, float]] = [r for (r, _sym) in bboxes]
 
-    def is_inside_or_on_rect(x_mm: float, y_mm: float, rect: Tuple[float, float, float, float]) -> bool:
-        """Check if point is inside or on the boundary of a rectangle.
-
-        This prevents wires from running along symbol edges or through symbol bodies.
-        """
-        xmin_r, ymin_r, xmax_r, ymax_r = rect
-        return (xmin_r <= x_mm <= xmax_r) and (ymin_r <= y_mm <= ymax_r)
-
+    # Only hard-block on forbidden pin/node points (not on symbol bboxes)
     forb_set = {to_grid(p) for p in set(forbidden_points) if p != start and p != end}
 
     def blocked(gx: int, gy: int) -> bool:
+        """Check if a grid position is hard-blocked (out of bounds or forbidden pin/node)."""
+        # Out of search bounds
         if gx < xmin or gx > xmax or gy < ymin or gy > ymax:
             return True
+        # Forbidden pin/node points (except start/end)
         if (gx, gy) in forb_set and (gx, gy) not in {gs, ge}:
             return True
-        x_mm = gx * step
-        y_mm = gy * step
-        # Allow start/end even if inside or on a rect boundary (to allow exiting/entering at pins)
-        if (gx, gy) in {gs, ge}:
-            return False
-        for rect in rects:
-            if is_inside_or_on_rect(x_mm, y_mm, rect):
-                return True
+        # Symbol bboxes are NO LONGER hard blocks - they're handled as penalties in cost calculation
         return False
 
     # A* search
@@ -1073,10 +1104,35 @@ def _manhattan_astar_route(
             nx, ny = x + dx, y + dy
             if blocked(nx, ny):
                 continue
+
             # Cost: unit step + bend penalty for direction change
             cost = 1.0
             if dprev != -1 and dprev != i:
                 cost += bend_penalty
+
+            # Add penalties based on proximity to symbol bodies
+            nx_mm = nx * step
+            ny_mm = ny * step
+            min_distance = float('inf')
+            is_inside_any_bbox = False
+
+            for rect, _sym in bboxes:
+                dist = _distance_to_rect_edge(nx_mm, ny_mm, rect)
+                min_distance = min(min_distance, dist)
+
+                # Check if point is inside this bbox
+                xmin_r, ymin_r, xmax_r, ymax_r = rect
+                if (xmin_r <= nx_mm <= xmax_r) and (ymin_r <= ny_mm <= ymax_r):
+                    is_inside_any_bbox = True
+
+            # Heavy penalty for being inside a bbox (but not hard-blocked)
+            if is_inside_any_bbox:
+                cost += INSIDE_BBOX_PENALTY
+            # Lighter penalty for being close to a bbox
+            elif min_distance < CLEARANCE_THRESHOLD_MM:
+                distance_penalty = (CLEARANCE_THRESHOLD_MM - min_distance) * DISTANCE_PENALTY_WEIGHT
+                cost += distance_penalty
+
             ng = g + cost
             ns = state_key(nx, ny, i)
             if ng < gscore.get(ns, float('inf')):
@@ -1092,19 +1148,18 @@ def _safe_manhattan_route(
     schematic: Schematic,
     start: Tuple[float, float],
     end: Tuple[float, float],
-    exclude_symbols: Optional[Iterable[Symbol]] = None,
+    exclude_symbols: Optional[Iterable[Symbol]] = None,  # Kept for API compatibility but no longer used
 ) -> List[Tuple[float, float]]:
-    """Simplified two-level routing logic using bidirectional A* and adaptive stubs.
+    """Simplified two-level routing logic using A* with soft penalties.
 
     Priority levels:
-    1. Bidirectional Manhattan A* - Primary pathfinding algorithm
+    1. Manhattan A* with distance penalties - Primary pathfinding algorithm
     2. Adaptive stubs - Fallback when A* fails
 
-    Ensures:
-    - Wires never collide with symbol bodies (except source/target symbols)
-    - Wires never collide with pins (except source/target pins)
-    - Wires never go along edges of symbols
-    - Clear clearances between wires and symbol bodies
+    Routing strategy:
+    - Hard blocks: Only forbidden pin/node points and search bounds
+    - Soft penalties: Symbol bboxes (heavy penalty inside, lighter penalty nearby)
+    - This allows routing through tight spaces and handles pins inside bboxes
     - Minimized corners/segments (highest priority) and wire length (second priority)
     """
     # Work with grid-snapped coordinates throughout
@@ -1117,7 +1172,6 @@ def _safe_manhattan_route(
     pin_coords = set(_collect_pin_coords(schematic))
     node_coords = set(_collect_wire_vertices(schematic))
     bboxes = _collect_symbol_bboxes(schematic)
-    excluded_set = set(exclude_symbols or [])
 
     # Allow using the endpoints themselves
     allowed_endpoints = { (round(s[0], 1), round(s[1], 1)), (round(e[0], 1), round(e[1], 1)) }
@@ -1125,51 +1179,23 @@ def _safe_manhattan_route(
     forbidden_vertices = (pin_coords | node_coords) - allowed_endpoints
 
     def ok_route(points: List[Tuple[float, float]]) -> bool:
-        """Validate that a route meets all collision avoidance requirements."""
+        """Validate that a route doesn't pass through forbidden pin/node points."""
         # Snap all points to grid the same way add_wire will
         pts = snap_points_to_grid(points)
         pts_r = [(round(x, 1), round(y, 1)) for (x, y) in pts]
 
-        # Round bboxes to match the precision of pts_r to avoid floating-point comparison issues
-        bboxes_r = [((round(rect[0], 1), round(rect[1], 1), round(rect[2], 1), round(rect[3], 1)), sym) for (rect, sym) in bboxes]
-
-        # 1) internal vertices cannot coincide with forbidden nodes
+        # 1) Internal vertices cannot coincide with forbidden pin/node points
         for v in pts_r[1:-1]:
             if v in forbidden_vertices:
                 return False
-        # 2) no segment may pass through another pin coordinate in its interior
+
+        # 2) No segment may pass through another pin coordinate in its interior
         for a, b in zip(pts_r, pts_r[1:]):
             for pc in pin_coords - allowed_endpoints:
                 if _point_on_axis_segment_interior(a, b, pc):
                     return False
-        # 3) no segment may cross or run along a symbol body bbox
-        for i, (a, b) in enumerate(zip(pts_r, pts_r[1:])):
-            for (rect, sym) in bboxes_r:
-                # For excluded symbols (source/target), we need special handling:
-                # - Allow segments to touch at endpoints (for pin connections)
-                # - But don't allow segments to run along edges or pass through interior
-                if sym in excluded_set:
-                    # Check if this segment runs along the symbol boundary
-                    if _segment_runs_along_rect_edge(a, b, rect):
-                        return False
-                    # Check if segment passes through the interior (not just touching at endpoints)
-                    # We need to allow the endpoint to be on/near the symbol for pin connection
-                    # but reject segments that cross through the body
-                    if _segment_intersects_rect(a, b, rect):
-                        # Allow if one of the endpoints is the start/end of the entire route
-                        # (these are the pin connection points)
-                        is_first_segment = (i == 0)
-                        is_last_segment = (i == len(pts_r) - 2)
 
-                        # If this is the first or last segment, it's allowed to touch the excluded symbol
-                        # at the endpoint (for pin connection)
-                        if not (is_first_segment or is_last_segment):
-                            # Middle segments should not intersect excluded symbols
-                            return False
-                else:
-                    # For non-excluded symbols, no intersection allowed at all
-                    if _segment_intersects_rect(a, b, rect):
-                        return False
+        # Symbol bboxes are no longer checked here - they're handled as soft penalties in A*
         return True
 
     step = KICAD_SCHEMATIC_GRID_MM
@@ -1736,57 +1762,23 @@ class ConnectionManager:
         )
 
         if not has_manual_points:
-            # Calculate stub ends for pins
-            # Stubs extend from pins in the direction the pin points
-            # This provides clearance from symbol bodies
-            source_stub_end = None
-            target_stub_end = None
-
-            if source_type == 'pin' and source_pin is not None:
-                source_stub_end = _calculate_stub_end(source_pin)
-
-            if target_type == 'pin' and target_pin is not None:
-                target_stub_end = _calculate_stub_end(target_pin)
-
-            # Determine routing start and end points
-            # If we have stubs, route between stub ends; otherwise use pin/label locations
-            route_start = source_stub_end if source_stub_end is not None else tuple(source_point)
-            route_end = target_stub_end if target_stub_end is not None else tuple(target_point)
-
-            # With stubs, we don't need to exclude source/target symbols from collision detection
-            # because stubs extend the connection points outside the collision boxes.
-            # The route between stub ends should avoid ALL symbols (including source/target).
-            exclude_syms = []
+            # Route directly from pin to pin
+            # The A* algorithm uses soft penalties for symbol bboxes:
+            # - Heavy penalty for routing inside bboxes
+            # - Lighter penalty for routing near bboxes
+            # - Hard blocks only on forbidden pin/node points
+            # This allows routing even when pins are inside bboxes (e.g., LED cathode)
+            route_start = tuple(source_point)
+            route_end = tuple(target_point)
 
             route_points = _safe_manhattan_route(
                 schematic,
                 route_start,
                 route_end,
-                exclude_symbols=exclude_syms,
             )
 
-            # Build complete wire path including stubs
-            # Format: pin → stub_end → route_points → stub_end → pin
-            complete_path = []
-
-            # Add source pin and stub
-            complete_path.append(tuple(source_point))
-            if source_stub_end is not None:
-                complete_path.append(source_stub_end)
-
-            # Add route points (excluding endpoints if they match stub ends)
-            for pt in route_points:
-                if complete_path and pt == complete_path[-1]:
-                    continue  # Skip duplicate points
-                complete_path.append(pt)
-
-            # Add target stub and pin
-            if target_stub_end is not None and (not complete_path or target_stub_end != complete_path[-1]):
-                complete_path.append(target_stub_end)
-            if tuple(target_point) != complete_path[-1]:
-                complete_path.append(tuple(target_point))
-
-            properties['points'] = [[p[0], p[1]] for p in complete_path]
+            # Use the route points directly as the wire path
+            properties['points'] = [[p[0], p[1]] for p in route_points]
 
         start = [source_point[0], source_point[1]]
         end = [target_point[0], target_point[1]]

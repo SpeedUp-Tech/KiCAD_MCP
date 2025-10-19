@@ -178,6 +178,56 @@ class ConnectSchematicPinsVisualTests(unittest.TestCase):
 
         scenarios.append(("H_multi_mixed", { 'builder': build_H }))
 
+        # I) LED horizontal - tests LED with rotation 0 (horizontal orientation)
+        def build_I():
+            sch = SchematicManager.create_schematic('I_LED_Horizontal')
+            ComponentManager.add_component(sch, { 'type': 'R', 'reference': 'R1', 'x': CENTER_X - 30.0, 'y': CENTER_Y, 'rotation': 0 })
+            ComponentManager.add_component(sch, { 'type': 'LED', 'reference': 'D1', 'x': CENTER_X + 10.0, 'y': CENTER_Y, 'rotation': 0 })
+            ConnectionManager.connect_pins(sch, {'reference': 'R1', 'pin': '2'}, {'reference': 'D1', 'pin': '2'})
+            return sch
+
+        scenarios.append(("I_LED_horizontal", { 'builder': build_I }))
+
+        # J) LED vertical - tests LED with rotation 90 (vertical orientation)
+        def build_J():
+            sch = SchematicManager.create_schematic('J_LED_Vertical')
+            ComponentManager.add_component(sch, { 'type': 'R', 'reference': 'R1', 'x': CENTER_X - 30.0, 'y': CENTER_Y, 'rotation': 0 })
+            ComponentManager.add_component(sch, { 'type': 'LED', 'reference': 'D1', 'x': CENTER_X + 10.0, 'y': CENTER_Y, 'rotation': 90 })
+            ConnectionManager.connect_pins(sch, {'reference': 'R1', 'pin': '2'}, {'reference': 'D1', 'pin': '2'})
+            return sch
+
+        scenarios.append(("J_LED_vertical", { 'builder': build_J }))
+
+        # K) LED circuit - complete LED with current limiting resistor (the failing test case scenario)
+        def build_K():
+            sch = SchematicManager.create_schematic('K_LED_Circuit')
+            # Resistor vertical (rotation 0)
+            ComponentManager.add_component(sch, { 'type': 'R', 'reference': 'R1', 'value': '330', 'x': CENTER_X - 20.0, 'y': CENTER_Y, 'rotation': 0 })
+            # LED vertical (rotation 90)
+            ComponentManager.add_component(sch, { 'type': 'LED', 'reference': 'D1', 'x': CENTER_X + 20.0, 'y': CENTER_Y, 'rotation': 90 })
+            # Connect R1.2 to D1.2 (should be simple horizontal line)
+            ConnectionManager.connect_pins(sch, {'reference': 'R1', 'pin': '2'}, {'reference': 'D1', 'pin': '2'})
+            # Connect R1.1 to D1.1 (should be simple horizontal line at different Y)
+            ConnectionManager.connect_pins(sch, {'reference': 'R1', 'pin': '1'}, {'reference': 'D1', 'pin': '1'})
+            return sch
+
+        scenarios.append(("K_LED_circuit", { 'builder': build_K }))
+
+        # L) LED with different rotations - tests all 4 rotations
+        def build_L():
+            sch = SchematicManager.create_schematic('L_LED_Rotations')
+            ComponentManager.add_component(sch, { 'type': 'LED', 'reference': 'D1', 'x': CENTER_X - 30.0, 'y': CENTER_Y - 30.0, 'rotation': 0 })
+            ComponentManager.add_component(sch, { 'type': 'LED', 'reference': 'D2', 'x': CENTER_X + 30.0, 'y': CENTER_Y - 30.0, 'rotation': 90 })
+            ComponentManager.add_component(sch, { 'type': 'LED', 'reference': 'D3', 'x': CENTER_X - 30.0, 'y': CENTER_Y + 30.0, 'rotation': 180 })
+            ComponentManager.add_component(sch, { 'type': 'LED', 'reference': 'D4', 'x': CENTER_X + 30.0, 'y': CENTER_Y + 30.0, 'rotation': 270 })
+            # Connect D1 to D2
+            ConnectionManager.connect_pins(sch, {'reference': 'D1', 'pin': '1'}, {'reference': 'D2', 'pin': '2'})
+            # Connect D3 to D4
+            ConnectionManager.connect_pins(sch, {'reference': 'D3', 'pin': '2'}, {'reference': 'D4', 'pin': '1'})
+            return sch
+
+        scenarios.append(("L_LED_rotations", { 'builder': build_L }))
+
         # Execute scenarios
         for name, cfg in scenarios:
             sch = cfg['builder']()
