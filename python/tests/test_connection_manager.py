@@ -11,6 +11,7 @@ EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 from python.commands.schematic import SchematicManager
 from python.commands.connection_schematic import ConnectionManager
 from python.commands.component_schematic import ComponentManager
+from python.commands.grid_utils import snap_to_grid
 
 
 class ConnectionManagerTests(unittest.TestCase):
@@ -216,7 +217,7 @@ class ConnectionManagerTests(unittest.TestCase):
             Symbol('hierarchical_label'),
             'VBAT',
             [Symbol('shape'), Symbol('input')],
-            [Symbol('at'), 100.0, 50.0, 0],
+            [Symbol('at'), snap_to_grid(100.0), snap_to_grid(50.0), 0],
             [Symbol('fields_autoplaced')],
             [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]], [Symbol('justify'), Symbol('left')]],
             [Symbol('uuid'), Symbol('test-label-uuid-1')]
@@ -260,7 +261,7 @@ class ConnectionManagerTests(unittest.TestCase):
             Symbol('hierarchical_label'),
             'GND',
             [Symbol('shape'), Symbol('output')],
-            [Symbol('at'), 30.0, 80.0, 0],
+            [Symbol('at'), snap_to_grid(30.0), snap_to_grid(80.0), 0],
             [Symbol('fields_autoplaced')],
             [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]], [Symbol('justify'), Symbol('right')]],
             [Symbol('uuid'), Symbol('test-label-uuid-2')]
@@ -290,7 +291,7 @@ class ConnectionManagerTests(unittest.TestCase):
             Symbol('hierarchical_label'),
             'VCC',
             [Symbol('shape'), Symbol('input')],
-            [Symbol('at'), 20.0, 20.0, 0],
+            [Symbol('at'), snap_to_grid(20.0), snap_to_grid(20.0), 0],
             [Symbol('fields_autoplaced')],
             [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]], [Symbol('justify'), Symbol('left')]],
             [Symbol('uuid'), Symbol('test-label-uuid-3')]
@@ -301,7 +302,7 @@ class ConnectionManagerTests(unittest.TestCase):
             Symbol('hierarchical_label'),
             'VDD',
             [Symbol('shape'), Symbol('output')],
-            [Symbol('at'), 120.0, 20.0, 0],
+            [Symbol('at'), snap_to_grid(120.0), snap_to_grid(20.0), 0],
             [Symbol('fields_autoplaced')],
             [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]], [Symbol('justify'), Symbol('left')]],
             [Symbol('uuid'), Symbol('test-label-uuid-4')]
@@ -403,7 +404,7 @@ class ConnectionManagerTests(unittest.TestCase):
             Symbol('hierarchical_label'),
             'SIGNAL',
             [Symbol('shape'), Symbol('bidirectional')],
-            [Symbol('at'), 50.0, 50.0, 0],
+            [Symbol('at'), snap_to_grid(50.0), snap_to_grid(50.0), 0],
             [Symbol('fields_autoplaced')],
             [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]], [Symbol('justify'), Symbol('left')]],
             [Symbol('uuid'), Symbol('test-label-uuid-5')]
@@ -440,7 +441,7 @@ class ConnectionManagerTests(unittest.TestCase):
             Symbol('global_label'),
             'GND',
             [Symbol('shape'), Symbol('passive')],
-            [Symbol('at'), 50.0, 10.0, 0],
+            [Symbol('at'), snap_to_grid(50.0), snap_to_grid(10.0), 0],
             [Symbol('uuid'), Symbol('test-global-label')],
         ]
         schematic.tree.append(glabel_node)
@@ -476,7 +477,7 @@ class ConnectionManagerTests(unittest.TestCase):
         llabel_node = [
             Symbol('label'),
             'NET_LOCAL',
-            [Symbol('at'), 60.0, 20.0, 0],
+            [Symbol('at'), snap_to_grid(60.0), snap_to_grid(20.0), 0],
             [Symbol('uuid'), Symbol('test-local-label')],
         ]
         schematic.tree.append(llabel_node)

@@ -4,15 +4,20 @@ from sexpdata import Symbol
 from python.commands.schematic import SchematicManager
 from python.commands.component_schematic import ComponentManager
 from python.commands.connection_schematic import ConnectionManager, _collect_symbol_bboxes
-from python.commands.grid_utils import KICAD_SCHEMATIC_GRID_MM
+from python.commands.grid_utils import KICAD_SCHEMATIC_GRID_MM, snap_to_grid
 
 
 def add_hlabel(schematic, name: str, x: float, y: float):
+    """Add a hierarchical label to the schematic with grid-snapped coordinates."""
+    # Snap coordinates to grid for KiCAD compliance
+    x_snapped = snap_to_grid(x)
+    y_snapped = snap_to_grid(y)
+
     node = [
         Symbol('hierarchical_label'),
         name,
         [Symbol('shape'), Symbol('input')],
-        [Symbol('at'), float(x), float(y), 0],
+        [Symbol('at'), x_snapped, y_snapped, 0],
         [Symbol('fields_autoplaced')],
         [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]]],
         [Symbol('uuid'), Symbol(f'label-{name}')]

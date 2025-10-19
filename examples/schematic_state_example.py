@@ -20,6 +20,7 @@ from commands.schematic import SchematicManager
 from commands.component_schematic import ComponentManager
 from commands.connection_schematic import ConnectionManager
 from commands.schematic_state import get_schematic_state
+from commands.grid_utils import snap_to_grid
 from sexpdata import Symbol
 
 
@@ -59,27 +60,27 @@ def create_example_schematic():
         Symbol('hierarchical_label'),
         'VIN',
         [Symbol('shape'), Symbol('input')],
-        [Symbol('at'), 80.0, 80.0, 0],
+        [Symbol('at'), snap_to_grid(80.0), snap_to_grid(80.0), 0],
         [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]]],
         [Symbol('uuid'), Symbol('label-vin')]
     ]
     schematic.tree.append(vin_label)
-    
+
     vout_label = [
         Symbol('hierarchical_label'),
         'VOUT',
         [Symbol('shape'), Symbol('output')],
-        [Symbol('at'), 120.0, 100.0, 0],
+        [Symbol('at'), snap_to_grid(120.0), snap_to_grid(100.0), 0],
         [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]]],
         [Symbol('uuid'), Symbol('label-vout')]
     ]
     schematic.tree.append(vout_label)
-    
+
     gnd_label = [
         Symbol('hierarchical_label'),
         'GND',
         [Symbol('shape'), Symbol('passive')],
-        [Symbol('at'), 100.0, 140.0, 0],
+        [Symbol('at'), snap_to_grid(100.0), snap_to_grid(140.0), 0],
         [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]]],
         [Symbol('uuid'), Symbol('label-gnd')]
     ]

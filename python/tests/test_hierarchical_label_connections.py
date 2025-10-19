@@ -15,6 +15,7 @@ from sexpdata import Symbol
 from python.commands.schematic import SchematicManager
 from python.commands.connection_schematic import ConnectionManager
 from python.commands.component_schematic import ComponentManager
+from python.commands.grid_utils import snap_to_grid
 
 EXPORT_DIR = Path(__file__).resolve().parents[2] / 'exported'
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -105,7 +106,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
             Symbol('hierarchical_label'),
             'INPUT',
             [Symbol('shape'), Symbol('input')],
-            [Symbol('at'), 20.0, 50.0, 0],
+            [Symbol('at'), snap_to_grid(20.0), snap_to_grid(50.0), 0],
             [Symbol('fields_autoplaced')],
             [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]], [Symbol('justify'), Symbol('right')]],
             [Symbol('uuid'), Symbol('test-label-input')]
@@ -116,7 +117,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
             Symbol('hierarchical_label'),
             'OUTPUT',
             [Symbol('shape'), Symbol('output')],
-            [Symbol('at'), 180.0, 50.0, 0],
+            [Symbol('at'), snap_to_grid(180.0), snap_to_grid(50.0), 0],
             [Symbol('fields_autoplaced')],
             [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]], [Symbol('justify'), Symbol('left')]],
             [Symbol('uuid'), Symbol('test-label-output')]
@@ -187,7 +188,7 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
             Symbol('hierarchical_label'),
             'SIGNAL',
             [Symbol('shape'), Symbol('bidirectional')],
-            [Symbol('at'), 100.0, 100.0, 0],
+            [Symbol('at'), snap_to_grid(100.0), snap_to_grid(100.0), 0],
             [Symbol('fields_autoplaced')],
             [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]], [Symbol('justify'), Symbol('left')]],
             [Symbol('uuid'), Symbol('test-label-signal')]

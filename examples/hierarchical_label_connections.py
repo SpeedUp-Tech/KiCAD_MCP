@@ -23,6 +23,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from python.commands.schematic import SchematicManager
 from python.commands.connection_schematic import ConnectionManager
 from python.commands.component_schematic import ComponentManager
+from python.commands.grid_utils import snap_to_grid
 from sexpdata import Symbol
 
 
@@ -43,33 +44,33 @@ def create_example_hierarchical_schematic():
         Symbol('hierarchical_label'),
         'VCC_IN',
         [Symbol('shape'), Symbol('input')],
-        [Symbol('at'), 20.0, 50.0, 0],
+        [Symbol('at'), snap_to_grid(20.0), snap_to_grid(50.0), 0],
         [Symbol('fields_autoplaced')],
         [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]], [Symbol('justify'), Symbol('right')]],
         [Symbol('uuid'), Symbol('label-vcc-in')]
     ]
     schematic.tree.append(power_in_label)
     print("✓ Added hierarchical label: VCC_IN (input)")
-    
+
     # Output power label on the right
     power_out_label = [
         Symbol('hierarchical_label'),
         'VCC_OUT',
         [Symbol('shape'), Symbol('output')],
-        [Symbol('at'), 180.0, 50.0, 0],
+        [Symbol('at'), snap_to_grid(180.0), snap_to_grid(50.0), 0],
         [Symbol('fields_autoplaced')],
         [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]], [Symbol('justify'), Symbol('left')]],
         [Symbol('uuid'), Symbol('label-vcc-out')]
     ]
     schematic.tree.append(power_out_label)
     print("✓ Added hierarchical label: VCC_OUT (output)")
-    
+
     # Ground label at the bottom
     gnd_label = [
         Symbol('hierarchical_label'),
         'GND',
         [Symbol('shape'), Symbol('passive')],
-        [Symbol('at'), 100.0, 120.0, 0],
+        [Symbol('at'), snap_to_grid(100.0), snap_to_grid(120.0), 0],
         [Symbol('fields_autoplaced')],
         [Symbol('effects'), [Symbol('font'), [Symbol('size'), 1.27, 1.27]], [Symbol('justify'), Symbol('left')]],
         [Symbol('uuid'), Symbol('label-gnd')]

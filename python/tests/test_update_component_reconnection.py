@@ -5,6 +5,7 @@ from python.commands.schematic import SchematicManager
 from python.commands.component_schematic import ComponentManager
 from python.commands.connection_schematic import ConnectionManager
 from python.commands.schematic_state import _extract_components, _build_connection_map
+from python.commands.grid_utils import snap_to_grid
 
 EXPORT_DIR = Path(__file__).resolve().parents[2] / 'exported'
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
@@ -121,7 +122,7 @@ class UpdateComponentReconnectionTests(unittest.TestCase):
         # Add one component and a local label connected by a wire
         ComponentManager.add_component(schematic, { 'type': 'R', 'reference': 'R1', 'x': 0, 'y': 0 })
         # Build a local label at (40, 0) and wire to it
-        label_node = [Symbol('label'), 'NET_L', [Symbol('at'), 40.0, 0.0, 0.0], [Symbol('effects')]]
+        label_node = [Symbol('label'), 'NET_L', [Symbol('at'), snap_to_grid(40.0), snap_to_grid(0.0), 0.0], [Symbol('effects')]]
         schematic.tree.append(label_node)
         # Connect R1.1 to label NET_L via helper
         ConnectionManager.connect_pins(
