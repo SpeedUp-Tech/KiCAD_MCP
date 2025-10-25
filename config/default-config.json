@@ -5,7 +5,7 @@
   "pythonPath": "/usr/lib/python3/dist-packages",
   "pythonExecutable": "/root/miniconda3/envs/kicad/bin/python",
   "kicadPath": "/usr/share/kicad",
-  "logLevel": "info",
+  "logLevel": "warn",
   "logDir": "kicad_logs",
   "responseTimeoutMs": 60000,
   "processManagement": {

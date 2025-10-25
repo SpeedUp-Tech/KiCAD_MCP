@@ -4,6 +4,7 @@
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "esModuleInterop": true,
+    "resolveJsonModule": true,
     "strict": true,
     "outDir": "dist",
     "declaration": true,

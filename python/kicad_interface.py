@@ -64,7 +64,7 @@ def _create_logging_handlers() -> list[logging.Handler]:
     return [JsonStdoutHandler()]
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=_create_logging_handlers(),
 )

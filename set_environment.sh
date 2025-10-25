@@ -377,7 +377,7 @@ if kicad_path:
 
 # Keep other defaults; ensure logDir is set
 cfg.setdefault('logDir', '~/.kicad-mcp/logs')
-cfg.setdefault('logLevel', 'info')
+cfg.setdefault('logLevel', 'warn')
 cfg.setdefault('responseTimeoutMs', 60000)
 
 with open(cfg_path, 'w', encoding='utf-8') as f:

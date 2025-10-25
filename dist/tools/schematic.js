@@ -3,6 +3,7 @@
  */
 import { z } from 'zod';
 import { logger } from '../logger.js';
+import { toolDescription } from '../utils/toolDocs.js';
 import { formatToolResult, withSessionParams } from './shared.js';
 const schematicPointSchema = z
     .object({
@@ -97,21 +98,17 @@ const schematicConnectionPointSchema = z
 const coordinateListSchema = z.array(schematicPointSchema);
 const wireOptionsSchema = z
     .object({
-    points: coordinateListSchema.optional().describe('Explicit list of points for the wire'),
-    pointList: coordinateListSchema.optional().describe('Alternate key for points'),
-    segments: coordinateListSchema.optional().describe('Alternate key for points'),
-    midpoints: coordinateListSchema.optional().describe('Intermediate points to include'),
-    viaPoints: coordinateListSchema.optional().describe('Additional waypoints to include'),
-    width: z.number().optional().describe('Wire stroke width'),
-    strokeType: z.string().optional().describe('Stroke type (e.g., default, dash, dot)'),
-    style: z.string().optional().describe('Additional stroke style hint'),
-    uuid: z.string().optional().describe('Explicit UUID for the new wire'),
+    points: coordinateListSchema.optional().describe('Explicit polyline for the routed wire'),
+    midpoints: coordinateListSchema.optional().describe('Additional waypoints inserted between start and end'),
+    width: z.number().optional().describe('Wire stroke width in schematic units'),
+    strokeType: z.string().optional().describe('Stroke style (default, dash, dot, etc.)'),
+    uuid: z.string().optional().describe('Explicit UUID for the first created wire segment'),
 })
     .partial()
-    .describe('Optional overrides for the generated wire');
+    .describe('Optional routing overrides. Provide at most the listed keys—other properties are ignored by the server.');
 export function registerSchematicTools(server, callKicadScript) {
     logger.info('Registering schematic tools');
-    server.tool('create_schematic', withSessionParams({
+    server.tool('create_schematic', toolDescription('create_schematic'), withSessionParams({
         projectName: z.string().describe('Name for the schematic/project'),
         path: z.string().optional().describe('Directory to write the schematic file into'),
         metadata: z.record(z.any()).optional().describe('Optional metadata to apply'),
@@ -123,13 +120,13 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
-    server.tool('load_schematic', withSessionParams({
+    server.tool('load_schematic', toolDescription('load_schematic'), withSessionParams({
         filename: z.string().describe('Path to the schematic file (.kicad_sch)'),
     }), async ({ filename }) => {
         const result = await callKicadScript('load_schematic', { filename });
         return formatToolResult(result);
     });
-    server.tool('add_schematic_component', withSessionParams({
+    server.tool('add_schematic_component', toolDescription('add_schematic_component'), withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
         component: schematicComponentSchema.describe('Component definition to insert'),
     }), async ({ schematicPath, component }) => {
@@ -139,7 +136,7 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
-    server.tool('update_schematic_component', withSessionParams({
+    server.tool('update_schematic_component', toolDescription('update_schematic_component'), withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
         reference: z.string().describe('Reference designator to update'),
         unit: z.union([z.string(), z.number()]).optional().describe('Specific unit to target (for multi-unit symbols)'),
@@ -158,7 +155,7 @@ export function registerSchematicTools(server, callKicadScript) {
     //   note: string,
     //   removedConnections: Array<{ source: Endpoint, target: Endpoint, net: string, summary: string }>
     // }
-    server.tool('remove_schematic_component', withSessionParams({
+    server.tool('remove_schematic_component', toolDescription('remove_schematic_component'), withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
         reference: z.string().describe('Reference designator to remove'),
         unit: z.union([z.string(), z.number()]).optional().describe('Specific unit to remove'),
@@ -170,7 +167,7 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
-    server.tool('add_schematic_wire', withSessionParams({
+    server.tool('add_schematic_wire', toolDescription('add_schematic_wire'), withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
         startPoint: schematicPointSchema.describe('Wire start coordinates'),
         endPoint: schematicPointSchema.describe('Wire end coordinates'),
@@ -187,7 +184,7 @@ export function registerSchematicTools(server, callKicadScript) {
     //   net: string,
     //   netConnections: string[]
     // }
-    server.tool('remove_schematic_connection', withSessionParams({
+    server.tool('remove_schematic_connection', toolDescription('remove_schematic_connection'), withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
         source: schematicConnectionPointSchema.describe('Source connection point - either a component pin {reference, pin} or label/power {label}'),
         target: schematicConnectionPointSchema.describe('Target connection point - either a component pin {reference, pin} or label/power {label}'),
@@ -204,7 +201,7 @@ export function registerSchematicTools(server, callKicadScript) {
     //   net: string,
     //   netConnections: string[]
     // }
-    server.tool('connect_schematic_pins', withSessionParams({
+    server.tool('connect_schematic_pins', toolDescription('connect_schematic_pins'), withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to update'),
         source: schematicConnectionPointSchema.describe('Source connection point - either a component pin {reference, pin} or label/power {label}'),
         target: schematicConnectionPointSchema.describe('Target connection point - either a component pin {reference, pin} or label/power {label}'),
@@ -218,13 +215,13 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
-    server.tool('list_schematic_libraries', withSessionParams({
+    server.tool('list_schematic_libraries', toolDescription('list_schematic_libraries'), withSessionParams({
         searchPaths: z.array(z.string()).optional().describe('Optional glob patterns or directories to search'),
     }), async ({ searchPaths }) => {
         const result = await callKicadScript('list_schematic_libraries', { searchPaths });
         return formatToolResult(result);
     });
-    server.tool('export_schematic_pdf', withSessionParams({
+    server.tool('export_schematic_pdf', toolDescription('export_schematic_pdf'), withSessionParams({
         schematicPath: z.string().describe('Schematic file to export'),
         outputPath: z.string().describe('Destination PDF path'),
     }), async ({ schematicPath, outputPath }) => {
@@ -234,7 +231,7 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
-    server.tool('export_schematic_svg', withSessionParams({
+    server.tool('export_schematic_svg', toolDescription('export_schematic_svg'), withSessionParams({
         schematicPath: z.string().describe('Schematic file to export'),
         outputPath: z.string().describe('Destination SVG path'),
         extraArgs: z.array(z.string()).optional().describe('Additional kicad-cli arguments'),
@@ -246,7 +243,7 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
-    server.tool('run_erc', withSessionParams({
+    server.tool('run_erc', toolDescription('run_erc'), withSessionParams({
         schematicPath: z.string().describe('Schematic file to check'),
         reportPath: z.string().optional().describe('Optional ERC report output path'),
         extraArgs: z.array(z.string()).optional().describe('Additional kicad-cli arguments'),
@@ -258,7 +255,7 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
-    server.tool('export_schematic_netlist', withSessionParams({
+    server.tool('export_schematic_netlist', toolDescription('export_schematic_netlist'), withSessionParams({
         schematicPath: z.string().describe('Schematic file to export from'),
         outputPath: z.string().describe('Destination netlist path'),
         format: z.string().optional().describe('Optional netlist format (e.g., legacy, spice)'),
@@ -272,7 +269,7 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
-    server.tool('export_schematic_bom', withSessionParams({
+    server.tool('export_schematic_bom', toolDescription('export_schematic_bom'), withSessionParams({
         schematicPath: z.string().describe('Schematic file to export from'),
         outputPath: z.string().describe('Destination BOM path'),
         format: z.string().optional().describe('Output format (csv, xml, json, etc.)'),
@@ -288,7 +285,7 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
-    server.tool('generate_hierarchical_schematic', withSessionParams({
+    server.tool('generate_hierarchical_schematic', toolDescription('generate_hierarchical_schematic'), withSessionParams({
         blueprintPath: z.string().describe('Path to the blueprint JSON file'),
         outputDir: z.string().describe('Directory where the hierarchical schematic project will be created'),
     }), async ({ blueprintPath, outputDir }) => {
@@ -298,7 +295,7 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
-    server.tool('get_schematic_state', withSessionParams({
+    server.tool('get_schematic_state', toolDescription('get_schematic_state'), withSessionParams({
         schematicPath: z.string().describe('Path to the schematic file to analyze'),
         showDetails: z
             .boolean()

@@ -5,6 +5,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { logger } from '../logger.js';
+import { toolDescription } from '../utils/toolDocs.js';
 import { formatToolResult, withSessionParams } from './shared.js';
 
 type CommandFunction = (
@@ -115,18 +116,16 @@ const coordinateListSchema = z.array(schematicPointSchema);
 
 const wireOptionsSchema = z
   .object({
-    points: coordinateListSchema.optional().describe('Explicit list of points for the wire'),
-    pointList: coordinateListSchema.optional().describe('Alternate key for points'),
-    segments: coordinateListSchema.optional().describe('Alternate key for points'),
-    midpoints: coordinateListSchema.optional().describe('Intermediate points to include'),
-    viaPoints: coordinateListSchema.optional().describe('Additional waypoints to include'),
-    width: z.number().optional().describe('Wire stroke width'),
-    strokeType: z.string().optional().describe('Stroke type (e.g., default, dash, dot)'),
-    style: z.string().optional().describe('Additional stroke style hint'),
-    uuid: z.string().optional().describe('Explicit UUID for the new wire'),
+    points: coordinateListSchema.optional().describe('Explicit polyline for the routed wire'),
+    midpoints: coordinateListSchema.optional().describe('Additional waypoints inserted between start and end'),
+    width: z.number().optional().describe('Wire stroke width in schematic units'),
+    strokeType: z.string().optional().describe('Stroke style (default, dash, dot, etc.)'),
+    uuid: z.string().optional().describe('Explicit UUID for the first created wire segment'),
   })
   .partial()
-  .describe('Optional overrides for the generated wire');
+  .describe(
+    'Optional routing overrides. Provide at most the listed keys—other properties are ignored by the server.'
+  );
 
 export function registerSchematicTools(
   server: McpServer,
@@ -136,6 +135,7 @@ export function registerSchematicTools(
 
   server.tool(
     'create_schematic',
+    toolDescription('create_schematic'),
     withSessionParams({
       projectName: z.string().describe('Name for the schematic/project'),
       path: z.string().optional().describe('Directory to write the schematic file into'),
@@ -153,6 +153,7 @@ export function registerSchematicTools(
 
   server.tool(
     'load_schematic',
+    toolDescription('load_schematic'),
     withSessionParams({
       filename: z.string().describe('Path to the schematic file (.kicad_sch)'),
     }),
@@ -164,6 +165,7 @@ export function registerSchematicTools(
 
   server.tool(
     'add_schematic_component',
+    toolDescription('add_schematic_component'),
     withSessionParams({
       schematicPath: z.string().describe('Path to the schematic file to update'),
       component: schematicComponentSchema.describe('Component definition to insert'),
@@ -179,6 +181,7 @@ export function registerSchematicTools(
 
   server.tool(
     'update_schematic_component',
+    toolDescription('update_schematic_component'),
     withSessionParams({
       schematicPath: z.string().describe('Path to the schematic file to update'),
       reference: z.string().describe('Reference designator to update'),
@@ -205,6 +208,7 @@ export function registerSchematicTools(
   // }
   server.tool(
     'remove_schematic_component',
+    toolDescription('remove_schematic_component'),
     withSessionParams({
       schematicPath: z.string().describe('Path to the schematic file to update'),
       reference: z.string().describe('Reference designator to remove'),
@@ -222,6 +226,7 @@ export function registerSchematicTools(
 
   server.tool(
     'add_schematic_wire',
+    toolDescription('add_schematic_wire'),
     withSessionParams({
       schematicPath: z.string().describe('Path to the schematic file to update'),
       startPoint: schematicPointSchema.describe('Wire start coordinates'),
@@ -244,6 +249,7 @@ export function registerSchematicTools(
   // }
   server.tool(
     'remove_schematic_connection',
+    toolDescription('remove_schematic_connection'),
     withSessionParams({
       schematicPath: z.string().describe('Path to the schematic file to update'),
       source: schematicConnectionPointSchema.describe(
@@ -270,6 +276,7 @@ export function registerSchematicTools(
   // }
   server.tool(
     'connect_schematic_pins',
+    toolDescription('connect_schematic_pins'),
     withSessionParams({
       schematicPath: z.string().describe('Path to the schematic file to update'),
       source: schematicConnectionPointSchema.describe(
@@ -293,6 +300,7 @@ export function registerSchematicTools(
 
   server.tool(
     'list_schematic_libraries',
+    toolDescription('list_schematic_libraries'),
     withSessionParams({
       searchPaths: z.array(z.string()).optional().describe('Optional glob patterns or directories to search'),
     }),
@@ -304,6 +312,7 @@ export function registerSchematicTools(
 
   server.tool(
     'export_schematic_pdf',
+    toolDescription('export_schematic_pdf'),
     withSessionParams({
       schematicPath: z.string().describe('Schematic file to export'),
       outputPath: z.string().describe('Destination PDF path'),
@@ -319,6 +328,7 @@ export function registerSchematicTools(
 
   server.tool(
     'export_schematic_svg',
+    toolDescription('export_schematic_svg'),
     withSessionParams({
       schematicPath: z.string().describe('Schematic file to export'),
       outputPath: z.string().describe('Destination SVG path'),
@@ -336,6 +346,7 @@ export function registerSchematicTools(
 
   server.tool(
     'run_erc',
+    toolDescription('run_erc'),
     withSessionParams({
       schematicPath: z.string().describe('Schematic file to check'),
       reportPath: z.string().optional().describe('Optional ERC report output path'),
@@ -353,6 +364,7 @@ export function registerSchematicTools(
 
   server.tool(
     'export_schematic_netlist',
+    toolDescription('export_schematic_netlist'),
     withSessionParams({
       schematicPath: z.string().describe('Schematic file to export from'),
       outputPath: z.string().describe('Destination netlist path'),
@@ -372,6 +384,7 @@ export function registerSchematicTools(
 
   server.tool(
     'export_schematic_bom',
+    toolDescription('export_schematic_bom'),
     withSessionParams({
       schematicPath: z.string().describe('Schematic file to export from'),
       outputPath: z.string().describe('Destination BOM path'),
@@ -393,6 +406,7 @@ export function registerSchematicTools(
 
   server.tool(
     'generate_hierarchical_schematic',
+    toolDescription('generate_hierarchical_schematic'),
     withSessionParams({
       blueprintPath: z.string().describe('Path to the blueprint JSON file'),
       outputDir: z.string().describe('Directory where the hierarchical schematic project will be created'),
@@ -408,6 +422,7 @@ export function registerSchematicTools(
 
   server.tool(
     'get_schematic_state',
+    toolDescription('get_schematic_state'),
     withSessionParams({
       schematicPath: z.string().describe('Path to the schematic file to analyze'),
       showDetails: z

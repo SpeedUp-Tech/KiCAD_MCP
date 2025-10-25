@@ -5,7 +5,8 @@
   "type": "module",
   "main": "dist/index.js",
   "scripts": {
-    "build": "tsc",
+    "build": "npm run build:docs && tsc",
+    "build:docs": "python3 ./python/export_tool_docs.py || python ./python/export_tool_docs.py",
     "start": "node dist/index.js",
     "dev": "tsc -w & nodemon dist/index.js",
     "test": "echo \"Error: no test specified\" && exit 1",

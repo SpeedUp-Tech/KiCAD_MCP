@@ -6,3 +6,5 @@ __pycache__/
 exported/*
 results/
 .venv/
+src/generated/
+dist/generated/
