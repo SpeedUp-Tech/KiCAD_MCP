@@ -657,6 +657,8 @@ def _collect_wire_vertices(schematic: Schematic) -> List[Tuple[float, float]]:
     except Exception:
         pass
     return pts
+
+
 def _is_entry(node: Any, name: str) -> bool:
     try:
         if not isinstance(node, list):
@@ -669,6 +671,24 @@ def _is_entry(node: Any, name: str) -> bool:
         return first.value() == name
     except Exception:
         return False
+
+
+def _refresh_wire_collection(schematic: Schematic) -> None:
+    """Rebuild schematic.wire wrappers to keep indices valid after edits."""
+    try:
+        if not hasattr(schematic, 'wire'):
+            return
+        wire_nodes: List[Any] = []
+        for index, node in enumerate(getattr(schematic, 'tree', [])):
+            if _is_entry(node, 'wire'):
+                parsed = ParsedValue(schematic.tree, node, [index], schematic)
+                wire_nodes.append(schematic.wrap(parsed))
+        try:
+            schematic.wire._elements = wire_nodes
+        except Exception:
+            pass
+    except Exception as exc:
+        logger.warning("Failed to refresh wire collection: %s", exc)
 
 
 def _atom_to_str(atom: Any) -> str:
@@ -1462,6 +1482,9 @@ class ConnectionManager:
             label='target',
         )
 
+        # Ensure wire wrappers reference the latest tree structure before analysis
+        _refresh_wire_collection(schematic)
+
         if not hasattr(schematic, 'wire') or not len(schematic.wire):
             raise ValueError('Schematic contains no wires to remove')
 
@@ -1558,9 +1581,8 @@ class ConnectionManager:
                 schematic.tree.remove(raw_wire)
             removed_wrappers.append(wire)
 
-        schematic.wire._elements = [
-            wire for wire in schematic.wire._elements if wire not in removed_wrappers
-        ]
+        # Rebuild wire collection wrappers so future operations see consistent state
+        _refresh_wire_collection(schematic)
 
         logger.info("Removed %d wire segment(s)", len(removed_wrappers))
 

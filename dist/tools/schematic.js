@@ -95,17 +95,13 @@ const schematicLabelSchema = z
 const schematicConnectionPointSchema = z
     .union([schematicPinSchema, schematicLabelSchema])
     .describe('Connection point specification - either a component pin (with reference and pin fields) or a label/power name (with label/labelName field)');
-const coordinateListSchema = z.array(schematicPointSchema);
-const wireOptionsSchema = z
+const connectWireStyleSchema = z
     .object({
-    points: coordinateListSchema.optional().describe('Explicit polyline for the routed wire'),
-    midpoints: coordinateListSchema.optional().describe('Additional waypoints inserted between start and end'),
     width: z.number().optional().describe('Wire stroke width in schematic units'),
     strokeType: z.string().optional().describe('Stroke style (default, dash, dot, etc.)'),
-    uuid: z.string().optional().describe('Explicit UUID for the first created wire segment'),
 })
-    .partial()
-    .describe('Optional routing overrides. Provide at most the listed keys—other properties are ignored by the server.');
+    .strict()
+    .describe('Optional wire styling overrides. Only width and strokeType are accepted.');
 export function registerSchematicTools(server, callKicadScript) {
     logger.info('Registering schematic tools');
     server.tool('create_schematic', toolDescription('create_schematic'), withSessionParams({
@@ -205,7 +201,7 @@ export function registerSchematicTools(server, callKicadScript) {
         schematicPath: z.string().describe('Path to the schematic file to update'),
         source: schematicConnectionPointSchema.describe('Source connection point - either a component pin {reference, pin} or label/power {label}'),
         target: schematicConnectionPointSchema.describe('Target connection point - either a component pin {reference, pin} or label/power {label}'),
-        wire: wireOptionsSchema.optional().describe('Optional wire styling overrides'),
+        wire: connectWireStyleSchema.optional().describe('Optional wire styling overrides'),
     }), async ({ schematicPath, source, target, wire }) => {
         const result = await callKicadScript('connect_schematic_pins', {
             schematicPath,
