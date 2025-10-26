@@ -1,0 +1,3 @@
+from typing import Any
+
+def enable_database_parts() -> None: ...

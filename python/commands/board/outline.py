@@ -16,6 +16,12 @@ class BoardOutlineCommands:
         """Initialize with optional board instance"""
         self.board = board
 
+    def _require_board(self) -> pcbnew.BOARD:
+        """Return the active board instance."""
+        if self.board is None:
+            raise RuntimeError("No board is loaded")
+        return self.board
+
     def add_board_outline(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Add a board outline to the PCB"""
         try:
@@ -47,7 +53,8 @@ class BoardOutlineCommands:
             scale = 1000000 if unit == "mm" else 25400000  # mm or inch to nm
             
             # Create drawing for edge cuts
-            edge_layer = self.board.GetLayerID("Edge.Cuts")
+            board = self._require_board()
+            edge_layer = board.GetLayerID("Edge.Cuts")
             
             if shape == "rectangle":
                 if width is None or height is None:
@@ -108,13 +115,13 @@ class BoardOutlineCommands:
                 radius_nm = int(radius * scale)
                 
                 # Create circle
-                circle = pcbnew.PCB_SHAPE(self.board)
+                circle = pcbnew.PCB_SHAPE(board)
                 circle.SetShape(pcbnew.SHAPE_T_CIRCLE)
                 circle.SetCenter(pcbnew.VECTOR2I(center_x_nm, center_y_nm))
                 circle.SetEnd(pcbnew.VECTOR2I(center_x_nm + radius_nm, center_y_nm))
                 circle.SetLayer(edge_layer)
                 circle.SetWidth(0)  # Zero width for edge cuts
-                self.board.Add(circle)
+                board.Add(circle)
 
             elif shape == "polygon":
                 if not points or len(points) < 3:
@@ -191,7 +198,7 @@ class BoardOutlineCommands:
             pad_diameter_nm = int(pad_diameter * scale) if pad_diameter else diameter_nm + scale  # 1mm larger by default
 
             # Create footprint for mounting hole
-            module = pcbnew.FOOTPRINT(self.board)
+            module = pcbnew.FOOTPRINT(self._require_board())
             module.SetReference(f"MH")
             module.SetValue(f"MountingHole_{diameter}mm")
             
@@ -209,7 +216,7 @@ class BoardOutlineCommands:
             module.SetPosition(pcbnew.VECTOR2I(x_nm, y_nm))
             
             # Add to board
-            self.board.Add(module)
+            self._require_board().Add(module)
 
             return {
                 "success": True,
@@ -263,7 +270,8 @@ class BoardOutlineCommands:
             thickness_nm = int(thickness * scale)
 
             # Get layer ID
-            layer_id = self.board.GetLayerID(layer)
+            board = self._require_board()
+            layer_id = board.GetLayerID(layer)
             if layer_id < 0:
                 return {
                     "success": False,
@@ -272,7 +280,7 @@ class BoardOutlineCommands:
                 }
 
             # Create text
-            pcb_text = pcbnew.PCB_TEXT(self.board)
+            pcb_text = pcbnew.PCB_TEXT(self._require_board())
             pcb_text.SetText(text)
             pcb_text.SetPosition(pcbnew.VECTOR2I(x_nm, y_nm))
             pcb_text.SetLayer(layer_id)
@@ -282,7 +290,7 @@ class BoardOutlineCommands:
             pcb_text.SetMirrored(mirror)
             
             # Add to board
-            self.board.Add(pcb_text)
+            self._require_board().Add(pcb_text)
 
             return {
                 "success": True,
@@ -308,18 +316,24 @@ class BoardOutlineCommands:
 
     def _add_edge_line(self, start: pcbnew.VECTOR2I, end: pcbnew.VECTOR2I, layer: int) -> None:
         """Add a line to the edge cuts layer"""
-        line = pcbnew.PCB_SHAPE(self.board)
+        if self.board is None:
+            raise RuntimeError("No board is loaded")
+        board = self.board
+        line = pcbnew.PCB_SHAPE(board)
         line.SetShape(pcbnew.SHAPE_T_SEGMENT)
         line.SetStart(start)
         line.SetEnd(end)
         line.SetLayer(layer)
         line.SetWidth(0)  # Zero width for edge cuts
-        self.board.Add(line)
+        board.Add(line)
 
     def _add_rounded_rect(self, center_x_nm: int, center_y_nm: int, 
                          width_nm: int, height_nm: int, 
                          radius_nm: int, layer: int) -> None:
         """Add a rounded rectangle to the edge cuts layer"""
+        if self.board is None:
+            raise RuntimeError("No board is loaded")
+        board = self.board
         if radius_nm <= 0:
             # If no radius, create regular rectangle
             top_left = pcbnew.VECTOR2I(center_x_nm - width_nm // 2, center_y_nm - height_nm // 2)
@@ -396,7 +410,10 @@ class BoardOutlineCommands:
                         start_angle: float, end_angle: float, layer: int) -> None:
         """Add an arc for a rounded corner"""
         # Create arc for corner
-        arc = pcbnew.PCB_SHAPE(self.board)
+        if self.board is None:
+            raise RuntimeError("No board is loaded")
+        board = self.board
+        arc = pcbnew.PCB_SHAPE(board)
         arc.SetShape(pcbnew.SHAPE_T_ARC)
         arc.SetCenter(center)
         
@@ -410,4 +427,4 @@ class BoardOutlineCommands:
         arc.SetEnd(pcbnew.VECTOR2I(end_x, end_y))
         arc.SetLayer(layer)
         arc.SetWidth(0)  # Zero width for edge cuts
-        self.board.Add(arc)
+        board.Add(arc)

@@ -76,7 +76,9 @@ def _extract_from_path(module_ast: ast.Module, attr_path: ToolPath) -> str | Non
         if next_node is None:
             return None
         node = next_node
-    return ast.get_docstring(node)
+    if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return ast.get_docstring(node)
+    return None
 
 
 def collect_tool_docs() -> Dict[str, str]:

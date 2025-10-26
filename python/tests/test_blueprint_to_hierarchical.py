@@ -147,6 +147,7 @@ class TestBlueprintToHierarchical(unittest.TestCase):
                 break
         
         self.assertIsNotNone(sheet_instances, "sheet_instances not found")
+        assert sheet_instances is not None
         
         # Verify path format
         for path_entry in sheet_instances[1:]:
@@ -336,6 +337,7 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         )
 
         self.assertIsNotNone(title_block, "title_block not found")
+        assert title_block is not None
 
         # Check that title contains module_id
         title_entry = next(
@@ -360,4 +362,3 @@ def suite():
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
-

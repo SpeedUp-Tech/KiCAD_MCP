@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import uuid
 import math
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union, cast
 import heapq
 
 
@@ -611,6 +611,8 @@ def _resolve_connection_point(
 
     # Resolve as hierarchical label
     label_name = spec.get('label') or spec.get('labelName')
+    if not isinstance(label_name, str) or not label_name.strip():
+        raise ValueError(f"{label} specification missing label name")
     _, point = _find_hierarchical_label(schematic, label_name)
     return (None, None, point, "label")
 
@@ -657,7 +659,14 @@ def _collect_wire_vertices(schematic: Schematic) -> List[Tuple[float, float]]:
     return pts
 def _is_entry(node: Any, name: str) -> bool:
     try:
-        return isinstance(node, list) and node and hasattr(node[0], 'value') and node[0].value() == name
+        if not isinstance(node, list):
+            return False
+        if not node:
+            return False
+        first = node[0]
+        if not hasattr(first, 'value'):
+            return False
+        return first.value() == name
     except Exception:
         return False
 
@@ -1163,8 +1172,8 @@ def _safe_manhattan_route(
     - Minimized corners/segments (highest priority) and wire length (second priority)
     """
     # Work with grid-snapped coordinates throughout
-    s = tuple(snap_point_to_grid(start[0], start[1]))
-    e = tuple(snap_point_to_grid(end[0], end[1]))
+    s = snap_point_to_grid(start[0], start[1])
+    e = snap_point_to_grid(end[0], end[1])
 
     if s == e:
         raise ValueError('Pins share the same coordinates; cannot connect')
@@ -1223,7 +1232,7 @@ def _safe_manhattan_route(
         """Try to escape from start or end point and route via A* from the escape point."""
         for dx, dy in escape_vectors:
             esc = ( (s[0] + dx, s[1] + dy) if from_start else (e[0] + dx, e[1] + dy) )
-            esc = tuple(snap_point_to_grid(esc[0], esc[1]))
+            esc = snap_point_to_grid(esc[0], esc[1])
 
             # Check if escape point is valid (not blocked)
             esc_grid = (int(round(esc[0] / step)), int(round(esc[1] / step)))
@@ -1292,7 +1301,7 @@ class ConnectionManager:
         start_point: Optional[Any],
         end_point: Optional[Any],
         properties: Optional[dict] = None,
-    ) -> WireWrapper:
+    ) -> Union[WireWrapper, List[WireWrapper]]:
         """Add a wire between points, returning the resulting wrapper."""
 
         config = dict(properties or {})
@@ -1563,6 +1572,8 @@ class ConnectionManager:
         target_desc = ""
 
         if source_type == "pin":
+            if not isinstance(source_obj, Symbol):
+                raise TypeError("Resolved source object is not a Symbol")
             symbol = source_obj
             reference = _reference_from_symbol(symbol)
             pin_id = (
@@ -1594,6 +1605,8 @@ class ConnectionManager:
             source_desc = str(label_name)
 
         if target_type == "pin":
+            if not isinstance(target_obj, Symbol):
+                raise TypeError("Resolved target object is not a Symbol")
             symbol = target_obj
             reference = _reference_from_symbol(symbol)
             pin_id = (
@@ -1690,6 +1703,7 @@ class ConnectionManager:
         target: Dict[str, Any],
         *,
         wire: Optional[Dict[str, Any]] = None,
+        routing: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Connect two schematic connection points by drawing an appropriate wire.
@@ -1755,6 +1769,7 @@ class ConnectionManager:
                 raise ValueError('Cannot connect a label to itself')
 
         properties = dict(wire or {})
+        _routing_options = dict(routing or {})
 
         has_manual_points = any(
             key in properties and properties[key] is not None
@@ -1768,8 +1783,8 @@ class ConnectionManager:
             # - Lighter penalty for routing near bboxes
             # - Hard blocks only on forbidden pin/node points
             # This allows routing even when pins are inside bboxes (e.g., LED cathode)
-            route_start = tuple(source_point)
-            route_end = tuple(target_point)
+            route_start = (source_point[0], source_point[1])
+            route_end = (target_point[0], target_point[1])
 
             route_points = _safe_manhattan_route(
                 schematic,
@@ -1826,6 +1841,8 @@ class ConnectionManager:
         target_desc = ""
 
         if source_type == "pin":
+            if not isinstance(source_obj, Symbol):
+                raise TypeError("Resolved source object is not a Symbol")
             symbol = source_obj
             ref = _reference_from_symbol(symbol)
             pin_id = _pin_id_from_spec(source)
@@ -1852,6 +1869,8 @@ class ConnectionManager:
             source_desc = str(label_name)
 
         if target_type == "pin":
+            if not isinstance(target_obj, Symbol):
+                raise TypeError("Resolved target object is not a Symbol")
             symbol = target_obj
             ref = _reference_from_symbol(symbol)
             pin_id = _pin_id_from_spec(target)

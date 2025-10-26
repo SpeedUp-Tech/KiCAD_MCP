@@ -2,8 +2,11 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from typing import List, cast
 
 from sexpdata import Symbol
+from skip.eeschema.wire import WireWrapper
+
 EXPORT_DIR = Path(__file__).resolve().parents[2] / 'exported'
 EXPORT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -26,6 +29,8 @@ class ConnectionManagerTests(unittest.TestCase):
                 'strokeType': 'dash',
             },
         )
+        self.assertIsInstance(wire, WireWrapper)
+        wire = cast(WireWrapper, wire)
 
         # Coordinates are automatically snapped to 1.27mm grid
         self.assertEqual([pt.value for pt in wire.points], [[0.0, 0.0], [12.7, 2.54]])
@@ -43,8 +48,8 @@ class ConnectionManagerTests(unittest.TestCase):
                 'points': [[0, 0], [5, 0], [5, 5]],
             },
         )
-
         self.assertIsInstance(wires, list)
+        wires = cast(List[WireWrapper], wires)
         self.assertEqual(len(wires), 2)
 
         first_segment = [pt.value for pt in wires[0].points]

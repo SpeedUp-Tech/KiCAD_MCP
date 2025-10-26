@@ -1,0 +1,15 @@
+{
+  "include": [
+    "python",
+    "examples",
+    "test_cases",
+    "test"
+  ],
+  "extraPaths": [
+    "python",
+    "typings"
+  ],
+  "stubPath": "typings",
+  "reportMissingTypeStubs": false,
+  "reportMissingModuleSource": "none"
+}

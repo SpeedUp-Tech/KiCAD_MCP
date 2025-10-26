@@ -3,7 +3,7 @@ from skip import Schematic
 import os
 import glob
 import logging
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Optional, Tuple
 
 logger = logging.getLogger('kicad_interface')
 
@@ -132,7 +132,7 @@ class LibraryManager:
         pins: List[Dict[str, Any]],
         properties: Dict[str, Any],
         body_width: float,
-        body_height: float = None
+        body_height: Optional[float] = None
     ) -> str:
         """Construct the S-expression for the symbol."""
 

@@ -18,6 +18,11 @@ class ComponentCommands:
         """Initialize with optional board instance"""
         self.board = board
 
+    def _require_board(self) -> pcbnew.BOARD:
+        if self.board is None:
+            raise RuntimeError('No board is loaded')
+        return self.board
+
     def place_component(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Place a component on the PCB"""
         try:
@@ -75,7 +80,7 @@ class ComponentCommands:
             module.SetOrientation(rotation * 10)  # KiCAD uses decidegrees
 
             # Set layer
-            layer_id = self.board.GetLayerID(layer)
+            layer_id = self._require_board().GetLayerID(layer)
             if layer_id >= 0:
                 module.SetLayer(layer_id)
 
@@ -715,7 +720,7 @@ class ComponentCommands:
             
     def _place_grid_array(self, component_id: str, start_position: Dict[str, Any], 
                        rows: int, columns: int, spacing_x: float, spacing_y: float,
-                       reference_prefix: str, value: str, rotation: float, layer: str) -> List[Dict[str, Any]]:
+                       reference_prefix: str, value: Optional[str], rotation: float, layer: str) -> List[Dict[str, Any]]:
         """Place components in a grid pattern and return the list of placed components"""
         placed = []
         
@@ -726,7 +731,7 @@ class ComponentCommands:
         spacing_y_nm = int(spacing_y * scale)
         
         # Get layer ID
-        layer_id = self.board.GetLayerID(layer)
+        layer_id = self._require_board().GetLayerID(layer)
         
         for row in range(rows):
             for col in range(columns):
@@ -756,7 +761,7 @@ class ComponentCommands:
     def _place_circular_array(self, component_id: str, center: Dict[str, Any], 
                           radius: float, count: int, angle_start: float, 
                           angle_step: float, reference_prefix: str, 
-                          value: str, rotation_offset: float, layer: str) -> List[Dict[str, Any]]:
+                          value: Optional[str], rotation_offset: float, layer: str) -> List[Dict[str, Any]]:
         """Place components in a circular pattern and return the list of placed components"""
         placed = []
         
@@ -889,7 +894,8 @@ class ComponentCommands:
             return
             
         # Get board bounds
-        board_box = self.board.GetBoardEdgesBoundingBox()
+        board = self._require_board()
+        board_box = board.GetBoardEdgesBoundingBox()
         left = board_box.GetLeft()
         right = board_box.GetRight()
         top = board_box.GetTop()

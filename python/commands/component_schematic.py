@@ -19,6 +19,19 @@ from skip.sexp.util import loadTree
 
 from .grid_utils import snap_to_grid, snap_point_to_grid
 
+ConnectionManager: Any | None = None
+try:
+    from .connection_schematic import ConnectionManager as _ConnectionManagerType
+    ConnectionManager = _ConnectionManagerType
+except Exception:
+    ConnectionManager = None
+
+
+def _require_connection_manager() -> Any:
+    if ConnectionManager is None:
+        raise RuntimeError("ConnectionManager is not available")
+    return ConnectionManager
+
 logger = logging.getLogger('kicad_interface')
 
 
@@ -34,12 +47,14 @@ def _atom_to_str(atom: Any) -> str:
 
 
 def _is_entry(node: Any, name: str) -> bool:
-    return (
-        isinstance(node, list)
-        and node
-        and isinstance(node[0], sexpdata.Symbol)
-        and node[0].value() == name
-    )
+    if not isinstance(node, list):
+        return False
+    if not node:
+        return False
+    first = node[0]
+    if not isinstance(first, sexpdata.Symbol):
+        return False
+    return first.value() == name
 
 
 def _collect_pin_numbers(symbol_entry: List[Any]) -> List[str]:
@@ -627,7 +642,6 @@ class ComponentManager:
                     - { "kind": "pin", "reference": Ref, "pin": Pin, "unit"?: str, "pinType"?: str }
                     - { "kind": "label", "label": Name }
         """
-        from .connection_schematic import ConnectionManager
         from .schematic_state import _extract_components, _build_connection_map
 
         if not isinstance(component_ref, str) or not component_ref.strip():
@@ -697,6 +711,7 @@ class ComponentManager:
         # Remove all connections involving this component's pins
         # Use ConnectionManager.remove_connection to properly remove entire
         # connection paths (including all segments with multiple bends)
+        manager = _require_connection_manager()
         for conn in removed_connections_structured:
             source_ep = conn.get('source', {})
             target_ep = conn.get('target', {})
@@ -717,7 +732,7 @@ class ComponentManager:
 
             if source_spec and target_spec:
                 try:
-                    ConnectionManager.remove_connection(schematic, source_spec, target_spec)
+                    manager.remove_connection(schematic, source_spec, target_spec)
                 except Exception as e:
                     # If removal fails (e.g., connection already broken), log and continue
                     logger.warning(f"Could not remove connection {conn.get('summary')}: {e}")
@@ -853,7 +868,6 @@ class ComponentManager:
             try:
                 # Import here to avoid top-level import cycles
                 from .schematic_state import _extract_components, _build_connection_map
-                from .connection_schematic import ConnectionManager
 
                 # Build full connection map and collect edges involving this reference
                 components_snapshot = _extract_components(schematic)
@@ -889,14 +903,14 @@ class ComponentManager:
                 # 2) Remove all connections involving this component's pins
                 #    Use ConnectionManager.remove_connection to properly remove entire
                 #    connection paths (including all segments with multiple bends)
-                from .connection_schematic import ConnectionManager
 
+                manager = _require_connection_manager()
                 for pin_num, other_spec in connections_to_restore:
                     try:
                         src_spec = {'reference': target_ref, 'pin': pin_num}
                         if desired_unit is not None:
                             src_spec['unit'] = desired_unit
-                        ConnectionManager.remove_connection(schematic, src_spec, other_spec)
+                        manager.remove_connection(schematic, src_spec, other_spec)
                     except Exception as e:
                         # If removal fails (e.g., connection already broken), log and continue
                         logger.warning(f"Could not remove connection {target_ref}.{pin_num} to {other_spec}: {e}")
@@ -1017,11 +1031,12 @@ class ComponentManager:
             # Reconstruct under transaction semantics – on failure, roll back to original tree
             try:
                 final_ref_for_connect = new_reference or target_ref
+                manager = _require_connection_manager()
                 for pin_num, other_spec in connections_to_restore:
                     src_spec_new = {'reference': final_ref_for_connect, 'pin': pin_num}
                     if desired_unit is not None:
                         src_spec_new['unit'] = desired_unit
-                    ConnectionManager.connect_pins(schematic, src_spec_new, other_spec)
+                    manager.connect_pins(schematic, src_spec_new, other_spec)
             except Exception:
                 # Roll back entire schematic tree and abort
                 if original_tree is not None:

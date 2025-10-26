@@ -34,12 +34,14 @@ def _atom_to_str(atom: Any) -> str:
 
 def _is_entry(node: Any, name: str) -> bool:
     """Check if a node is an S-expression entry with the given name."""
-    return (
-        isinstance(node, list)
-        and node
-        and isinstance(node[0], sexpdata.Symbol)
-        and node[0].value() == name
-    )
+    if not isinstance(node, list):
+        return False
+    if not node:
+        return False
+    first = node[0]
+    if not isinstance(first, sexpdata.Symbol):
+        return False
+    return first.value() == name
 
 
 def _find_subelement(node: List[Any], name: str) -> Optional[Any]:
@@ -672,4 +674,3 @@ def get_schematic_state(schematic: Schematic, show_details: bool = False, output
         return "\n".join(lines)
 
     return _format_schematic_state_text(state_json, show_details)
-

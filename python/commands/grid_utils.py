@@ -6,7 +6,7 @@ aligned to this grid for proper electrical connectivity and ERC compliance.
 """
 
 import logging
-from typing import Tuple, List, Union, Any
+from typing import List, Sequence, Tuple, Union, Any
 
 logger = logging.getLogger('kicad_interface')
 
@@ -63,7 +63,7 @@ def snap_point_to_grid(
 
 
 def snap_points_to_grid(
-    points: List[Union[Tuple[float, float], List[float]]],
+    points: Sequence[Union[Tuple[float, float], Sequence[float]]],
     grid: float = KICAD_SCHEMATIC_GRID_MM
 ) -> List[Tuple[float, float]]:
     """
@@ -119,4 +119,3 @@ def round_to_grid(value: float, decimals: int = 6) -> float:
         Rounded value
     """
     return round(value, decimals)
-

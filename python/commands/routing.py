@@ -17,6 +17,11 @@ class RoutingCommands:
         """Initialize with optional board instance"""
         self.board = board
 
+    def _require_board(self) -> pcbnew.BOARD:
+        if self.board is None:
+            raise RuntimeError("No board is loaded")
+        return self.board
+
     def add_net(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Add a new net to the PCB"""
         try:
@@ -46,8 +51,9 @@ class RoutingCommands:
             # Set net class if provided
             if net_class:
                 net_classes = self.board.GetNetClasses()
-                if net_classes.Find(net_class):
-                    net.SetClass(net_classes.Find(net_class))
+                class_obj = net_classes.Find(net_class)
+                if class_obj:
+                    net.SetClass(class_obj)
 
             return {
                 "success": True,
@@ -320,6 +326,12 @@ class RoutingCommands:
                         "errorDetails": "No track found near specified position"
                     }
 
+            return {
+                "success": False,
+                "message": "Track not found",
+                "errorDetails": "Specified trace could not be located"
+            }
+
         except Exception as e:
             logger.error(f"Error deleting trace: {str(e)}")
             return {
@@ -392,13 +404,11 @@ class RoutingCommands:
 
             # Get net classes
             net_classes = self.board.GetNetClasses()
-            
-            # Create new net class if it doesn't exist
-            if not net_classes.Find(name):
+
+            netclass = net_classes.Find(name)
+            if netclass is None:
                 netclass = pcbnew.NETCLASS(name)
                 net_classes.Add(netclass)
-            else:
-                netclass = net_classes.Find(name)
 
             # Set properties
             scale = 1000000  # mm to nm
@@ -690,13 +700,14 @@ class RoutingCommands:
 
     def _get_point(self, point_spec: Dict[str, Any]) -> pcbnew.VECTOR2I:
         """Convert point specification to KiCAD point"""
+        board = self._require_board()
         if "x" in point_spec and "y" in point_spec:
             scale = 1000000 if point_spec.get("unit", "mm") == "mm" else 25400000
             x_nm = int(point_spec["x"] * scale)
             y_nm = int(point_spec["y"] * scale)
             return pcbnew.VECTOR2I(x_nm, y_nm)
         elif "pad" in point_spec and "componentRef" in point_spec:
-            module = self.board.FindFootprintByReference(point_spec["componentRef"])
+            module = board.FindFootprintByReference(point_spec["componentRef"])
             if module:
                 pad = module.FindPadByName(point_spec["pad"])
                 if pad:
