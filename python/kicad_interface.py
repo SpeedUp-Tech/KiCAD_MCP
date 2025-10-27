@@ -802,6 +802,8 @@ class KiCADInterface:
             ]
             if isinstance(extra_args, list):
                 args.extend(str(arg) for arg in extra_args)
+            elif extra_args:
+                args.append(str(extra_args))
 
             try:
                 result, executable = _run_kicad_cli(args)
@@ -836,8 +838,13 @@ class KiCADInterface:
 
             args = ["sch", "erc", schematic_path]
             if output_path:
-                args.extend(["--report", output_path])
-            args.extend(extra_args)
+                output_path = os.path.abspath(os.path.expanduser(output_path))
+                output_dir = os.path.dirname(output_path)
+                if output_dir:
+                    Path(output_dir).mkdir(parents=True, exist_ok=True)
+                args.extend(["--output", output_path])
+            if isinstance(extra_args, list):
+                args.extend(str(arg) for arg in extra_args)
 
             try:
                 result, executable = _run_kicad_cli(args)
@@ -848,8 +855,8 @@ class KiCADInterface:
             success = result.returncode == 0
             return {
                 "success": success,
-                "message": result.stderr.strip() if result.stderr else "",
-                "stdout": result.stdout.strip(),
+                "message": (result.stderr or result.stdout or "").strip(),
+                "stdout": (result.stdout or "").strip(),
                 "reportPath": output_path if output_path else None,
                 "executable": executable
             }
