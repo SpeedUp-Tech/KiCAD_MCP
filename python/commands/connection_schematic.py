@@ -1345,6 +1345,17 @@ class ConnectionManager:
 
         normalised_points = _normalise_points(start_point, end_point, points_override)
 
+        snapped_points = snap_points_to_grid(normalised_points)
+        filtered_points: List[Tuple[float, float]] = []
+        for point in snapped_points:
+            if not filtered_points or filtered_points[-1] != point:
+                filtered_points.append(point)
+
+        if len(filtered_points) < 2:
+            raise ValueError('Wire collapses to zero length after grid snapping')
+
+        normalised_points = filtered_points
+
         if width is None:
             width = _DEFAULT_WIRE_WIDTH
         else:

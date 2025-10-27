@@ -59,6 +59,21 @@ class ConnectionManagerTests(unittest.TestCase):
         self.assertEqual(first_segment, [[0.0, 0.0], [5.08, 0.0]])  # 5.0 -> 5.08 (4 * 1.27)
         self.assertEqual(second_segment, [[5.08, 0.0], [5.08, 5.08]])  # 5.0 -> 5.08
 
+    def test_add_wire_filters_degenerate_segments_after_snapping(self) -> None:
+        schematic = SchematicManager.create_schematic('WireDegenerate')
+        wire = ConnectionManager.add_wire(
+            schematic,
+            None,
+            None,
+            {
+                'points': [[0, 0], [0.2, 0], [0.2, 5.0]],
+            },
+        )
+        self.assertIsInstance(wire, WireWrapper)
+        wire = cast(WireWrapper, wire)
+        points = [pt.value for pt in wire.points]
+        self.assertEqual(points, [[0.0, 0.0], [0.0, 5.08]])
+
     def test_add_wire_rejects_invalid_inputs(self) -> None:
         schematic = SchematicManager.create_schematic('WireInvalid')
         with self.assertRaises(ValueError):

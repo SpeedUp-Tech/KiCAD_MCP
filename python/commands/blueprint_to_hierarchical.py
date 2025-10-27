@@ -61,7 +61,7 @@ def generate_hierarchical_schematic(blueprint_path: str, output_dir: str) -> Dic
     # Step 1: Analyze connections for each module
     module_connections = _analyze_module_connections(modules, signals, rails)
     
-    # Step 2: Create module schematics with hierarchical labels
+    # Step 2: Create module schematics with global labels
     module_data = {}
     for module in modules:
         module_id = module["module_id"]
@@ -77,8 +77,8 @@ def generate_hierarchical_schematic(blueprint_path: str, output_dir: str) -> Dic
         if not isinstance(sch.tree, list):
             raise RuntimeError(f"Schematic tree is not a list for module {module_id}")
 
-        # Add hierarchical labels
-        _add_hierarchical_labels_to_tree(sch.tree, connections)
+        # Add global labels
+        _add_global_labels_to_tree(sch.tree, connections)
 
         # Remove sheet_instances from child sheets
         _remove_sheet_instances(sch.tree)
@@ -172,9 +172,9 @@ def _analyze_module_connections(modules: List[Dict], signals: List[Dict], rails:
     return module_connections
 
 
-def _add_hierarchical_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> None:
+def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> None:
     """
-    Add hierarchical labels to a schematic tree following schematic drawing principles:
+    Add global labels to a schematic tree following schematic drawing principles:
     - Signal flow: left to right (inputs on left, outputs on right)
     - Power flow: top to bottom (inputs on top, outputs on bottom)
     - All labels are horizontal (0 degrees) for readability
@@ -220,7 +220,7 @@ def _add_hierarchical_labels_to_tree(tree: List, connections: Dict[str, Set[str]
             MAX_SPACING
         )
         for label_name, x_pos in zip(power_inputs, positions):
-            tree.append(_make_hierarchical_label(label_name, "input", x_pos, TOP_Y, 0, "left"))
+            tree.append(_make_global_label(label_name, "input", x_pos, TOP_Y, 0, "left"))
 
     # Signal inputs: spread adaptively along the left edge
     # Use "right" justify so text extends left and symbol is on the right (toward connections)
@@ -234,7 +234,7 @@ def _add_hierarchical_labels_to_tree(tree: List, connections: Dict[str, Set[str]
             MAX_SPACING
         )
         for label_name, y_pos in zip(signal_inputs, positions):
-            tree.append(_make_hierarchical_label(label_name, "input", LEFT_X, y_pos, 0, "right"))
+            tree.append(_make_global_label(label_name, "input", LEFT_X, y_pos, 0, "right"))
 
     # Signal outputs: spread adaptively along the right edge
     signal_outputs = sorted(connections["signal_outputs"])
@@ -247,7 +247,7 @@ def _add_hierarchical_labels_to_tree(tree: List, connections: Dict[str, Set[str]
             MAX_SPACING
         )
         for label_name, y_pos in zip(signal_outputs, positions):
-            tree.append(_make_hierarchical_label(label_name, "output", RIGHT_X, y_pos, 0, "left"))
+            tree.append(_make_global_label(label_name, "output", RIGHT_X, y_pos, 0, "left"))
 
     # Power outputs: spread adaptively along the bottom edge
     power_outputs = sorted(connections["power_outputs"])
@@ -260,7 +260,7 @@ def _add_hierarchical_labels_to_tree(tree: List, connections: Dict[str, Set[str]
             MAX_SPACING
         )
         for label_name, x_pos in zip(power_outputs, positions):
-            tree.append(_make_hierarchical_label(label_name, "output", x_pos, BOTTOM_Y, 0, "left"))
+            tree.append(_make_global_label(label_name, "output", x_pos, BOTTOM_Y, 0, "left"))
 
 
 def _calculate_adaptive_positions(count: int, start: float, end: float, min_spacing: float, max_spacing: float) -> List[float]:
@@ -309,9 +309,9 @@ def _calculate_adaptive_positions(count: int, start: float, end: float, min_spac
     return [start_pos + i * actual_spacing for i in range(count)]
 
 
-def _make_hierarchical_label(name: str, shape: str, x: float, y: float, angle: int, justify: str = "left") -> List:
+def _make_global_label(name: str, shape: str, x: float, y: float, angle: int, justify: str = "left") -> List:
     """
-    Create a hierarchical label element.
+    Create a global label element.
 
     Args:
         name: Label name
@@ -330,7 +330,7 @@ def _make_hierarchical_label(name: str, shape: str, x: float, y: float, angle: i
     # All labels use horizontal text (angle 0) for readability
     # Text justification controls where the symbol appears relative to text
     return [
-        Symbol("hierarchical_label"),
+        Symbol("global_label"),
         name,
         [Symbol("shape"), Symbol(shape)],
         [Symbol("at"), x_snapped, y_snapped, angle],
@@ -460,4 +460,3 @@ def _rebuild_sheet_instances_at_end(tree: List, root_uuid: str, sheet_uuids: Dic
 
     # Append to END of tree
     tree.append(sheet_instances)
-

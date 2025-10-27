@@ -164,8 +164,8 @@ class TestBlueprintToHierarchical(unittest.TestCase):
                     f"Path {path_str} should start with /{root_uuid}/"
                 )
     
-    def test_05_hierarchical_labels(self):
-        """Test that module schematics use hierarchical_label (not global_label)"""
+    def test_05_global_labels(self):
+        """Test that module schematics use global_label (not hierarchical_label)"""
         test_case = self.test_cases[0]
         output_dir = self.test_output_dir / f"labels_{uuid4().hex[:8]}"
         
@@ -186,11 +186,11 @@ class TestBlueprintToHierarchical(unittest.TestCase):
             total_hierarchical += h_count
             total_global += g_count
         
-        # Should have hierarchical labels
-        self.assertGreater(total_hierarchical, 0, "Should have hierarchical labels")
+        # Should have global labels
+        self.assertGreater(total_global, 0, "Should have global labels")
         
-        # Should NOT have global labels
-        self.assertEqual(total_global, 0, "Should not have global labels")
+        # Should NOT have hierarchical labels
+        self.assertEqual(total_hierarchical, 0, "Should not have hierarchical labels")
     
     def test_06_child_sheets_no_sheet_instances(self):
         """Test that child sheets do not have sheet_instances section"""
@@ -217,7 +217,7 @@ class TestBlueprintToHierarchical(unittest.TestCase):
             )
     
     def test_07_svg_export(self):
-        """Test that SVG export works and contains hierarchical labels"""
+        """Test that SVG export works and contains label text"""
         test_case = self.test_cases[0]
         output_dir = self.test_output_dir / f"svg_export_{uuid4().hex[:8]}"
         
@@ -260,7 +260,7 @@ class TestBlueprintToHierarchical(unittest.TestCase):
                 found_label = True
                 break
 
-        self.assertTrue(found_label, "No hierarchical labels found in SVG exports")
+        self.assertTrue(found_label, "No label text found in SVG exports")
     
     def test_08_sheet_symbols_have_pins(self):
         """Test that sheet symbols in top schematic have pins"""

@@ -120,7 +120,7 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
     """
     Extract component information from schematic.
 
-    Note: Power symbols are excluded as they are labels, not components.
+    Note: Power symbols are excluded as they are treated as labels, not components.
     """
     components = []
 
@@ -141,8 +141,11 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
                 lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '')
                 footprint = getattr(getattr(symbol.property, 'Footprint', None), 'value', '')
 
-                # Skip power symbols - they are labels, not components
-                if lib_id and 'power' in lib_id.lower():
+                lib_id_lower = lib_id.lower() if lib_id else ''
+                is_power_symbol = 'power' in lib_id_lower
+
+                # Treat all power-library symbols (including PWR_FLAG) as labels instead of components
+                if is_power_symbol:
                     continue
 
                 # Extract library and symbol name
@@ -295,32 +298,53 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
             logger.warning(f"Error extracting label: {e}")
             continue
 
-    # Extract power symbols - they create GLOBAL power nets
+    # Extract power symbols - they create GLOBAL power nets or power flag markers
     # All power symbols with the same value (e.g., "VCC") are connected globally
     if hasattr(schematic, 'symbol'):
         for symbol in schematic.symbol:
             try:
                 lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '')
-                if lib_id and 'power' in lib_id.lower():
-                    value = getattr(getattr(symbol.property, 'Value', None), 'value', '')
-                    position = None
+                lib_id_lower = lib_id.lower() if lib_id else ''
+                is_power_symbol = 'power' in lib_id_lower
+                is_power_flag = 'pwr_flag' in lib_id_lower
 
-                    # Get position from symbol
-                    if hasattr(symbol, 'at') and symbol.at is not None:
-                        coords = list(symbol.at.value)
-                        if coords:
-                            # Snap to schematic grid to match wire coordinates
-                            position = (
-                                snap_to_grid(float(coords[0])),
-                                snap_to_grid(float(coords[1])) if len(coords) > 1 else 0.0,
-                            )
+                if not is_power_symbol:
+                    continue
 
+                value = getattr(getattr(symbol.property, 'Value', None), 'value', '')
+                reference = getattr(getattr(symbol.property, 'Reference', None), 'value', '')
+                position = None
+
+                # Get position from symbol
+                if hasattr(symbol, 'at') and symbol.at is not None:
+                    coords = list(symbol.at.value)
+                    if coords:
+                        # Snap to schematic grid to match wire coordinates
+                        position = (
+                            snap_to_grid(float(coords[0])),
+                            snap_to_grid(float(coords[1])) if len(coords) > 1 else 0.0,
+                        )
+
+                if is_power_flag:
+                    label_name = reference or value or lib_id
+                    direction = 'power_flag'
+                else:
+                    label_name = value or reference or lib_id
+                    direction = 'power'
+
+                if label_name:
+                    entry = {
+                        'name': label_name,
+                        'direction': direction,
+                        'position': position,
+                    }
+                    if reference:
+                        entry['reference'] = reference
                     if value:
-                        labels['global'].append({
-                            'name': value,
-                            'direction': 'power',
-                            'position': position
-                        })
+                        entry['value'] = value
+                    if is_power_flag:
+                        entry['power_flag'] = True
+                    labels['global'].append(entry)
             except Exception as e:
                 logger.warning(f"Error extracting power symbol: {e}")
                 continue
@@ -359,7 +383,10 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
                     continue
 
                 lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '')
-                if lib_id and 'power' in lib_id.lower():
+                lib_id_lower = lib_id.lower() if lib_id else ''
+                is_power_symbol = 'power' in lib_id_lower
+                is_power_flag = 'pwr_flag' in lib_id_lower
+                if is_power_symbol and not is_power_flag:
                     # Power symbols don't expose real pins; skip for pin endpoints
                     continue
 
@@ -381,8 +408,14 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
                 logger.warning(f"Error processing symbol for connection map: {e}")
                 continue
 
-    # Collect labels (including power) with positions
+    # Collect labels (including power and power flag markers) with positions
     labels = _extract_labels(schematic)
+    label_metadata: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+    for group in ('hierarchical', 'global'):
+        for lbl in labels.get(group, []):
+            name = lbl.get('name')
+            if name:
+                label_metadata[name].append(lbl)
     # Combine hierarchical and global labels
     for group in ('hierarchical', 'global'):
         for lbl in labels.get(group, []):
@@ -490,8 +523,16 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
     for pt, names in label_locations.items():
         if pt in point_to_net:
             net_id = point_to_net[pt]
-            # Use the first label name (sorted for determinism) on this point
-            chosen = sorted(names)[0]
+            # Prefer non power-flag names when multiple labels occupy the same point
+            sorted_names = sorted(set(names))
+            non_flag_names = [
+                n for n in sorted_names
+                if not any(lbl.get('power_flag') for lbl in label_metadata.get(n, []))
+            ]
+            if non_flag_names:
+                chosen = non_flag_names[0]
+            else:
+                chosen = sorted_names[0]
             net_label_name.setdefault(net_id, chosen)
 
     # Emit all unordered pairs per net using appropriate net name
@@ -648,6 +689,9 @@ def get_schematic_state(schematic: Schematic, show_details: bool = False, output
             # Hierarchical first
             for label in [l for l in lbls if l.get("kind") == "hierarchical"]:
                 label_line = f"  {label.get('name')}: hierarchical, {label.get('direction')}"
+                label_value = label.get("value")
+                if label_value and label_value != label.get("name"):
+                    label_line += f" ({label_value})"
                 if detailed and label.get("position") is not None:
                     lpos = label.get("position")
                     label_line += f", Position: ({lpos.get('x')}, {lpos.get('y')})"
@@ -655,6 +699,9 @@ def get_schematic_state(schematic: Schematic, show_details: bool = False, output
             # Global next
             for label in [l for l in lbls if l.get("kind") == "global"]:
                 label_line = f"  {label.get('name')}: {label.get('direction')}"
+                label_value = label.get("value")
+                if label_value and label_value != label.get("name"):
+                    label_line += f" ({label_value})"
                 if detailed and label.get("position") is not None:
                     lpos = label.get("position")
                     label_line += f", Position: ({lpos.get('x')}, {lpos.get('y')})"
