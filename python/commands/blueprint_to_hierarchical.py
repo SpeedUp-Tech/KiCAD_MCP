@@ -86,7 +86,7 @@ def generate_hierarchical_schematic(blueprint_path: str, output_dir: str) -> Dic
         # Save
         module_path = sheets_dir / f"{module_id}.kicad_sch"
         SchematicManager.save_schematic(sch, str(module_path))
-        
+
         module_data[module_id] = {
             "path": module_path,
             "connections": connections,
@@ -131,8 +131,14 @@ def generate_hierarchical_schematic(blueprint_path: str, output_dir: str) -> Dic
 
 def _analyze_module_connections(modules: List[Dict], signals: List[Dict], rails: List[Dict]) -> Dict[str, Dict[str, Set[str]]]:
     """Analyze which signals/rails each module uses and determine direction."""
+    signal_lookup = {
+        sig["signal_id"]: sig
+        for sig in signals
+        if isinstance(sig, dict) and sig.get("signal_id")
+    }
+
     module_connections = {}
-    
+
     for module in modules:
         module_id = module["module_id"]
         connections = {
@@ -140,8 +146,9 @@ def _analyze_module_connections(modules: List[Dict], signals: List[Dict], rails:
             "power_outputs": set(),
             "signal_inputs": set(),
             "signal_outputs": set(),
+            "bidirectional_labels": set(),
         }
-        
+
         # Power rails
         if "uses_rails" in module:
             connections["power_inputs"].update(module["uses_rails"])
@@ -151,24 +158,41 @@ def _analyze_module_connections(modules: List[Dict], signals: List[Dict], rails:
         # Signals
         for sig in signals:
             sig_id = sig.get("signal_id")
+            if not sig_id:
+                continue
+
+            sig_direction = (sig.get("direction") or "").lower()
+            is_bidirectional = sig_direction == "bidirectional"
+
             if sig.get("source") == module_id:
                 connections["signal_outputs"].add(sig_id)
-            elif module_id in sig.get("sinks", []):
+                if is_bidirectional:
+                    connections["bidirectional_labels"].add(sig_id)
+
+            if module_id in sig.get("sinks", []):
                 connections["signal_inputs"].add(sig_id)
-        
+                if is_bidirectional:
+                    connections["bidirectional_labels"].add(sig_id)
+
         # Also check uses_signals and drives_signals
         if "uses_signals" in module:
             for sig_id in module["uses_signals"]:
                 # Determine direction from signal definition
-                sig_def = next((s for s in signals if s["signal_id"] == sig_id), None)
+                sig_def = signal_lookup.get(sig_id)
                 if sig_def and sig_def.get("source") != module_id:
                     connections["signal_inputs"].add(sig_id)
-        
+                    if (sig_def.get("direction") or "").lower() == "bidirectional":
+                        connections["bidirectional_labels"].add(sig_id)
+
         if "drives_signals" in module:
-            connections["signal_outputs"].update(module["drives_signals"])
-        
+            for sig_id in module["drives_signals"]:
+                connections["signal_outputs"].add(sig_id)
+                sig_def = signal_lookup.get(sig_id)
+                if sig_def and (sig_def.get("direction") or "").lower() == "bidirectional":
+                    connections["bidirectional_labels"].add(sig_id)
+
         module_connections[module_id] = connections
-    
+
     return module_connections
 
 
@@ -209,6 +233,8 @@ def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> 
 
     # All labels use angle 0 (horizontal text, reader-friendly)
 
+    bidirectional_labels = set(connections.get("bidirectional_labels", set()))
+
     # Power inputs: spread adaptively along the top edge
     power_inputs = sorted(connections["power_inputs"])
     if power_inputs:
@@ -220,7 +246,8 @@ def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> 
             MAX_SPACING
         )
         for label_name, x_pos in zip(power_inputs, positions):
-            tree.append(_make_global_label(label_name, "input", x_pos, TOP_Y, 0, "left"))
+            shape = "bidirectional" if label_name in bidirectional_labels else "passive"
+            tree.append(_make_global_label(label_name, shape, x_pos, TOP_Y, 0, "left"))
 
     # Signal inputs: spread adaptively along the left edge
     # Use "right" justify so text extends left and symbol is on the right (toward connections)
@@ -234,7 +261,8 @@ def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> 
             MAX_SPACING
         )
         for label_name, y_pos in zip(signal_inputs, positions):
-            tree.append(_make_global_label(label_name, "input", LEFT_X, y_pos, 0, "right"))
+            shape = "bidirectional" if label_name in bidirectional_labels else "passive"
+            tree.append(_make_global_label(label_name, shape, LEFT_X, y_pos, 0, "right"))
 
     # Signal outputs: spread adaptively along the right edge
     signal_outputs = sorted(connections["signal_outputs"])
@@ -247,7 +275,8 @@ def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> 
             MAX_SPACING
         )
         for label_name, y_pos in zip(signal_outputs, positions):
-            tree.append(_make_global_label(label_name, "output", RIGHT_X, y_pos, 0, "left"))
+            shape = "bidirectional" if label_name in bidirectional_labels else "output"
+            tree.append(_make_global_label(label_name, shape, RIGHT_X, y_pos, 0, "left"))
 
     # Power outputs: spread adaptively along the bottom edge
     power_outputs = sorted(connections["power_outputs"])
@@ -260,7 +289,8 @@ def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> 
             MAX_SPACING
         )
         for label_name, x_pos in zip(power_outputs, positions):
-            tree.append(_make_global_label(label_name, "output", x_pos, BOTTOM_Y, 0, "left"))
+            shape = "bidirectional" if label_name in bidirectional_labels else "output"
+            tree.append(_make_global_label(label_name, shape, x_pos, BOTTOM_Y, 0, "left"))
 
 
 def _calculate_adaptive_positions(count: int, start: float, end: float, min_spacing: float, max_spacing: float) -> List[float]:
@@ -406,12 +436,25 @@ def _add_sheet_symbols_to_tree(tree: List, module_data: Dict, sheets_dir: Path) 
         
         # Add pins
         pin_y = 10.0
-        all_labels = (
-            [(name, "output") for name in sorted(connections["power_outputs"])] +
-            [(name, "input") for name in sorted(connections["power_inputs"])] +
-            [(name, "output") for name in sorted(connections["signal_outputs"])] +
-            [(name, "input") for name in sorted(connections["signal_inputs"])]
-        )
+        bidirectional_labels = set(connections.get("bidirectional_labels", set()))
+
+        all_labels: List[Tuple[str, str]] = []
+
+        for name in sorted(connections["power_outputs"]):
+            direction = "bidirectional" if name in bidirectional_labels else "output"
+            all_labels.append((name, direction))
+
+        for name in sorted(connections["power_inputs"]):
+            direction = "bidirectional" if name in bidirectional_labels else "input"
+            all_labels.append((name, direction))
+
+        for name in sorted(connections["signal_outputs"]):
+            direction = "bidirectional" if name in bidirectional_labels else "output"
+            all_labels.append((name, direction))
+
+        for name in sorted(connections["signal_inputs"]):
+            direction = "bidirectional" if name in bidirectional_labels else "input"
+            all_labels.append((name, direction))
         
         for label_name, direction in all_labels:
             sheet_node.append([

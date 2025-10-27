@@ -278,14 +278,12 @@ export function registerSchematicTools(
       target: schematicConnectionPointSchema.describe(
         'Target connection point - either a component pin {reference, pin} or label/power {label}'
       ),
-      wire: connectWireStyleSchema.optional().describe('Optional wire styling overrides'),
     }),
-    async ({ schematicPath, source, target, wire }) => {
+    async ({ schematicPath, source, target }) => {
       const result = await callKicadScript('connect_schematic_pins', {
         schematicPath,
         source,
         target,
-        wireOptions: wire,
       });
       return formatToolResult(result);
     }
