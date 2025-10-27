@@ -242,12 +242,10 @@ export function registerSchematicTools(server, callKicadScript) {
     server.tool('run_erc', toolDescription('run_erc'), withSessionParams({
         schematicPath: z.string().describe('Schematic file to check'),
         reportPath: z.string().optional().describe('Optional ERC report output path'),
-        extraArgs: z.array(z.string()).optional().describe('Additional kicad-cli arguments'),
-    }), async ({ schematicPath, reportPath, extraArgs }) => {
+    }), async ({ schematicPath, reportPath }) => {
         const result = await callKicadScript('run_erc', {
             schematicPath,
             reportPath,
-            extraArgs,
         });
         return formatToolResult(result);
     });

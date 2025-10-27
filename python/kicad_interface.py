@@ -42,26 +42,19 @@ class JsonStdoutHandler(logging.Handler):
             except Exception:
                 pass
 
-
-
 # Configure logging
 def _create_logging_handlers() -> list[logging.Handler]:
-    primary_dir = os.path.join(os.path.expanduser('~'), '.kicad-mcp', 'logs')
-    fallback_dir = os.path.join(os.getcwd(), 'kicad-mcp-logs')
+    handlers: list[logging.Handler] = [JsonStdoutHandler()]
+    log_dir = Path("/kicad_logs")
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        date_suffix = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        log_path = log_dir / f"kicad_interface-{date_suffix}.log"
+        handlers.insert(0, logging.FileHandler(log_path))
+    except (OSError, PermissionError) as exc:
+        sys.stderr.write(f"WARNING: unable to write log to {log_dir}: {exc}\n")
 
-    for target_dir in (primary_dir, fallback_dir):
-        try:
-            os.makedirs(target_dir, exist_ok=True)
-            log_path = os.path.join(target_dir, 'kicad_interface.log')
-            return [
-                logging.FileHandler(log_path),
-                JsonStdoutHandler(),
-            ]
-        except (OSError, PermissionError) as exc:
-            sys.stderr.write(f"WARNING: unable to write log to {target_dir}: {exc}\n")
-            continue
-
-    return [JsonStdoutHandler()]
+    return handlers
 
 logging.basicConfig(
     level=logging.WARNING,
