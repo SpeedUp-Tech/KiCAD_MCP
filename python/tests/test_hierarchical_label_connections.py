@@ -219,6 +219,11 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         self.assertIn('created', result_hv)
         self.assertIn('R1.1', result_hv['created']['summary'])
         self.assertIn('SIGNAL', result_hv['created']['summary'])
+        self.assertEqual(result_hv['net'], 'SIGNAL')
+        self.assertEqual(result_hv['created']['net'], 'SIGNAL')
+        self.assertIn('netConnections', result_hv)
+        self.assertIn('SIGNAL', result_hv['netConnections'])
+        self.assertTrue(result_hv['netConnections'][0] == 'SIGNAL')
 
     def test_backward_compatibility(self) -> None:
         """Ensure existing pin-to-pin connections still work exactly as before"""
@@ -258,6 +263,10 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         self.assertIn('netConnections', result)
         self.assertIn('R1.1', result['created']['summary'])
         self.assertIn('R2.1', result['created']['summary'])
+        self.assertEqual(result['net'], 'Net-(R1-Pad1)')
+        self.assertEqual(result['created']['net'], 'Net-(R1-Pad1)')
+        self.assertIn('R1.1(passive)', result['netConnections'])
+        self.assertIn('R2.1(passive)', result['netConnections'])
 
 
 if __name__ == '__main__':

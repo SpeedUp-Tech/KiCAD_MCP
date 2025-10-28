@@ -45,9 +45,8 @@ class SchematicStateConnectionMapTests(unittest.TestCase):
         self.assertTrue(any('R1.1 - SCL [SCL]' in ln for ln in lines), state_text)
         self.assertTrue(any('R2.1 - SCL [SCL]' in ln for ln in lines), state_text)
         # Expect unlabeled net between pins to have synthetic name
-        self.assertTrue(any('R1.2 - R2.2 [Net-' in ln for ln in lines), state_text)
+        self.assertTrue(any('R1.2 - R2.2 [Net-(' in ln for ln in lines), state_text)
 
 
 if __name__ == '__main__':
     unittest.main()
-

@@ -193,7 +193,14 @@ def _validate_segment_lengths(points: Sequence[Sequence[float]], *, min_length: 
 def _get_pin_type(pin: Any) -> str:
     """Extract the electrical type of a pin."""
     if hasattr(pin, 'electrical_type'):
-        return str(pin.electrical_type)
+        try:
+            etype = getattr(pin, 'electrical_type')
+            if etype is not None:
+                text = str(etype)
+                if text and text.lower() != 'none':
+                    return text
+        except Exception:
+            pass
     # Try to get from raw S-expression
     if hasattr(pin, 'raw') and isinstance(pin.raw, list):
         for item in pin.raw:
@@ -213,7 +220,7 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
 
     Returns a dict with:
     - net: Net identifier (e.g., "Net-5", "GND", "VBAT")
-    - netConnections: List of connected pins/labels/power (e.g., ["R1.1(passive)", "R2.2(output)", "GND"])
+    - netConnections: List of connected power/labels/pins (e.g., ["GND", "IO_LBL", "R1.1(passive)"])
     """
     from collections import defaultdict
 
@@ -274,6 +281,87 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
                 logger.warning(f"Error analyzing wire: {e}")
                 continue
 
+    # Collect hierarchical/global/local labels keyed by coordinate
+    label_locations: Dict[Tuple[float, float], List[str]] = defaultdict(list)
+    try:
+        if hasattr(schematic, 'tree'):
+            for elem in getattr(schematic, 'tree', []):
+                if not isinstance(elem, list) or len(elem) < 2:
+                    continue
+
+                head = elem[0]
+                try:
+                    if hasattr(head, 'value'):
+                        head_val = head.value() if callable(head.value) else head.value
+                    else:
+                        head_val = str(head)
+                except Exception:
+                    head_val = str(head)
+
+                if head_val not in {'hierarchical_label', 'global_label', 'label'}:
+                    continue
+
+                try:
+                    label_name = str(elem[1]).strip()
+                except Exception:
+                    continue
+                if not label_name:
+                    continue
+
+                position_found = False
+                for sub in elem:
+                    if isinstance(sub, list) and len(sub) >= 3:
+                        try:
+                            tag = sub[0].value() if hasattr(sub[0], 'value') else str(sub[0])
+                        except Exception:
+                            tag = str(sub[0])
+                        if tag == 'at':
+                            try:
+                                x_val = float(sub[1])
+                                y_val = float(sub[2])
+                            except (TypeError, ValueError):
+                                break
+                            coord = _coord_key(x_val, y_val)
+                            if label_name not in label_locations[coord]:
+                                label_locations[coord].append(label_name)
+                            position_found = True
+                            break
+                if not position_found:
+                    logger.debug("Label '%s' found without coordinates; ignoring", label_name)
+    except Exception as exc:
+        logger.warning("Error while indexing schematic labels: %s", exc)
+
+    # Collect power symbols (from power libraries) keyed by coordinate
+    power_locations: Dict[Tuple[float, float], List[str]] = defaultdict(list)
+    try:
+        if hasattr(schematic, 'symbol'):
+            for symbol in getattr(schematic, 'symbol', []):
+                try:
+                    lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '') or ''
+                    if 'power' not in lib_id.lower():
+                        continue
+
+                    value_prop = getattr(getattr(symbol, 'property', None), 'Value', None)
+                    power_name = getattr(value_prop, 'value', '') if value_prop is not None else ''
+                    power_name = str(power_name).strip()
+                    if not power_name:
+                        continue
+
+                    if hasattr(symbol, 'at') and getattr(symbol.at, 'value', None):
+                        coords = list(symbol.at.value)
+                        try:
+                            x_val = float(coords[0]) if len(coords) > 0 else 0.0
+                            y_val = float(coords[1]) if len(coords) > 1 else 0.0
+                        except (TypeError, ValueError):
+                            continue
+                        coord = _coord_key(x_val, y_val)
+                        if power_name not in power_locations[coord]:
+                            power_locations[coord].append(power_name)
+                except Exception as inner_exc:
+                    logger.debug("Skipping power symbol due to error: %s", inner_exc)
+    except Exception as exc:
+        logger.warning("Error while indexing power symbols: %s", exc)
+
     # Build wire-to-net mapping
     wire_to_net: Dict[int, int] = {}
     net_counter = 0
@@ -320,27 +408,46 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
         net_id = net_counter
 
     # Collect all pins on this net
-    connected_pins = []
+    connected_pins: List[str] = []
+    representative_pin: Optional[Tuple[str, str]] = None
     for point, pins in pin_locations.items():
         if point in point_to_net and point_to_net[point] == net_id:
             for reference, pin_number, pin_type in pins:
-                connected_pins.append(_format_pin_with_type(reference, pin_number, pin_type))
+                formatted = _format_pin_with_type(reference, pin_number, pin_type)
+                if formatted not in connected_pins:
+                    connected_pins.append(formatted)
+                if representative_pin is None:
+                    representative_pin = (reference, pin_number)
 
     # Check for labels and power symbols on this net
-    connected_labels = []
-    connected_power = []
+    connected_labels: List[str] = []
+    for point, labels in label_locations.items():
+        if point in point_to_net and point_to_net[point] == net_id:
+            for label in labels:
+                if label not in connected_labels:
+                    connected_labels.append(label)
+
+    connected_power: List[str] = []
+    for point, powers in power_locations.items():
+        if point in point_to_net and point_to_net[point] == net_id:
+            for power_name in powers:
+                if power_name not in connected_power:
+                    connected_power.append(power_name)
 
     # Determine net name
     if connected_power:
         net_name = connected_power[0]
     elif connected_labels:
         net_name = connected_labels[0]
+    elif representative_pin:
+        ref, pad = representative_pin
+        net_name = f"Net-({ref}-Pad{pad})"
     else:
         net_name = f"Net-{net_id}"
 
     return {
         "net": net_name,
-        "netConnections": connected_pins + connected_labels + connected_power
+        "netConnections": connected_power + connected_labels + connected_pins
     }
 
 
@@ -454,58 +561,6 @@ def _resolve_pin(
     point = (float(loc.x), float(loc.y))
 
     return symbol, target_pin, point
-
-
-def _calculate_stub_end(pin_obj: Any, stub_length: float = DEFAULT_STUB_LENGTH_MM) -> Tuple[float, float]:
-    """
-    Calculate the stub end point for a pin based on its rotation.
-
-    The pin rotation indicates the direction the pin points outward from the symbol body.
-    The stub extends in the same direction as the pin points.
-
-    Args:
-        pin_obj: Pin object with location attribute (x, y, rotation)
-        stub_length: Length of stub in mm (default: 2.54mm = 2 grids)
-
-    Returns:
-        (stub_end_x, stub_end_y): Grid-snapped coordinates of the stub end point
-
-    Pin rotation mapping:
-        0° → Pin points RIGHT → stub extends in +X direction
-        90° → Pin points UP → stub extends in +Y direction
-        180° → Pin points LEFT → stub extends in -X direction
-        270° → Pin points DOWN → stub extends in -Y direction
-    """
-    loc = pin_obj.location
-    pin_x = float(loc.x)
-    pin_y = float(loc.y)
-    pin_rotation = float(loc.rotation)
-
-    # Map rotation to direction vector
-    if pin_rotation == 0:
-        # Pin points RIGHT → stub extends RIGHT
-        dx, dy = 1.0, 0.0
-    elif pin_rotation == 90:
-        # Pin points UP → stub extends UP
-        dx, dy = 0.0, 1.0
-    elif pin_rotation == 180:
-        # Pin points LEFT → stub extends LEFT
-        dx, dy = -1.0, 0.0
-    elif pin_rotation == 270:
-        # Pin points DOWN → stub extends DOWN
-        dx, dy = 0.0, -1.0
-    else:
-        # Handle non-standard rotations (shouldn't happen in practice)
-        angle_rad = math.radians(pin_rotation)
-        dx = math.cos(angle_rad)
-        dy = math.sin(angle_rad)
-
-    # Calculate stub end point
-    stub_end_x = pin_x + dx * stub_length
-    stub_end_y = pin_y + dy * stub_length
-
-    # Snap to grid
-    return snap_point_to_grid(stub_end_x, stub_end_y)
 
 
 def _find_hierarchical_label(

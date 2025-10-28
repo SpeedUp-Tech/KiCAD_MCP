@@ -372,8 +372,8 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
 
     Notes:
     - Labels (local/global/hierarchical) and power rails are first-class endpoints.
-    - NetName comes from any label present on the wire's endpoints; otherwise a stable
-      synthetic name (Net-<id>) is used based on wire connectivity groups.
+    - NetName comes from any label or power symbol present on the wire's endpoints; otherwise a stable
+      synthetic name (Net-(Ref-Pad)) is used based on wire connectivity groups.
     - This function is read-only and reflects the schematic AS-IS.
     """
     # Spatial index of endpoints (pins and labels)
@@ -449,6 +449,15 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
             return {"kind": "pin", "ref": ref, "pin": pin}
         # Fallback to label if we cannot confidently parse as pin
         return {"kind": "label", "name": name}
+
+    def _fallback_net_name(nodes: List[str], default_id: int) -> str:
+        for endpoint in nodes:
+            if endpoint in label_names_set:
+                continue
+            if "." in endpoint:
+                ref, pin = endpoint.split(".", 1)
+                return f"Net-({ref}-Pad{pin})"
+        return f"Net-{default_id}"
 
     # Build wire endpoint list and a connectivity map for unlabeled net IDs
     wire_points: Dict[Tuple[float, float], List[int]] = defaultdict(list)
@@ -530,11 +539,17 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
             net_id = point_to_net[pt]
             # Prefer non power-flag names when multiple labels occupy the same point
             sorted_names = sorted(set(names))
+            power_names = [
+                n for n in sorted_names
+                if any(lbl.get('direction') == 'power' for lbl in label_metadata.get(n, []))
+            ]
             non_flag_names = [
                 n for n in sorted_names
                 if not any(lbl.get('power_flag') for lbl in label_metadata.get(n, []))
             ]
-            if non_flag_names:
+            if power_names:
+                chosen = power_names[0]
+            elif non_flag_names:
                 chosen = non_flag_names[0]
             else:
                 chosen = sorted_names[0]
@@ -547,7 +562,9 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
         if len(node_list) < 2:
             continue
         # Prefer explicit label name if present on the net, else synthetic
-        net_name = net_label_name.get(net_id, f"Net-{net_id}")
+        net_name = net_label_name.get(net_id)
+        if not net_name:
+            net_name = _fallback_net_name(node_list, net_id)
         # Unordered unique pairs
         for i in range(len(node_list)):
             for j in range(i + 1, len(node_list)):

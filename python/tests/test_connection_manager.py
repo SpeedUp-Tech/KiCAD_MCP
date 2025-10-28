@@ -161,6 +161,9 @@ class ConnectionManagerTests(unittest.TestCase):
         self.assertIn('summary', result['created'])
         self.assertIn('R1.1', result['created']['summary'])
         self.assertIn('R2.1', result['created']['summary'])
+        self.assertTrue(result['net'].startswith('Net-('))
+        self.assertIn('R1.1(passive)', result['netConnections'])
+        self.assertIn('R2.1(passive)', result['netConnections'])
 
     def test_connect_pins_generates_manhattan_corner(self) -> None:
         schematic = SchematicManager.create_schematic('ConnectPinsCorner')
@@ -198,6 +201,9 @@ class ConnectionManagerTests(unittest.TestCase):
         self.assertIn('summary', result['created'])
         self.assertIn('R1.2', result['created']['summary'])
         self.assertIn('R2.1', result['created']['summary'])
+        self.assertTrue(result['net'].startswith('Net-('))
+        self.assertIn('R1.2(passive)', result['netConnections'])
+        self.assertIn('R2.1(passive)', result['netConnections'])
 
     def test_connect_pins_requires_valid_input(self) -> None:
         schematic = SchematicManager.create_schematic('ConnectPinsInvalid')
