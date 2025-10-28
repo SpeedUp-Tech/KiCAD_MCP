@@ -3,8 +3,10 @@ from __future__ import annotations
 import logging
 import uuid
 import math
+from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union, cast
 import heapq
+import sexpdata
 
 
 from skip import Schematic
@@ -12,7 +14,7 @@ from sexpdata import Symbol as SSymbol
 
 from skip.eeschema.wire import WireWrapper
 from skip.sexp.parser import ParsedValue
-from skip.eeschema.schematic.symbol import Symbol
+from skip.eeschema.schematic.symbol import Symbol, SymbolPin
 
 from .grid_utils import snap_point_to_grid
 
@@ -243,18 +245,18 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
                     continue
 
                 if hasattr(symbol, 'pin'):
-                    for pin in symbol.pin:
+                    for pin in _iter_symbol_pins(symbol):
                         try:
-                            pin_number = str(getattr(pin, 'number', ''))
+                            pin_number, _ = _ensure_pin_metadata(schematic, symbol, pin)
                             if not pin_number:
                                 continue
 
                             pin_type = _get_pin_type(pin)
-
-                            if hasattr(pin, 'location'):
-                                loc = pin.location
-                                x, y = _coord_key(loc.x, loc.y)
-                                pin_locations[(x, y)].append((reference, pin_number, pin_type))
+                            loc = _get_pin_location(pin)
+                            if loc is None:
+                                continue
+                            x, y = _coord_key(loc.x, loc.y)
+                            pin_locations[(x, y)].append((reference, pin_number, pin_type))
                         except Exception as e:
                             logger.warning(f"Error extracting pin: {e}")
                             continue
@@ -517,6 +519,321 @@ def _find_symbol(
     return matches[0]
 
 
+def _get_symbol_unit(symbol: Symbol) -> Optional[int]:
+    """Extract the unit index for a symbol instance, if available."""
+    unit_attr = getattr(symbol, 'unit', None)
+    value = None
+    if unit_attr is not None:
+        value = getattr(unit_attr, 'value', unit_attr)
+    if value is None:
+        return None
+    try:
+        return int(str(value).strip())
+    except (ValueError, TypeError):
+        return None
+
+
+def _extract_pin_identifiers_from_raw(pin_raw: Any) -> Tuple[str, str]:
+    """Derive pin number and name from a raw pin S-expression."""
+    number = ''
+    name = ''
+    if isinstance(pin_raw, list):
+        for entry in pin_raw[1:]:
+            if isinstance(entry, str) and not isinstance(entry, SSymbol):
+                candidate = str(entry).strip()
+                if candidate and not number:
+                    number = candidate
+            elif isinstance(entry, list) and entry:
+                tag = _atom_to_str(entry[0])
+                if tag == 'number' and len(entry) > 1 and not number:
+                    number = str(entry[1]).strip()
+                elif tag == 'name' and len(entry) > 1 and not name:
+                    name = str(entry[1]).strip()
+    return number, name
+
+
+def _extract_pin_at_from_raw(pin_raw: Any) -> Tuple[Optional[float], Optional[float], float]:
+    """Extract the pin offset (x, y) and rotation from a raw pin S-expression."""
+    x = None
+    y = None
+    rotation = 0.0
+    if isinstance(pin_raw, list):
+        for entry in pin_raw[1:]:
+            if isinstance(entry, list) and entry:
+                tag = _atom_to_str(entry[0])
+                if tag == 'at':
+                    try:
+                        if len(entry) >= 3:
+                            x = float(entry[1])
+                            y = float(entry[2])
+                        if len(entry) >= 4:
+                            rotation = float(entry[3])
+                    except (TypeError, ValueError):
+                        x = y = None
+                        rotation = 0.0
+    return x, y, rotation
+
+
+def _iter_symbol_pins(symbol: Symbol) -> List[Any]:
+    """Return a stable list of pin objects for a symbol, handling single-pin edge cases."""
+    pins_attr = getattr(symbol, 'pin', None)
+    if pins_attr is None:
+        return []
+
+    if isinstance(pins_attr, list):
+        return list(pins_attr)
+
+    elements = getattr(pins_attr, '_elements', None)
+    if isinstance(elements, list) and elements:
+        return list(elements)
+
+    if getattr(pins_attr, 'entity_type', None) == 'pin':
+        return [pins_attr]
+
+    collected: List[Any] = []
+    try:
+        for candidate in pins_attr:
+            if getattr(candidate, 'entity_type', None) == 'pin':
+                collected.append(candidate)
+    except Exception:
+        collected = []
+
+    if collected:
+        return collected
+
+    if isinstance(pins_attr, (str, bytes)):
+        return []
+
+    return [pins_attr]
+
+
+def _find_library_symbol_node(
+    schematic: Schematic,
+    lib_id: str,
+) -> Tuple[Optional[List[Any]], Optional[List[int]]]:
+    located = _find_lib_symbols_node_with_path(schematic)
+    if not located:
+        return None, None
+    lib_symbols_node, lib_symbols_path = located
+
+    symbol_name_only = lib_id.split(':')[-1] if ':' in lib_id else lib_id
+
+    for child_index, entry in enumerate(lib_symbols_node[1:], start=1):
+        if not _is_entry(entry, 'symbol') or len(entry) < 2:
+            continue
+        sym_name = _atom_to_str(entry[1])
+        if sym_name == lib_id or sym_name == symbol_name_only or (
+            lib_id and sym_name.startswith(f"{lib_id}_")
+        ) or (symbol_name_only and sym_name.startswith(f"{symbol_name_only}_")):
+            return entry, lib_symbols_path + [child_index]
+    return None, None
+
+
+def _find_library_pin_node(
+    symbol_node: List[Any],
+    pin_number: str,
+    base_path: List[int],
+) -> Tuple[Optional[List[Any]], Optional[List[int]]]:
+    """Search a library symbol node (and nested symbols) for a matching pin entry."""
+    target = str(pin_number).strip()
+    if not target:
+        return None, None
+
+    stack: List[Tuple[List[Any], List[int]]] = [(symbol_node, base_path)]
+    while stack:
+        current, path = stack.pop()
+        if not isinstance(current, list):
+            continue
+        if _is_entry(current, 'pin'):
+            number, _ = _extract_pin_identifiers_from_raw(current)
+            if number.strip() == target:
+                return current, path
+        for idx, child in enumerate(current[1:], start=1):
+            if isinstance(child, list):
+                stack.append((child, path + [idx]))
+    return None, None
+
+
+def _enrich_pin_from_library(
+    schematic: Schematic,
+    symbol: Symbol,
+    pin: Any,
+    pin_number: str,
+) -> Tuple[str, str]:
+    """Ensure pin has number/name/location/electrical type by consulting library data."""
+    number = str(getattr(pin, 'number', '')).strip()
+    name = str(getattr(pin, 'name', '')).strip()
+
+    if number and getattr(pin, '_mcp_pin_enriched', False):
+        # Already hydrated
+        return number, name
+
+    lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '') or ''
+    if not lib_id:
+        return number or pin_number, name
+
+    symbol_node, symbol_path = _find_library_symbol_node(schematic, lib_id)
+    if not symbol_node or not symbol_path:
+        return number or pin_number, name
+
+    unit = _get_symbol_unit(symbol)
+    search_nodes: List[Tuple[List[Any], List[int]]] = []
+    nested_symbols: List[Tuple[List[Any], List[int]]] = []
+    for child_index, child in enumerate(symbol_node[2:], start=2):
+        if _is_entry(child, 'symbol'):
+            nested_symbols.append((child, symbol_path + [child_index]))
+    if nested_symbols:
+        if unit is not None:
+            preferred: List[Tuple[List[Any], List[int]]] = []
+            remainder: List[Tuple[List[Any], List[int]]] = []
+            suffix = f"_{unit}"
+            suffix_alt = f"_{unit}_"
+            for candidate, path in nested_symbols:
+                node_name = _atom_to_str(candidate[1]) if len(candidate) > 1 else ''
+                if node_name.endswith(suffix) or node_name.endswith(f"{suffix}_1") or node_name.endswith(suffix_alt):
+                    preferred.append((candidate, path))
+                else:
+                    remainder.append((candidate, path))
+            search_nodes.extend(preferred + remainder)
+        else:
+            search_nodes.extend(nested_symbols)
+    else:
+        search_nodes.append((symbol_node, symbol_path))
+
+    lib_pin_node: Optional[List[Any]] = None
+    lib_pin_path: Optional[List[int]] = None
+    for candidate, path in search_nodes:
+        lib_pin_node, lib_pin_path = _find_library_pin_node(candidate, pin_number or number, path)
+        if lib_pin_node is not None and lib_pin_path is not None:
+            break
+
+    if lib_pin_node is None or lib_pin_path is None:
+        return number or pin_number, name
+
+    lib_number, lib_name = _extract_pin_identifiers_from_raw(lib_pin_node)
+    if lib_number:
+        number = lib_number
+        try:
+            setattr(pin, 'number', lib_number)
+        except Exception:
+            pass
+    if lib_name and lib_name != '~':
+        name = lib_name
+        try:
+            setattr(pin, 'name', lib_name)
+        except Exception:
+            pass
+
+    # Electrical type (optional)
+    if not hasattr(pin, 'electrical_type'):
+        try:
+            if len(lib_pin_node) > 1 and isinstance(lib_pin_node[1], sexpdata.Symbol):
+                setattr(pin, 'electrical_type', lib_pin_node[1].value())
+        except Exception:
+            pass
+
+    # Location (absolute) using symbol transform
+    if _get_pin_location(pin) is None:
+        try:
+            lib_pin_parsed = ParsedValue(schematic.tree, lib_pin_node, lib_pin_path, schematic)
+            wrapped = SymbolPin(pin, lib_pin_parsed)
+            loc_value = wrapped.location
+            point = SimpleNamespace(
+                x=float(getattr(loc_value, 'x', 0.0)),
+                y=float(getattr(loc_value, 'y', 0.0)),
+                rotation=float(getattr(loc_value, 'rotation', 0.0)),
+            )
+            try:
+                pin.__dict__['_mcp_location'] = point
+            except Exception:
+                setattr(pin, '_mcp_location', point)
+            try:
+                setattr(pin, 'location', point)
+            except Exception:
+                pass
+            if not number:
+                number = str(wrapped.number).strip()
+                setattr(pin, 'number', number)
+            if not name:
+                name = str(wrapped.name).strip()
+                setattr(pin, 'name', name)
+            if not hasattr(pin, 'electrical_type'):
+                setattr(pin, 'electrical_type', getattr(wrapped, 'electrical_type', 'passive'))
+        except Exception:
+            # Fall back to simple transform if SymbolPin instantiation fails
+            pin_x, pin_y, _ = _extract_pin_at_from_raw(lib_pin_node)
+            if pin_x is None or pin_y is None:
+                pin_x = pin_y = 0.0
+
+            at_vals = list(getattr(getattr(symbol, 'at', None), 'value', []) or [])
+            origin_x = float(at_vals[0]) if len(at_vals) > 0 else 0.0
+            origin_y = float(at_vals[1]) if len(at_vals) > 1 else 0.0
+            rotation = float(at_vals[2]) if len(at_vals) > 2 else 0.0
+
+            dx, dy = _rotate_offset(pin_x, pin_y, rotation)
+            point = SimpleNamespace(
+                x=float(round(origin_x + dx, 6)),
+                y=float(round(origin_y + dy, 6)),
+                rotation=float(rotation),
+            )
+            try:
+                setattr(pin, 'location', point)
+            except Exception:
+                pass
+            try:
+                pin.__dict__['_mcp_location'] = point
+            except Exception:
+                setattr(pin, '_mcp_location', point)
+
+    try:
+        setattr(pin, '_mcp_pin_enriched', True)
+    except Exception:
+        pass
+
+    return number or pin_number, name
+
+
+def _ensure_pin_metadata(
+    schematic: Schematic,
+    symbol: Symbol,
+    pin: Any,
+) -> Tuple[str, str]:
+    """Return (number, name) for a pin, enriching from raw/library as required."""
+    number = str(getattr(pin, 'number', '')).strip()
+    name = str(getattr(pin, 'name', '')).strip()
+
+    if not number or not name:
+        raw = getattr(pin, 'raw', None)
+        raw_number, raw_name = _extract_pin_identifiers_from_raw(raw)
+        if raw_number and not number:
+            number = raw_number
+            try:
+                setattr(pin, 'number', raw_number)
+            except Exception:
+                pass
+        if raw_name and not name and raw_name != '~':
+            name = raw_name
+            try:
+                setattr(pin, 'name', raw_name)
+            except Exception:
+                pass
+
+    number, name = _enrich_pin_from_library(schematic, symbol, pin, number)
+    if not number:
+        number = ''
+    if not name:
+        name = ''
+    return number, name
+
+
+def _get_pin_location(pin: Any) -> Optional[Any]:
+    """Retrieve a pin's cached or computed location."""
+    loc = getattr(pin, 'location', None)
+    if loc is None:
+        loc = getattr(pin, '_mcp_location', None)
+    return loc
+
+
 def _resolve_pin(
     schematic: Schematic,
     pin_spec: Dict[str, Any],
@@ -542,12 +859,15 @@ def _resolve_pin(
 
     symbol = _find_symbol(schematic, reference, unit=pin_spec.get('unit'))
 
-    target_pin = None
+    target_pin: Optional[Any] = None
     pin_id_normalised = str(pin_id).strip().lower()
 
-    for pin in symbol.pin:
-        number = str(getattr(pin, 'number', '')).strip().lower()
-        name = str(getattr(pin, 'name', '')).strip().lower()
+    for pin in _iter_symbol_pins(symbol):
+        number, name = _ensure_pin_metadata(schematic, symbol, pin)
+        number_lc = number.strip().lower()
+        name_lc = name.strip().lower()
+        if not number_lc and not name_lc:
+            continue
         if pin_id_normalised in {number, name}:
             target_pin = pin
             break
@@ -557,7 +877,16 @@ def _resolve_pin(
             f"Pin '{pin_id}' not found on component '{reference}'"
         )
 
-    loc = target_pin.location
+    loc = _get_pin_location(target_pin)
+    if loc is None:
+        # Attempt one final enrichment in case metadata set after selection
+        number, _ = _ensure_pin_metadata(schematic, symbol, target_pin)
+        if _get_pin_location(target_pin) is None and number:
+            _enrich_pin_from_library(schematic, symbol, target_pin, number)
+        loc = _get_pin_location(target_pin)
+    if loc is None:
+        raise ValueError(f"Pin '{pin_id}' on component '{reference}' has no location information")
+
     point = (float(loc.x), float(loc.y))
 
     return symbol, target_pin, point
@@ -798,6 +1127,16 @@ def _find_lib_symbols_node(schematic: Schematic) -> Optional[List[Any]]:
     return None
 
 
+def _find_lib_symbols_node_with_path(schematic: Schematic) -> Optional[Tuple[List[Any], List[int]]]:
+    try:
+        for idx, node in enumerate(getattr(schematic, 'tree', [])):
+            if _is_entry(node, 'lib_symbols'):
+                return node, [idx]
+    except Exception:
+        pass
+    return None
+
+
 def _extract_poly_points_from_lib_symbol(symbol_node: List[Any]) -> List[Tuple[float, float]]:
     """Collect all geometry points from the library symbol node (library space).
 
@@ -973,10 +1312,11 @@ def _collect_symbol_bboxes(schematic: Schematic) -> List[Tuple[Tuple[float, floa
                     # Fallback: derive bbox from pins
                     pts: List[Tuple[float, float]] = []
                     if hasattr(sym, 'pin') and sym.pin is not None:
-                        for pin in sym.pin:
-                            if hasattr(pin, 'location') and pin.location is not None:
+                        for pin in _iter_symbol_pins(sym):
+                            loc = _get_pin_location(pin)
+                            if loc is not None:
                                 try:
-                                    pts.append((float(pin.location.x), float(pin.location.y)))
+                                    pts.append((float(loc.x), float(loc.y)))
                                 except Exception:
                                     continue
                     if not pts:
@@ -1725,14 +2065,15 @@ class ConnectionManager:
             pin_obj = None
             if hasattr(symbol, 'pin'):
                 pin_id_normalised = str(pin_id).strip().lower()
-                for pin in symbol.pin:
-                    number = str(getattr(pin, 'number', '')).strip().lower()
-                    name = str(getattr(pin, 'name', '')).strip().lower()
-                    if pin_id_normalised in {number, name}:
+                for pin in _iter_symbol_pins(symbol):
+                    number, name = _ensure_pin_metadata(schematic, symbol, pin)
+                    number_lc = number.strip().lower()
+                    name_lc = name.strip().lower()
+                    if pin_id_normalised in {number_lc, name_lc}:
                         pin_obj = pin
                         break
 
-            if pin_obj:
+            if pin_obj is not None:
                 pin_number = str(getattr(pin_obj, 'number', ''))
                 pin_type = _get_pin_type(pin_obj)
                 source_desc = _format_pin_with_type(reference, pin_number, pin_type)
@@ -1758,14 +2099,15 @@ class ConnectionManager:
             pin_obj = None
             if hasattr(symbol, 'pin'):
                 pin_id_normalised = str(pin_id).strip().lower()
-                for pin in symbol.pin:
-                    number = str(getattr(pin, 'number', '')).strip().lower()
-                    name = str(getattr(pin, 'name', '')).strip().lower()
-                    if pin_id_normalised in {number, name}:
+                for pin in _iter_symbol_pins(symbol):
+                    number, name = _ensure_pin_metadata(schematic, symbol, pin)
+                    number_lc = number.strip().lower()
+                    name_lc = name.strip().lower()
+                    if pin_id_normalised in {number_lc, name_lc}:
                         pin_obj = pin
                         break
 
-            if pin_obj:
+            if pin_obj is not None:
                 pin_number = str(getattr(pin_obj, 'number', ''))
                 pin_type = _get_pin_type(pin_obj)
                 target_desc = _format_pin_with_type(reference, pin_number, pin_type)
@@ -1793,11 +2135,12 @@ class ConnectionManager:
                 pin_type = None
                 if hasattr(symbol_obj, 'pin'):
                     pid_norm = str(pin_id).strip().lower()
-                    for p in symbol_obj.pin:
-                        number = str(getattr(p, 'number', '')).strip().lower()
-                        name = str(getattr(p, 'name', '')).strip().lower()
-                        if pid_norm in {number, name}:
-                            pin_number = str(getattr(p, 'number', pin_id))
+                    for p in _iter_symbol_pins(symbol_obj):
+                        number, name = _ensure_pin_metadata(schematic, symbol_obj, p)
+                        number_lc = number.strip().lower()
+                        name_lc = name.strip().lower()
+                        if pid_norm in {number_lc, name_lc}:
+                            pin_number = number or str(pin_id)
                             pin_type = _get_pin_type(p)
                             break
                 ep: Dict[str, Any] = {"kind": "pin", "reference": ref, "pin": str(pin_number)}
@@ -2014,14 +2357,15 @@ class ConnectionManager:
             pin_obj = None
             if hasattr(symbol, 'pin'):
                 pid_norm = str(pin_id).strip().lower()
-                for p in symbol.pin:
-                    number = str(getattr(p, 'number', '')).strip().lower()
-                    name = str(getattr(p, 'name', '')).strip().lower()
-                    if pid_norm in {number, name}:
+                for p in _iter_symbol_pins(symbol):
+                    number, name = _ensure_pin_metadata(schematic, symbol, p)
+                    number_lc = number.strip().lower()
+                    name_lc = name.strip().lower()
+                    if pid_norm in {number_lc, name_lc}:
                         pin_obj = p
                         break
-            pin_number = str(getattr(pin_obj, 'number', pin_id)) if pin_obj else str(pin_id)
-            pin_type = _get_pin_type(pin_obj) if pin_obj else None
+            pin_number = str(getattr(pin_obj, 'number', pin_id)) if pin_obj is not None else str(pin_id)
+            pin_type = _get_pin_type(pin_obj) if pin_obj is not None else None
             created_source = {"kind": "pin", "reference": ref, "pin": str(pin_number)}
             if source.get('unit') is not None:
                 created_source['unit'] = _coerce_unit_value(source.get('unit'))
@@ -2042,14 +2386,15 @@ class ConnectionManager:
             pin_obj = None
             if hasattr(symbol, 'pin'):
                 pid_norm = str(pin_id).strip().lower()
-                for p in symbol.pin:
-                    number = str(getattr(p, 'number', '')).strip().lower()
-                    name = str(getattr(p, 'name', '')).strip().lower()
-                    if pid_norm in {number, name}:
+                for p in _iter_symbol_pins(symbol):
+                    number, name = _ensure_pin_metadata(schematic, symbol, p)
+                    number_lc = number.strip().lower()
+                    name_lc = name.strip().lower()
+                    if pid_norm in {number_lc, name_lc}:
                         pin_obj = p
                         break
-            pin_number = str(getattr(pin_obj, 'number', pin_id)) if pin_obj else str(pin_id)
-            pin_type = _get_pin_type(pin_obj) if pin_obj else None
+            pin_number = str(getattr(pin_obj, 'number', pin_id)) if pin_obj is not None else str(pin_id)
+            pin_type = _get_pin_type(pin_obj) if pin_obj is not None else None
             created_target = {"kind": "pin", "reference": ref, "pin": str(pin_number)}
             if target.get('unit') is not None:
                 created_target['unit'] = _coerce_unit_value(target.get('unit'))

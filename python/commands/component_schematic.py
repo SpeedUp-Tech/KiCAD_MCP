@@ -26,6 +26,38 @@ try:
 except Exception:
     ConnectionManager = None
 
+try:
+    from .connection_schematic import _iter_symbol_pins as _cm_iter_symbol_pins
+    from .connection_schematic import _ensure_pin_metadata as _cm_ensure_pin_metadata
+    from .connection_schematic import _get_pin_location as _cm_get_pin_location
+except Exception:
+    def _cm_iter_symbol_pins(symbol: Any) -> List[Any]:
+        pins = getattr(symbol, 'pin', None)
+        if pins is None:
+            return []
+        if isinstance(pins, list):
+            return list(pins)
+        elements = getattr(pins, '_elements', None)
+        if isinstance(elements, list):
+            return list(elements)
+        try:
+            return list(pins)
+        except Exception:
+            if getattr(pins, 'entity_type', None) == 'pin':
+                return [pins]
+            return []
+
+    def _cm_ensure_pin_metadata(schematic: Schematic, symbol: Any, pin: Any) -> Tuple[str, str]:
+        number = str(getattr(pin, 'number', '')).strip()
+        name = str(getattr(pin, 'name', '')).strip()
+        return number, name
+
+    def _cm_get_pin_location(pin: Any) -> Optional[Any]:
+        loc = getattr(pin, 'location', None)
+        if loc is None:
+            loc = getattr(pin, '_mcp_location', None)
+        return loc
+
 
 def _require_connection_manager() -> Any:
     if ConnectionManager is None:
@@ -668,13 +700,16 @@ class ComponentManager:
         component_pins: Dict[Tuple[float, float], Tuple[Symbol, str]] = {}
         for symbol in matches:
             if hasattr(symbol, 'pin'):
-                for pin in symbol.pin:
-                    if hasattr(pin, 'location'):
-                        loc = pin.location
-                        x = round(float(loc.x), 1)
-                        y = round(float(loc.y), 1)
-                        pin_number = str(getattr(pin, 'number', ''))
-                        component_pins[(x, y)] = (symbol, pin_number)
+                for pin in _cm_iter_symbol_pins(symbol):
+                    pin_number, _ = _cm_ensure_pin_metadata(schematic, symbol, pin)
+                    if not pin_number:
+                        continue
+                    loc = _cm_get_pin_location(pin)
+                    if loc is None:
+                        continue
+                    x = round(float(loc.x), 1)
+                    y = round(float(loc.y), 1)
+                    component_pins[(x, y)] = (symbol, pin_number)
 
         # Build connection map BEFORE removal to report structured removedConnections
         components_snapshot = _extract_components(schematic)

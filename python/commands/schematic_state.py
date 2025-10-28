@@ -22,6 +22,38 @@ import sexpdata
 from sexpdata import Symbol as SSymbol
 from .grid_utils import snap_to_grid
 
+try:
+    from .connection_schematic import _iter_symbol_pins as _cs_iter_symbol_pins
+    from .connection_schematic import _ensure_pin_metadata as _cs_ensure_pin_metadata
+    from .connection_schematic import _get_pin_location as _cs_get_pin_location
+except Exception:
+    def _cs_iter_symbol_pins(symbol: Any) -> List[Any]:
+        pins = getattr(symbol, 'pin', None)
+        if pins is None:
+            return []
+        if isinstance(pins, list):
+            return list(pins)
+        elements = getattr(pins, '_elements', None)
+        if isinstance(elements, list):
+            return list(elements)
+        try:
+            return list(pins)
+        except Exception:
+            if getattr(pins, 'entity_type', None) == 'pin':
+                return [pins]
+            return []
+
+    def _cs_ensure_pin_metadata(schematic: Schematic, symbol: Any, pin: Any) -> Tuple[str, str]:
+        number = str(getattr(pin, 'number', '')).strip()
+        name = str(getattr(pin, 'name', '')).strip()
+        return number, name
+
+    def _cs_get_pin_location(pin: Any) -> Optional[Any]:
+        loc = getattr(pin, 'location', None)
+        if loc is None:
+            loc = getattr(pin, '_mcp_location', None)
+        return loc
+
 logger = logging.getLogger('kicad_interface')
 
 COORD_PRECISION = 6
@@ -184,19 +216,21 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
 
                     # Get pin instances from the symbol
                     if hasattr(symbol, 'pin'):
-                        for pin in symbol.pin:
-                            pin_number = str(getattr(pin, 'number', ''))
+                        for pin in _cs_iter_symbol_pins(symbol):
+                            pin_number, pin_name = _cs_ensure_pin_metadata(schematic, symbol, pin)
+                            if not pin_number:
+                                continue
                             pin_data = pins_info.get(pin_number, {})
 
                             # Get pin position
                             pin_position = None
-                            if hasattr(pin, 'location'):
-                                loc = pin.location
+                            loc = _cs_get_pin_location(pin)
+                            if loc is not None:
                                 pin_position = (round(float(loc.x), 2), round(float(loc.y), 2))
 
                             pins.append({
                                 'number': pin_number,
-                                'name': pin_data.get('name', ''),
+                                'name': pin_data.get('name', pin_name or ''),
                                 'type': pin_data.get('type', 'passive'),
                                 'position': pin_position
                             })
@@ -398,15 +432,18 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
                     continue
 
                 if hasattr(symbol, 'pin'):
-                    for pin in symbol.pin:
+                    for pin in _cs_iter_symbol_pins(symbol):
                         try:
-                            pin_number = str(getattr(pin, 'number', ''))
+                            pin_number, _ = _cs_ensure_pin_metadata(schematic, symbol, pin)
                             if not pin_number:
                                 continue
-                            if hasattr(pin, 'location'):
-                                loc = pin.location
-                                x, y = _coord_key(loc.x, loc.y)
-                                pin_locations[(x, y)].append(f"{reference}.{pin_number}")
+                            loc = _cs_get_pin_location(pin)
+                            if loc is None:
+                                continue
+                            x, y = _coord_key(loc.x, loc.y)
+                            endpoint = f"{reference}.{pin_number}"
+                            if endpoint not in pin_locations[(x, y)]:
+                                pin_locations[(x, y)].append(endpoint)
                         except Exception as e:
                             logger.warning(f"Error extracting pin location: {e}")
                             continue
