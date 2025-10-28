@@ -87,9 +87,6 @@ const schematicPinSchema = z
   .object({
     reference: z.string().describe('Component reference designator'),
     pin: z.string().optional().describe('Pin number or name'),
-    pinNumber: z.string().optional().describe('Alternative field for pin number'),
-    pinName: z.string().optional().describe('Alternative field for pin name'),
-    unit: z.union([z.string(), z.number()]).optional().describe('Unit identifier for multi-unit symbols'),
   })
   .describe('Pin specification for schematic connectivity');
 
