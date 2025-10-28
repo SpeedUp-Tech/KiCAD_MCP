@@ -24,6 +24,16 @@ from .grid_utils import snap_to_grid
 
 logger = logging.getLogger('kicad_interface')
 
+COORD_PRECISION = 6
+
+
+def _coord_key(x: Any, y: Any) -> Tuple[float, float]:
+    try:
+        return (round(float(x), COORD_PRECISION), round(float(y), COORD_PRECISION))
+    except Exception:
+        # Fall back to 0.0 when values are missing/unparseable, matching previous behaviour
+        return (round(float(x or 0.0), COORD_PRECISION), round(float(y or 0.0), COORD_PRECISION))
+
 
 def _atom_to_str(atom: Any) -> str:
     """Convert an S-expression atom to string."""
@@ -243,8 +253,7 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                     # Find position
                     at_node = _find_subelement(node, 'at')
                     if at_node and len(at_node) >= 3:
-                        # Snap to schematic grid to match wire coordinates
-                        position = (snap_to_grid(float(at_node[1])), snap_to_grid(float(at_node[2])))
+                        position = _coord_key(at_node[1], at_node[2])
 
                     labels['hierarchical'].append({
                         'name': name,
@@ -267,8 +276,7 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                     # Find position
                     at_node = _find_subelement(node, 'at')
                     if at_node and len(at_node) >= 3:
-                        # Snap to schematic grid to match wire coordinates
-                        position = (snap_to_grid(float(at_node[1])), snap_to_grid(float(at_node[2])))
+                        position = _coord_key(at_node[1], at_node[2])
 
                     labels['global'].append({
                         'name': name,
@@ -286,8 +294,7 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                     # Find position
                     at_node = _find_subelement(node, 'at')
                     if at_node and len(at_node) >= 3:
-                        # Snap to schematic grid to match wire coordinates
-                        position = (snap_to_grid(float(at_node[1])), snap_to_grid(float(at_node[2])))
+                        position = _coord_key(at_node[1], at_node[2])
 
                     labels['global'].append({
                         'name': name,
@@ -398,8 +405,7 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
                                 continue
                             if hasattr(pin, 'location'):
                                 loc = pin.location
-                                x = round(float(loc.x), 1)
-                                y = round(float(loc.y), 1)
+                                x, y = _coord_key(loc.x, loc.y)
                                 pin_locations[(x, y)].append(f"{reference}.{pin_number}")
                         except Exception as e:
                             logger.warning(f"Error extracting pin location: {e}")
@@ -423,8 +429,7 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
                 name = lbl.get('name')
                 pos = lbl.get('position')
                 if name and pos is not None:
-                    x = round(float(pos[0]), 1)
-                    y = round(float(pos[1]), 1)
+                    x, y = _coord_key(pos[0], pos[1])
                     label_locations[(x, y)].append(name)
             except Exception as e:
                 logger.warning(f"Error indexing label '{lbl}': {e}")
@@ -460,15 +465,15 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
                             if hasattr(pt, 'value'):
                                 coords = pt.value
                                 if len(coords) >= 2:
-                                    x = round(float(coords[0]), 1)
-                                    y = round(float(coords[1]), 1)
+                                    x, y = _coord_key(coords[0], coords[1])
                                     wire_points[(x, y)].append(wire_idx)
                         # Also record only the two wire endpoints (first and last)
                         p_start = points[0].value
                         p_end = points[-1].value
-                        sx, sy = round(float(p_start[0]), 1), round(float(p_start[1]), 1)
-                        ex, ey = round(float(p_end[0]), 1), round(float(p_end[1]), 1)
-                        wire_endpoints[wire_idx] = ((sx, sy), (ex, ey))
+                        wire_endpoints[wire_idx] = (
+                            _coord_key(p_start[0], p_start[1]),
+                            _coord_key(p_end[0], p_end[1]),
+                        )
             except Exception as e:
                 logger.warning(f"Error analyzing wire points: {e}")
                 continue

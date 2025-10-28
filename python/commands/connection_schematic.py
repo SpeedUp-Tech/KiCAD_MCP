@@ -14,13 +14,16 @@ from skip.eeschema.wire import WireWrapper
 from skip.sexp.parser import ParsedValue
 from skip.eeschema.schematic.symbol import Symbol
 
-from .grid_utils import snap_to_grid, snap_point_to_grid, snap_points_to_grid
+from .grid_utils import snap_point_to_grid
 
 logger = logging.getLogger('kicad_interface')
 
 
 _DEFAULT_WIRE_WIDTH = 0.254
 _VALID_STROKE_TYPES = {'default', 'dash', 'dot'}
+COORD_KEY_PRECISION = 6
+MIN_ROUTED_SEGMENT_MM = 0.5  # Minimum acceptable segment length
+COLLISION_BUFFER_MM = 0.5    # Clearance radius used for collision checks
 
 # Stub configuration
 KICAD_SCHEMATIC_GRID_MM = 1.27  # Standard KiCAD grid spacing
@@ -93,6 +96,10 @@ def _normalise_points(
     return filtered
 
 
+def _coord_key(x: float, y: float) -> Tuple[float, float]:
+    return (round(float(x), COORD_KEY_PRECISION), round(float(y), COORD_KEY_PRECISION))
+
+
 def _build_wire_node(
     points: Sequence[Tuple[float, float]],
     *,
@@ -102,10 +109,7 @@ def _build_wire_node(
 ) -> List[Any]:
     pts_expr: List[Any] = [SSymbol('pts')]
     for x_val, y_val in points:
-        # Snap to grid before writing to file
-        x_snapped = snap_to_grid(x_val)
-        y_snapped = snap_to_grid(y_val)
-        pts_expr.append([SSymbol('xy'), round(x_snapped, 6), round(y_snapped, 6)])
+        pts_expr.append([SSymbol('xy'), round(float(x_val), 6), round(float(y_val), 6)])
 
     node: List[Any] = [
         SSymbol('wire'),
@@ -153,6 +157,39 @@ def _wire_payload(wrapper: WireWrapper) -> Dict[str, Any]:
     }
 
 
+def _segment_length(a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    return math.hypot(b[0] - a[0], b[1] - a[1])
+
+
+def _point_segment_distance(point: Tuple[float, float], a: Tuple[float, float], b: Tuple[float, float]) -> float:
+    px, py = point
+    ax, ay = a
+    bx, by = b
+    dx = bx - ax
+    dy = by - ay
+    seg_len_sq = dx * dx + dy * dy
+    if seg_len_sq <= 0.0:
+        return math.hypot(px - ax, py - ay)
+    t = ((px - ax) * dx + (py - ay) * dy) / seg_len_sq
+    t = max(0.0, min(1.0, t))
+    nearest_x = ax + t * dx
+    nearest_y = ay + t * dy
+    return math.hypot(px - nearest_x, py - nearest_y)
+
+
+def _validate_segment_lengths(points: Sequence[Sequence[float]], *, min_length: float, context: str) -> None:
+    if len(points) < 2:
+        raise ValueError(f"{context}: insufficient points to form a segment")
+    for idx in range(len(points) - 1):
+        a = (float(points[idx][0]), float(points[idx][1]))
+        b = (float(points[idx + 1][0]), float(points[idx + 1][1]))
+        length = _segment_length(a, b)
+        if length < min_length:
+            raise ValueError(
+                f"{context}: segment {idx} length {length:.4f}mm is below the minimum {min_length:.2f}mm"
+            )
+
+
 def _get_pin_type(pin: Any) -> str:
     """Extract the electrical type of a pin."""
     if hasattr(pin, 'electrical_type'):
@@ -180,8 +217,8 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
     """
     from collections import defaultdict
 
-    # Round wire points for spatial matching
-    wire_point_set = {(round(x, 1), round(y, 1)) for x, y in wire_points}
+    # Normalise wire points for spatial matching
+    wire_point_set = {_coord_key(x, y) for x, y in wire_points}
 
     # Build spatial index of all pins
     pin_locations: Dict[Tuple[float, float], List[Tuple[str, str, str]]] = defaultdict(list)  # (x,y) -> [(ref, pin_num, pin_type)]
@@ -209,8 +246,7 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
 
                             if hasattr(pin, 'location'):
                                 loc = pin.location
-                                x = round(float(loc.x), 1)
-                                y = round(float(loc.y), 1)
+                                x, y = _coord_key(loc.x, loc.y)
                                 pin_locations[(x, y)].append((reference, pin_number, pin_type))
                         except Exception as e:
                             logger.warning(f"Error extracting pin: {e}")
@@ -232,8 +268,7 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
                             if hasattr(point, 'value'):
                                 coords = point.value
                                 if len(coords) >= 2:
-                                    x = round(float(coords[0]), 1)
-                                    y = round(float(coords[1]), 1)
+                                    x, y = _coord_key(coords[0], coords[1])
                                     all_wire_points[(x, y)].append(wire_idx)
             except Exception as e:
                 logger.warning(f"Error analyzing wire: {e}")
@@ -630,8 +665,7 @@ def _collect_pin_coords(schematic: Schematic) -> List[Tuple[float, float]]:
                     for pin in sym.pin:
                         if hasattr(pin, 'location') and pin.location is not None:
                             try:
-                                x = round(float(pin.location.x), 1)
-                                y = round(float(pin.location.y), 1)
+                                x, y = _coord_key(pin.location.x, pin.location.y)
                                 coords.append((x, y))
                             except Exception:
                                 continue
@@ -649,8 +683,7 @@ def _collect_wire_vertices(schematic: Schematic) -> List[Tuple[float, float]]:
                     for pt in w.points:
                         if hasattr(pt, 'value') and len(pt.value) >= 2:
                             try:
-                                x = round(float(pt.value[0]), 1)
-                                y = round(float(pt.value[1]), 1)
+                                x, y = _coord_key(pt.value[0], pt.value[1])
                                 pts.append((x, y))
                             except Exception:
                                 continue
@@ -851,7 +884,12 @@ def _symbol_body_bbox_from_lib(schematic: Schematic, sym: Symbol) -> Optional[Tu
             dx, dy = _rotate_offset(lx, ly, rot)
             xs.append(x0 + dx)
             ys.append(y0 + dy)
-        return (round(min(xs), 1), round(min(ys), 1), round(max(xs), 1), round(max(ys), 1))
+        return (
+            round(min(xs), COORD_KEY_PRECISION),
+            round(min(ys), COORD_KEY_PRECISION),
+            round(max(xs), COORD_KEY_PRECISION),
+            round(max(ys), COORD_KEY_PRECISION),
+        )
     except Exception:
         return None
 
@@ -901,24 +939,6 @@ def _collect_symbol_bboxes(schematic: Schematic) -> List[Tuple[Tuple[float, floa
     except Exception:
         pass
     return boxes
-
-
-def _point_on_axis_segment_interior(a: Tuple[float, float], b: Tuple[float, float], p: Tuple[float, float]) -> bool:
-    ax, ay = a
-    bx, by = b
-    px, py = p
-    if ax == bx and ay == by:
-        return False
-    # horizontal
-    if ay == by and py == ay:
-        lo, hi = (ax, bx) if ax <= bx else (bx, ax)
-        return lo < px < hi
-    # vertical
-    if ax == bx and px == ax:
-        lo, hi = (ay, by) if ay <= by else (by, ay)
-        return lo < py < hi
-    return False
-
 
 def _distance_to_rect_edge(px: float, py: float, rect: Tuple[float, float, float, float]) -> float:
     """Calculate the shortest distance from a point to the edge of a rectangle.
@@ -1191,40 +1211,45 @@ def _safe_manhattan_route(
     - This allows routing through tight spaces and handles pins inside bboxes
     - Minimized corners/segments (highest priority) and wire length (second priority)
     """
-    # Work with grid-snapped coordinates throughout
-    s = snap_point_to_grid(start[0], start[1])
-    e = snap_point_to_grid(end[0], end[1])
+    # Preserve original endpoints; routing grid coordinates are derived on demand
+    s = (float(start[0]), float(start[1]))
+    e = (float(end[0]), float(end[1]))
 
     if s == e:
         raise ValueError('Pins share the same coordinates; cannot connect')
 
-    pin_coords = set(_collect_pin_coords(schematic))
-    node_coords = set(_collect_wire_vertices(schematic))
+    pin_coords_set = set(_collect_pin_coords(schematic))
+    node_coords_set = set(_collect_wire_vertices(schematic))
     bboxes = _collect_symbol_bboxes(schematic)
 
     # Allow using the endpoints themselves
-    allowed_endpoints = { (round(s[0], 1), round(s[1], 1)), (round(e[0], 1), round(e[1], 1)) }
+    allowed_endpoints = {_coord_key(*s), _coord_key(*e)}
 
-    forbidden_vertices = (pin_coords | node_coords) - allowed_endpoints
+    forbidden_vertices_set = (pin_coords_set | node_coords_set) - allowed_endpoints
+    forbidden_vertices = [tuple(v) for v in forbidden_vertices_set]
+    pin_collision_points = [tuple(v) for v in pin_coords_set if v not in allowed_endpoints]
 
     def ok_route(points: List[Tuple[float, float]]) -> bool:
         """Validate that a route doesn't pass through forbidden pin/node points."""
-        # Snap all points to grid the same way add_wire will
-        pts = snap_points_to_grid(points)
-        pts_r = [(round(x, 1), round(y, 1)) for (x, y) in pts]
+        if len(points) < 2:
+            return False
 
-        # 1) Internal vertices cannot coincide with forbidden pin/node points
-        for v in pts_r[1:-1]:
-            if v in forbidden_vertices:
-                return False
-
-        # 2) No segment may pass through another pin coordinate in its interior
-        for a, b in zip(pts_r, pts_r[1:]):
-            for pc in pin_coords - allowed_endpoints:
-                if _point_on_axis_segment_interior(a, b, pc):
+        # Internal vertices must keep clearance from forbidden points
+        for pt in points[1:-1]:
+            for fv in forbidden_vertices:
+                if _segment_length(pt, fv) < COLLISION_BUFFER_MM:
                     return False
 
-        # Symbol bboxes are no longer checked here - they're handled as soft penalties in A*
+        # Each segment must keep clearance from collision points
+        for a, b in zip(points, points[1:]):
+            seg_len = _segment_length(a, b)
+            if seg_len <= 0.0:
+                # Zero-length segment is never acceptable
+                return False
+            for pc in pin_collision_points:
+                if _point_segment_distance(pc, a, b) < COLLISION_BUFFER_MM:
+                    return False
+
         return True
 
     step = KICAD_SCHEMATIC_GRID_MM
@@ -1242,7 +1267,7 @@ def _safe_manhattan_route(
         bend_penalty=1.0,  # High penalty to minimize corners
     )
     if astar_route is not None and ok_route(astar_route):
-        return snap_points_to_grid(astar_route)
+        return astar_route
 
     # LEVEL 2: Adaptive stubs - Fallback when A* fails
     # Try escaping from start or end point in all four directions
@@ -1256,10 +1281,10 @@ def _safe_manhattan_route(
 
             # Check if escape point is valid (not blocked)
             esc_grid = (int(round(esc[0] / step)), int(round(esc[1] / step)))
-            esc_rounded = (round(esc[0], 1), round(esc[1], 1))
+            esc_rounded = _coord_key(*esc)
 
             # Skip if escape point is forbidden
-            if esc_rounded in forbidden_vertices:
+            if esc_rounded in forbidden_vertices_set:
                 continue
 
             # Try routing from/to the escape point using A*
@@ -1279,7 +1304,7 @@ def _safe_manhattan_route(
                     # Prepend the stub from start to escape
                     full_route = [s] + escape_route
                     if ok_route(full_route):
-                        return snap_points_to_grid(full_route)
+                        return full_route
             else:
                 # Route from start to escape point
                 escape_route = _manhattan_astar_route(
@@ -1296,7 +1321,7 @@ def _safe_manhattan_route(
                     # Append the stub from escape to end
                     full_route = escape_route + [e]
                     if ok_route(full_route):
-                        return snap_points_to_grid(full_route)
+                        return full_route
         return None
 
     # Try escaping from start or end
@@ -1345,16 +1370,17 @@ class ConnectionManager:
 
         normalised_points = _normalise_points(start_point, end_point, points_override)
 
-        snapped_points = snap_points_to_grid(normalised_points)
         filtered_points: List[Tuple[float, float]] = []
-        for point in snapped_points:
-            if not filtered_points or filtered_points[-1] != point:
-                filtered_points.append(point)
+        for point in normalised_points:
+            candidate = (float(point[0]), float(point[1]))
+            if not filtered_points or filtered_points[-1] != candidate:
+                filtered_points.append(candidate)
 
         if len(filtered_points) < 2:
-            raise ValueError('Wire collapses to zero length after grid snapping')
+            raise ValueError('Wire must span at least two distinct coordinates')
 
         normalised_points = filtered_points
+        _validate_segment_lengths(normalised_points, min_length=MIN_ROUTED_SEGMENT_MM, context='wire segment')
 
         if width is None:
             width = _DEFAULT_WIRE_WIDTH
@@ -1500,8 +1526,8 @@ class ConnectionManager:
             raise ValueError('Schematic contains no wires to remove')
 
         # Round points for spatial matching
-        source_pt = (round(source_point[0], 1), round(source_point[1], 1))
-        target_pt = (round(target_point[0], 1), round(target_point[1], 1))
+        source_pt = _coord_key(*source_point)
+        target_pt = _coord_key(*target_point)
 
         # Build a graph of wire connectivity
         # Each wire segment connects two points, so we build an adjacency list
@@ -1519,8 +1545,7 @@ class ConnectionManager:
                             if hasattr(point, 'value'):
                                 coords = point.value
                                 if len(coords) >= 2:
-                                    x = round(float(coords[0]), 1)
-                                    y = round(float(coords[1]), 1)
+                                    x, y = _coord_key(coords[0], coords[1])
                                     wire_points.append((x, y))
 
                         if len(wire_points) >= 2:
@@ -1825,8 +1850,35 @@ class ConnectionManager:
                 route_end,
             )
 
-            # Use the route points directly as the wire path
-            properties['points'] = [[p[0], p[1]] for p in route_points]
+            # Use the route points directly as the wire path, but ensure true endpoints are included
+            adjusted_route: List[Tuple[float, float]] = []
+            for idx, pt in enumerate(route_points):
+                if idx == 0:
+                    candidate = (float(source_point[0]), float(source_point[1]))
+                else:
+                    candidate = (float(pt[0]), float(pt[1]))
+                if adjusted_route and adjusted_route[-1] == candidate:
+                    continue
+                adjusted_route.append(candidate)
+
+            if not adjusted_route:
+                adjusted_route = [(float(source_point[0]), float(source_point[1]))]
+
+            final_point = (float(target_point[0]), float(target_point[1]))
+            if adjusted_route[-1] != final_point:
+                last = adjusted_route[-1]
+                if last[0] != final_point[0] and last[1] != final_point[1]:
+                    intermediate = (final_point[0], last[1])
+                    if intermediate != last:
+                        adjusted_route.append(intermediate)
+                if adjusted_route[-1] != final_point:
+                    adjusted_route.append(final_point)
+
+            if len(adjusted_route) < 2:
+                adjusted_route.append(final_point)
+
+            properties['points'] = [[p[0], p[1]] for p in adjusted_route]
+            _validate_segment_lengths(properties['points'], min_length=MIN_ROUTED_SEGMENT_MM, context='connect_pins routing')
 
         start = [source_point[0], source_point[1]]
         end = [target_point[0], target_point[1]]

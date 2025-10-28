@@ -1,3 +1,4 @@
+import math
 import os
 import tempfile
 import unittest
@@ -18,12 +19,14 @@ from python.commands.grid_utils import snap_to_grid
 
 
 class ConnectionManagerTests(unittest.TestCase):
-    def test_add_wire_basic_attributes(self) -> None:
+    def test_add_wire_preserves_endpoints_and_nonzero_length(self) -> None:
         schematic = SchematicManager.create_schematic('WireBasic')
+        start = [0.0, 0.0]
+        end = [12.5, 3.0]
         wire = ConnectionManager.add_wire(
             schematic,
-            [0, 0],
-            [12.5, 3.0],
+            start,
+            end,
             {
                 'width': 0.5,
                 'strokeType': 'dash',
@@ -32,13 +35,18 @@ class ConnectionManagerTests(unittest.TestCase):
         self.assertIsInstance(wire, WireWrapper)
         wire = cast(WireWrapper, wire)
 
-        # Coordinates are automatically snapped to 1.27mm grid
-        self.assertEqual([pt.value for pt in wire.points], [[0.0, 0.0], [12.7, 2.54]])
+        points = [pt.value for pt in wire.points]
+        self.assertEqual(len(points), 2, "Expected a single straight segment")
+        self.assertTrue(math.isclose(points[0][0], start[0]))
+        self.assertTrue(math.isclose(points[0][1], start[1]))
+        self.assertTrue(math.isclose(points[-1][0], end[0]))
+        self.assertTrue(math.isclose(points[-1][1], end[1]))
+        self.assertGreater(math.hypot(points[-1][0] - points[0][0], points[-1][1] - points[0][1]), 0.0)
         self.assertAlmostEqual(wire.stroke.width.value, 0.5)
         self.assertEqual(wire.stroke.type.value, 'dash')
         self.assertIsInstance(wire.uuid.value, str)
 
-    def test_add_wire_with_intermediate_points(self) -> None:
+    def test_add_wire_with_intermediate_points_creates_contiguous_segments(self) -> None:
         schematic = SchematicManager.create_schematic('WirePoints')
         wires = ConnectionManager.add_wire(
             schematic,
@@ -55,24 +63,24 @@ class ConnectionManagerTests(unittest.TestCase):
         first_segment = [pt.value for pt in wires[0].points]
         second_segment = [pt.value for pt in wires[1].points]
 
-        # Coordinates are automatically snapped to 1.27mm grid
-        self.assertEqual(first_segment, [[0.0, 0.0], [5.08, 0.0]])  # 5.0 -> 5.08 (4 * 1.27)
-        self.assertEqual(second_segment, [[5.08, 0.0], [5.08, 5.08]])  # 5.0 -> 5.08
+        # Segments should trace the provided path exactly and remain contiguous
+        self.assertEqual(first_segment, [[0.0, 0.0], [5.0, 0.0]])
+        self.assertEqual(second_segment, [[5.0, 0.0], [5.0, 5.0]])
+        self.assertEqual(first_segment[-1], second_segment[0])
+        self.assertGreater(math.hypot(first_segment[1][0] - first_segment[0][0], first_segment[1][1] - first_segment[0][1]), 0.0)
+        self.assertGreater(math.hypot(second_segment[1][0] - second_segment[0][0], second_segment[1][1] - second_segment[0][1]), 0.0)
 
-    def test_add_wire_filters_degenerate_segments_after_snapping(self) -> None:
+    def test_add_wire_rejects_segments_below_threshold(self) -> None:
         schematic = SchematicManager.create_schematic('WireDegenerate')
-        wire = ConnectionManager.add_wire(
-            schematic,
-            None,
-            None,
-            {
-                'points': [[0, 0], [0.2, 0], [0.2, 5.0]],
-            },
-        )
-        self.assertIsInstance(wire, WireWrapper)
-        wire = cast(WireWrapper, wire)
-        points = [pt.value for pt in wire.points]
-        self.assertEqual(points, [[0.0, 0.0], [0.0, 5.08]])
+        with self.assertRaises(ValueError):
+            ConnectionManager.add_wire(
+                schematic,
+                None,
+                None,
+                {
+                    'points': [[0, 0], [0.2, 0], [0.2, 5.0]],
+                },
+            )
 
     def test_add_wire_rejects_invalid_inputs(self) -> None:
         schematic = SchematicManager.create_schematic('WireInvalid')
