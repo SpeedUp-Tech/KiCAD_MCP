@@ -1,5 +1,9 @@
+import shutil
+import subprocess
 import unittest
+import uuid
 from sexpdata import Symbol
+from pathlib import Path
 
 from python.commands.schematic import SchematicManager
 from python.commands.component_schematic import ComponentManager
@@ -65,6 +69,43 @@ def seg_intersects_rect(a, b, rect):
     return False
 
 
+# Export helpers ------------------------------------------------------------
+EXPORT_ROOT = Path(__file__).resolve().parents[2] / 'exported'
+EXPORT_ROOT.mkdir(parents=True, exist_ok=True)
+
+
+def _export_svg(schematic, basename: str) -> None:
+    """
+    Persist the schematic and export an SVG snapshot for visual debugging.
+
+    Creates files under exported/astar_multi_bend/<run_id>/.
+    If kicad-cli is unavailable, this quietly returns after saving the schematic.
+    """
+    run_dir = EXPORT_ROOT / 'astar_multi_bend'
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    # Use a short random suffix so concurrent test runs don't collide.
+    suffix = uuid.uuid4().hex[:6]
+    sch_path = run_dir / f"{basename}_{suffix}.kicad_sch"
+    svg_path = sch_path.with_suffix('.svg')
+
+    saved = SchematicManager.save_schematic(schematic, str(sch_path))
+    if not saved:
+        return
+
+    exe = shutil.which('kicad-cli')
+    if not exe:
+        return
+
+    proc = subprocess.run(
+        [exe, 'sch', 'export', 'svg', str(sch_path), '--output', str(svg_path)],
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0 or not svg_path.exists():
+        return
+
+
 class ManhattanAStarRoutingTests(unittest.TestCase):
     def test_multi_bend_detour_around_two_bodies(self):
         sch = SchematicManager.create_schematic('AStarMultiBend')
@@ -93,6 +134,8 @@ class ManhattanAStarRoutingTests(unittest.TestCase):
         for pt in flat:
             if not uniq or uniq[-1] != pt:
                 uniq.append(pt)
+
+        _export_svg(sch, 'multi_bend_route')
 
         # Check: (1) at least 4 points (3+ segments -> multi-bend), (2) no segment crosses either body
         self.assertGreaterEqual(len(uniq), 4, f"Expected multi-bend path, got {uniq}")
@@ -129,4 +172,3 @@ class ManhattanAStarRoutingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

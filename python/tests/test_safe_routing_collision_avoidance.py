@@ -38,11 +38,15 @@ class SafeRoutingCollisionAvoidanceTests(unittest.TestCase):
     def test_avoids_corner_that_is_already_a_node(self):
         sch = SchematicManager.create_schematic('AvoidCornerNode')
         # Place two labels we control precisely
-        add_hlabel(sch, 'A', 10.0, 10.0)
-        add_hlabel(sch, 'B', 50.0, 40.0)
+        sx = snap_to_grid(10.0)
+        sy = snap_to_grid(10.0)
+        ex = snap_to_grid(50.0)
+        ey = snap_to_grid(40.0)
+        add_hlabel(sch, 'A', sx, sy)
+        add_hlabel(sch, 'B', ex, ey)
 
         # For hv pattern, the naive corner would be (ex, sy) = (50, 10)
-        blocked_corner = (50.0, 10.0)
+        blocked_corner = (ex, sy)
         add_node_at(sch, *blocked_corner)
 
         before_wires = len(getattr(sch, 'wire', []))
@@ -86,8 +90,10 @@ class SafeRoutingCollisionAvoidanceTests(unittest.TestCase):
 
     def test_raises_when_both_corners_and_escapes_blocked(self):
         sch = SchematicManager.create_schematic('BlockedEverywhere')
-        sx, sy = 10.0, 10.0
-        ex, ey = 50.0, 40.0
+        sx = snap_to_grid(10.0)
+        sy = snap_to_grid(10.0)
+        ex = snap_to_grid(50.0)
+        ey = snap_to_grid(40.0)
         add_hlabel(sch, 'A', sx, sy)
         add_hlabel(sch, 'B', ex, ey)
         grid = KICAD_SCHEMATIC_GRID_MM
@@ -127,4 +133,3 @@ class SafeRoutingCollisionAvoidanceTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
-

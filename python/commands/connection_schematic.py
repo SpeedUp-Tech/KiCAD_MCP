@@ -1060,135 +1060,155 @@ def _manhattan_astar_route(
     max_expansions: int = 12000,
     bend_penalty: float = 1.0,  # Increased to prioritize fewer corners
 ) -> Optional[List[Tuple[float, float]]]:
-    """Manhattan A* on grid with rectangle obstacles and forbidden grid points.
+    """Manhattan A* that operates directly in schematic millimetres.
 
-    - Obstacles are the interiors of symbol body rectangles.
-    - Start/end are always allowed, even if inside a body (to allow exiting/entering at pins).
-    - Returns a list of points including start and end, or None if not found within limits.
-    - Cost function prioritizes: 1) Minimizing bends (highest), 2) Minimizing distance (second)
+    - Obstacles are the interiors of symbol body rectangles (handled as soft penalties).
+    - Start/end positions are preserved exactly; no grid snapping is applied.
+    - Returns a list of points including the true start and end, or None if no path is found.
+    - Cost function prioritizes: 1) Fewer bends, 2) Shorter distance, 3) Clearance from bodies.
     """
     sx, sy = start
     ex, ey = end
 
-    # Convert to integer grid coordinates
-    def to_grid(pt: Tuple[float, float]) -> Tuple[int, int]:
-        return (int(round(pt[0] / step)), int(round(pt[1] / step)))
-
-    def from_grid(g: Tuple[int, int]) -> Tuple[float, float]:
-        return (round(g[0] * step, 2), round(g[1] * step, 2))
-
-    gs = to_grid((sx, sy))
-    ge = to_grid((ex, ey))
-
-    # Search window bounds
-    span_x = abs(gs[0] - ge[0])
-    span_y = abs(gs[1] - ge[1])
-    margin = max(10, max(span_x, span_y) + 6)  # fixed extra search band in grid units
-    xmin = min(gs[0], ge[0]) - margin
-    xmax = max(gs[0], ge[0]) + margin
-    ymin = min(gs[1], ge[1]) - margin
-    ymax = max(gs[1], ge[1]) + margin
-
-    # Prepare obstacles in grid space - bboxes are now soft penalties, not hard blocks
     rects: List[Tuple[float, float, float, float]] = [r for (r, _sym) in bboxes]
 
-    # Only hard-block on forbidden pin/node points (not on symbol bboxes)
-    forb_set = {to_grid(p) for p in set(forbidden_points) if p != start and p != end}
+    allowed_endpoints = {_coord_key(sx, sy), _coord_key(ex, ey)}
+    forb_set = {
+        _coord_key(px, py)
+        for (px, py) in set(forbidden_points)
+        if _coord_key(px, py) not in allowed_endpoints
+    }
 
-    def blocked(gx: int, gy: int) -> bool:
-        """Check if a grid position is hard-blocked (out of bounds or forbidden pin/node)."""
-        # Out of search bounds
-        if gx < xmin or gx > xmax or gy < ymin or gy > ymax:
+    span_steps_x = abs(sx - ex) / step if step else 0.0
+    span_steps_y = abs(sy - ey) / step if step else 0.0
+    margin_steps = max(10.0, max(span_steps_x, span_steps_y) + 6.0)
+    margin_distance = margin_steps * step
+
+    xmin = min(sx, ex) - margin_distance
+    xmax = max(sx, ex) + margin_distance
+    ymin = min(sy, ey) - margin_distance
+    ymax = max(sy, ey) + margin_distance
+
+    def blocked(px: float, py: float) -> bool:
+        """Check if a millimetre-space node is outside the window or collides with pins/nodes."""
+        if px < xmin or px > xmax or py < ymin or py > ymax:
             return True
-        # Forbidden pin/node points (except start/end)
-        if (gx, gy) in forb_set and (gx, gy) not in {gs, ge}:
+        key = _coord_key(px, py)
+        if key in forb_set:
             return True
-        # Symbol bboxes are NO LONGER hard blocks - they're handled as penalties in cost calculation
         return False
 
-    # A* search
     DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
 
-    def heuristic(x: int, y: int) -> float:
-        return abs(x - ge[0]) + abs(y - ge[1])
+    def heuristic(px: float, py: float) -> float:
+        return abs(px - ex) + abs(py - ey)
 
-    start_state = (gs[0], gs[1], -1)  # (x, y, dir_idx)
-    open_heap: List[Tuple[float, float, Tuple[int, int, int]]] = []
-    heapq.heappush(open_heap, (heuristic(gs[0], gs[1]), 0.0, start_state))
-    came_from: Dict[Tuple[int, int, int], Tuple[int, int, int]] = {}
-    gscore: Dict[Tuple[int, int, int], float] = {start_state: 0.0}
+    def state_key(px: float, py: float, direction: int) -> Tuple[Tuple[float, float], int]:
+        return (_coord_key(px, py), direction)
+
+    start_state = (sx, sy, -1)
+    open_heap: List[Tuple[float, float, Tuple[float, float, int]]] = []
+    heapq.heappush(open_heap, (heuristic(sx, sy), 0.0, start_state))
+    came_from: Dict[Tuple[Tuple[float, float], int], Tuple[float, float, int]] = {}
+    gscore: Dict[Tuple[Tuple[float, float], int], float] = {state_key(*start_state): 0.0}
 
     expansions = 0
-
-    def state_key(x: int, y: int, d: int) -> Tuple[int, int, int]:
-        return (x, y, d)
+    GOAL_EPS = 1e-6
+    end_key = _coord_key(ex, ey)
 
     while open_heap and expansions < max_expansions:
         f, g, (x, y, dprev) = heapq.heappop(open_heap)
         expansions += 1
-        if (x, y) == ge:
-            # Reconstruct path
-            path: List[Tuple[int, int]] = [(x, y)]
+
+        current_key = _coord_key(x, y)
+        if current_key == end_key:
+            path: List[Tuple[float, float]] = [(x, y)]
             state = (x, y, dprev)
-            while state in came_from:
-                state = came_from[state]
+            skey = state_key(*state)
+            while skey in came_from:
+                state = came_from[skey]
                 path.append((state[0], state[1]))
+                skey = state_key(*state)
             path.reverse()
-            # Convert to mm and simplify collinear
-            pts = [from_grid(pt) for pt in path]
+
             simplified: List[Tuple[float, float]] = []
-            for p in pts:
+            for pt in path:
                 if not simplified:
-                    simplified.append(p)
-                else:
-                    simplified.append(p)
-                    # drop middle if collinear
-                    if len(simplified) >= 3:
-                        a, b, c = simplified[-3], simplified[-2], simplified[-1]
-                        if (a[0] == b[0] == c[0]) or (a[1] == b[1] == c[1]):
-                            simplified.pop(-2)
+                    simplified.append(pt)
+                    continue
+                simplified.append(pt)
+                if len(simplified) >= 3:
+                    a, b, c = simplified[-3], simplified[-2], simplified[-1]
+                    if (abs(a[0] - b[0]) <= GOAL_EPS and abs(b[0] - c[0]) <= GOAL_EPS) or (
+                        abs(a[1] - b[1]) <= GOAL_EPS and abs(b[1] - c[1]) <= GOAL_EPS
+                    ):
+                        simplified.pop(-2)
+
+            if _coord_key(*simplified[0]) != _coord_key(sx, sy):
+                simplified.insert(0, (sx, sy))
+            if _coord_key(*simplified[-1]) != end_key:
+                simplified.append((ex, ey))
+
             return simplified
 
         for i, (dx, dy) in enumerate(DIRS):
-            nx, ny = x + dx, y + dy
-            if blocked(nx, ny):
-                continue
+            candidates: List[Tuple[float, float]] = []
 
-            # Cost: unit step + bend penalty for direction change
-            cost = 1.0
-            if dprev != -1 and dprev != i:
-                cost += bend_penalty
+            if dx != 0:
+                nx = x + dx * step
+                ny = y
+                nx = round(nx, COORD_KEY_PRECISION)
+                ny = round(ny, COORD_KEY_PRECISION)
+                candidates.append((nx, ny))
 
-            # Add penalties based on proximity to symbol bodies
-            nx_mm = nx * step
-            ny_mm = ny * step
-            min_distance = float('inf')
-            is_inside_any_bbox = False
+                remaining_x = ex - x
+                if remaining_x != 0.0 and (remaining_x > 0) == (dx > 0):
+                    if abs(remaining_x) <= step + GOAL_EPS:
+                        candidates.append((round(ex, COORD_KEY_PRECISION), ny))
 
-            for rect, _sym in bboxes:
-                dist = _distance_to_rect_edge(nx_mm, ny_mm, rect)
-                min_distance = min(min_distance, dist)
+            else:
+                nx = x
+                ny = y + dy * step
+                nx = round(nx, COORD_KEY_PRECISION)
+                ny = round(ny, COORD_KEY_PRECISION)
+                candidates.append((nx, ny))
 
-                # Check if point is inside this bbox
-                xmin_r, ymin_r, xmax_r, ymax_r = rect
-                if (xmin_r <= nx_mm <= xmax_r) and (ymin_r <= ny_mm <= ymax_r):
-                    is_inside_any_bbox = True
+                remaining_y = ey - y
+                if remaining_y != 0.0 and (remaining_y > 0) == (dy > 0):
+                    if abs(remaining_y) <= step + GOAL_EPS:
+                        candidates.append((nx, round(ey, COORD_KEY_PRECISION)))
 
-            # Heavy penalty for being inside a bbox (but not hard-blocked)
-            if is_inside_any_bbox:
-                cost += INSIDE_BBOX_PENALTY
-            # Lighter penalty for being close to a bbox
-            elif min_distance < CLEARANCE_THRESHOLD_MM:
-                distance_penalty = (CLEARANCE_THRESHOLD_MM - min_distance) * DISTANCE_PENALTY_WEIGHT
-                cost += distance_penalty
+            for nx, ny in candidates:
+                if blocked(nx, ny):
+                    continue
 
-            ng = g + cost
-            ns = state_key(nx, ny, i)
-            if ng < gscore.get(ns, float('inf')):
-                gscore[ns] = ng
-                came_from[ns] = (x, y, dprev)
-                nf = ng + heuristic(nx, ny)
-                heapq.heappush(open_heap, (nf, ng, ns))
+                cost = 1.0
+                if dprev != -1 and dprev != i:
+                    cost += bend_penalty
+
+                min_distance = float('inf')
+                is_inside_any_bbox = False
+
+                for rect in rects:
+                    dist = _distance_to_rect_edge(nx, ny, rect)
+                    min_distance = min(min_distance, dist)
+                    xmin_r, ymin_r, xmax_r, ymax_r = rect
+                    if (xmin_r <= nx <= xmax_r) and (ymin_r <= ny <= ymax_r):
+                        is_inside_any_bbox = True
+
+                if is_inside_any_bbox:
+                    cost += INSIDE_BBOX_PENALTY
+                elif min_distance < CLEARANCE_THRESHOLD_MM:
+                    distance_penalty = (CLEARANCE_THRESHOLD_MM - min_distance) * DISTANCE_PENALTY_WEIGHT
+                    cost += distance_penalty
+
+                ng = g + cost
+                ns = state_key(nx, ny, i)
+                if ng < gscore.get(ns, float('inf')):
+                    gscore[ns] = ng
+                    came_from[ns] = (x, y, dprev)
+                    nf = ng + heuristic(nx, ny)
+                    heapq.heappush(open_heap, (nf, ng, (nx, ny, i)))
 
     return None
 
@@ -1271,16 +1291,21 @@ def _safe_manhattan_route(
 
     # LEVEL 2: Adaptive stubs - Fallback when A* fails
     # Try escaping from start or end point in all four directions
-    escape_vectors = [ (0, step), (0, -step), (step, 0), (-step, 0) ]
+    escape_vectors = [(0, step), (0, -step), (step, 0), (-step, 0)]
 
     def try_escape(from_start: bool) -> Optional[List[Tuple[float, float]]]:
         """Try to escape from start or end point and route via A* from the escape point."""
         for dx, dy in escape_vectors:
-            esc = ( (s[0] + dx, s[1] + dy) if from_start else (e[0] + dx, e[1] + dy) )
-            esc = snap_point_to_grid(esc[0], esc[1])
+            esc = (
+                (s[0] + dx, s[1] + dy)
+                if from_start
+                else (e[0] + dx, e[1] + dy)
+            )
+            esc = (
+                round(esc[0], COORD_KEY_PRECISION),
+                round(esc[1], COORD_KEY_PRECISION),
+            )
 
-            # Check if escape point is valid (not blocked)
-            esc_grid = (int(round(esc[0] / step)), int(round(esc[1] / step)))
             esc_rounded = _coord_key(*esc)
 
             # Skip if escape point is forbidden
