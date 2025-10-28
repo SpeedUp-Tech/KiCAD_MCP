@@ -2,14 +2,25 @@
 """
 Blueprint to Hierarchical KiCAD Schematic Generator
 
-This module generates hierarchical KiCAD schematics from a blueprint JSON file.
-It uses direct tree manipulation following the working pattern from manual builds.
+This module generates a KiCad project folder from a blueprint JSON file using a
+hierarchical sheet layout. The generated structure now follows the convention:
+
+output/
+└─ kicad/
+   ├─ top.kicad_sch                   (references modules/*/sheet.kicad_sch)
+   ├─ modules/
+   │  └─ {module_id}/
+   │     ├─ sheet.kicad_sch           (module logic with hierarchical labels)
+   │     └─ harness.kicad_sch         (local parent referencing ./sheet.kicad_sch)
+   ├─ erc/
+   └─ export/
 
 Key principles:
 1. Use SchematicManager for creating/saving schematics
-2. Direct tree manipulation for hierarchical elements (no complex helpers)
-3. Correct element ordering: sheet_instances MUST be at the END
-4. Correct path format: /root_uuid/sheet_uuid (not just /sheet_uuid)
+2. Modules expose interfaces via hierarchical labels (no global labels inside the sheet)
+3. The harness acts as a lightweight parent so module-level ERC can run standalone
+4. Maintain correct element ordering: sheet_instances MUST be the final entry
+5. Maintain correct path format: /root_uuid/sheet_uuid (not just /sheet_uuid)
 """
 
 import json
@@ -26,107 +37,146 @@ from .schematic import SchematicManager
 logger = logging.getLogger(__name__)
 
 
-def generate_hierarchical_schematic(blueprint_path: str, output_dir: str) -> Dict:
-    """
-    Generate a hierarchical KiCAD schematic from a blueprint JSON file.
-    
-    Args:
-        blueprint_path: Path to the blueprint JSON file
-        output_dir: Directory where the project will be created
-        
-    Returns:
-        Dictionary with paths to created files:
-        {
-            "top_schematic": "path/to/Top.kicad_sch",
-            "module_sheets": {"module_id": "path/to/module.kicad_sch", ...},
-            "output_dir": "path/to/output"
-        }
-    """
-    # Load blueprint
-    with open(blueprint_path, 'r', encoding='utf-8') as f:
+def generate_hierarchical_schematic(blueprint_path: str, output_dir: str) -> Dict[str, Any]:
+    """Generate a hierarchical KiCad project from a blueprint JSON file."""
+
+    with open(blueprint_path, "r", encoding="utf-8") as f:
         blueprint = json.load(f)
-    
+
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
-    
-    sheets_dir = output_path / "sheets"
-    sheets_dir.mkdir(exist_ok=True)
-    
+
+    kicad_dir = output_path / "kicad"
+    modules_dir = kicad_dir / "modules"
+    erc_dir = kicad_dir / "erc"
+    export_dir = kicad_dir / "export"
+
+    for directory in (kicad_dir, modules_dir, erc_dir, export_dir):
+        directory.mkdir(parents=True, exist_ok=True)
+
     modules = blueprint.get("modules", [])
     signals = blueprint.get("signals", [])
     rails = blueprint.get("rails", [])
-    
-    logger.info(f"Generating hierarchical schematic with {len(modules)} modules")
-    
-    # Step 1: Analyze connections for each module
+
+    logger.info("Generating hierarchical schematic with %s modules", len(modules))
+
     module_connections = _analyze_module_connections(modules, signals, rails)
-    
-    # Step 2: Create module schematics with global labels
-    module_data = {}
+
+    module_records: Dict[str, Dict[str, Any]] = {}
+
     for module in modules:
         module_id = module["module_id"]
         connections = module_connections[module_id]
-        
-        # Create schematic
-        sch = SchematicManager.create_schematic(module_id, metadata={
-            "title": module_id,
-            "description": module.get("function", "")
-        })
 
-        # Ensure tree is a list (type guard for type checker)
-        if not isinstance(sch.tree, list):
-            raise RuntimeError(f"Schematic tree is not a list for module {module_id}")
+        module_dir = modules_dir / module_id
+        module_dir.mkdir(parents=True, exist_ok=True)
 
-        # Add global labels
-        _add_global_labels_to_tree(sch.tree, connections)
+        sheet_path = _create_module_sheet(module, connections, module_dir)
+        harness_path = _create_module_harness(module, connections, module_dir)
 
-        # Remove sheet_instances from child sheets
-        _remove_sheet_instances(sch.tree)
-        
-        # Save
-        module_path = sheets_dir / f"{module_id}.kicad_sch"
-        SchematicManager.save_schematic(sch, str(module_path))
-
-        module_data[module_id] = {
-            "path": module_path,
+        module_records[module_id] = {
+            "module": module,
             "connections": connections,
-            "module": module
+            "sheet_path": sheet_path,
+            "sheet_relpath": (Path("modules") / module_id / "sheet.kicad_sch").as_posix(),
+            "harness_path": harness_path,
         }
-        
-        logger.info(f"Created module schematic: {module_id}")
-    
-    # Step 3: Create top schematic with sheet symbols (A3 paper size)
-    top_sch = SchematicManager.create_schematic("Top", metadata={"paper": "A3"})
 
-    # Ensure tree is a list (type guard for type checker)
-    if not isinstance(top_sch.tree, list):
-        raise RuntimeError("Top schematic tree is not a list")
+    top_path = _create_top_schematic(kicad_dir, module_records)
 
-    top_tree = top_sch.tree
+    logger.info("Created top schematic: %s", top_path)
 
-    # Get root UUID
-    root_uuid = _get_root_uuid(top_tree)
-    
-    # Add sheet symbols with pins
-    sheet_uuids = _add_sheet_symbols_to_tree(top_tree, module_data, sheets_dir)
-    
-    # Add wires connecting sheets
-    _add_wires_to_tree(top_tree, module_data, sheet_uuids, signals, rails)
-    
-    # CRITICAL: Move sheet_instances to the END and update paths
-    _rebuild_sheet_instances_at_end(top_tree, root_uuid, sheet_uuids)
-    
-    # Save top schematic
-    top_path = output_path / "Top.kicad_sch"
-    SchematicManager.save_schematic(top_sch, str(top_path))
-    
-    logger.info(f"Created top schematic: {top_path}")
-    
     return {
         "top_schematic": str(top_path),
-        "module_sheets": {mid: str(data["path"]) for mid, data in module_data.items()},
-        "output_dir": str(output_path)
+        "module_sheets": {module_id: str(record["sheet_path"]) for module_id, record in module_records.items()},
+        "module_harnesses": {module_id: str(record["harness_path"]) for module_id, record in module_records.items()},
+        "output_dir": str(output_path),
     }
+
+
+def _create_module_sheet(module: Dict[str, Any], connections: Dict[str, Set[str]], module_dir: Path) -> Path:
+    """Build the module sheet using hierarchical labels and save it."""
+
+    module_id = module["module_id"]
+
+    schematic = SchematicManager.create_schematic(
+        module_id,
+        metadata={
+            "title": module_id,
+            "description": module.get("function", ""),
+        },
+    )
+
+    if not isinstance(schematic.tree, list):
+        raise RuntimeError(f"Schematic tree is not a list for module {module_id}")
+
+    tree = schematic.tree
+
+    _add_hierarchical_labels_to_tree(tree, connections)
+    _remove_sheet_instances(tree)
+
+    sheet_path = module_dir / "sheet.kicad_sch"
+    SchematicManager.save_schematic(schematic, str(sheet_path))
+
+    logger.info("Created module sheet: %s", sheet_path)
+    return sheet_path
+
+
+def _create_module_harness(module: Dict[str, Any], connections: Dict[str, Set[str]], module_dir: Path) -> Path:
+    """Create the harness schematic referencing the module sheet locally."""
+
+    module_id = module["module_id"]
+
+    harness = SchematicManager.create_schematic(
+        f"{module_id}_Harness",
+        metadata={
+            "title": f"{module_id} Harness",
+            "description": module.get("function", ""),
+        },
+    )
+
+    if not isinstance(harness.tree, list):
+        raise RuntimeError(f"Harness schematic tree is not a list for module {module_id}")
+
+    tree = harness.tree
+    root_uuid = _get_root_uuid(tree)
+
+    sheet_node, sheet_uuid = _create_sheet_symbol(
+        module_id=module_id,
+        sheet_relpath="./sheet.kicad_sch",
+        connections=connections,
+        origin_x=40.0,
+        origin_y=40.0,
+    )
+
+    tree.append(sheet_node)
+    _rebuild_sheet_instances_at_end(tree, root_uuid, {module_id: sheet_uuid})
+
+    harness_path = module_dir / "harness.kicad_sch"
+    SchematicManager.save_schematic(harness, str(harness_path))
+
+    logger.info("Created module harness: %s", harness_path)
+    return harness_path
+
+
+def _create_top_schematic(kicad_dir: Path, module_records: Dict[str, Dict[str, Any]]) -> Path:
+    """Create the top-level schematic referencing all modules."""
+
+    top_schematic = SchematicManager.create_schematic("Top", metadata={"paper": "A3"})
+
+    if not isinstance(top_schematic.tree, list):
+        raise RuntimeError("Top schematic tree is not a list")
+
+    tree = top_schematic.tree
+    root_uuid = _get_root_uuid(tree)
+
+    sheet_uuids = _add_sheet_symbols_to_tree(tree, module_records)
+    _rebuild_sheet_instances_at_end(tree, root_uuid, sheet_uuids)
+
+    top_path = kicad_dir / "top.kicad_sch"
+    SchematicManager.save_schematic(top_schematic, str(top_path))
+
+    return top_path
 
 
 def _analyze_module_connections(modules: List[Dict], signals: List[Dict], rails: List[Dict]) -> Dict[str, Dict[str, Set[str]]]:
@@ -196,20 +246,8 @@ def _analyze_module_connections(modules: List[Dict], signals: List[Dict], rails:
     return module_connections
 
 
-def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> None:
-    """
-    Add global labels to a schematic tree following schematic drawing principles:
-    - Signal flow: left to right (inputs on left, outputs on right)
-    - Power flow: top to bottom (inputs on top, outputs on bottom)
-    - All labels are horizontal (0 degrees) for readability
-    - Labels are spread adaptively across each edge
-
-    Layout:
-    - Power inputs: spread adaptively along the top edge
-    - Signal inputs: spread adaptively along the left edge
-    - Signal outputs: spread adaptively along the right edge
-    - Power outputs: spread adaptively along the bottom edge
-    """
+def _add_hierarchical_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> None:
+    """Add hierarchical labels around a module sheet to expose its interfaces."""
     # A4 schematic working area is approximately 277mm x 190mm
     # Using grid units (typically 2.54mm per unit), we have roughly:
     # Width: ~270mm / 2.54 ≈ 106 units, Height: ~180mm / 2.54 ≈ 71 units
@@ -231,8 +269,6 @@ def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> 
     MIN_SPACING = 15.0        # Minimum spacing between labels
     MAX_SPACING = 50.0        # Maximum spacing between labels
 
-    # All labels use angle 0 (horizontal text, reader-friendly)
-
     bidirectional_labels = set(connections.get("bidirectional_labels", set()))
 
     # Power inputs: spread adaptively along the top edge
@@ -246,8 +282,8 @@ def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> 
             MAX_SPACING
         )
         for label_name, x_pos in zip(power_inputs, positions):
-            shape = "bidirectional" if label_name in bidirectional_labels else "passive"
-            tree.append(_make_global_label(label_name, shape, x_pos, TOP_Y, 0, "left"))
+            shape = "bidirectional" if label_name in bidirectional_labels else "input"
+            tree.append(_make_hierarchical_label(label_name, shape, x_pos, TOP_Y, "bottom"))
 
     # Signal inputs: spread adaptively along the left edge
     # Use "right" justify so text extends left and symbol is on the right (toward connections)
@@ -261,8 +297,8 @@ def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> 
             MAX_SPACING
         )
         for label_name, y_pos in zip(signal_inputs, positions):
-            shape = "bidirectional" if label_name in bidirectional_labels else "passive"
-            tree.append(_make_global_label(label_name, shape, LEFT_X, y_pos, 0, "right"))
+            shape = "bidirectional" if label_name in bidirectional_labels else "input"
+            tree.append(_make_hierarchical_label(label_name, shape, LEFT_X, y_pos, "right"))
 
     # Signal outputs: spread adaptively along the right edge
     signal_outputs = sorted(connections["signal_outputs"])
@@ -276,7 +312,7 @@ def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> 
         )
         for label_name, y_pos in zip(signal_outputs, positions):
             shape = "bidirectional" if label_name in bidirectional_labels else "output"
-            tree.append(_make_global_label(label_name, shape, RIGHT_X, y_pos, 0, "left"))
+            tree.append(_make_hierarchical_label(label_name, shape, RIGHT_X, y_pos, "left"))
 
     # Power outputs: spread adaptively along the bottom edge
     power_outputs = sorted(connections["power_outputs"])
@@ -290,7 +326,7 @@ def _add_global_labels_to_tree(tree: List, connections: Dict[str, Set[str]]) -> 
         )
         for label_name, x_pos in zip(power_outputs, positions):
             shape = "bidirectional" if label_name in bidirectional_labels else "output"
-            tree.append(_make_global_label(label_name, shape, x_pos, BOTTOM_Y, 0, "left"))
+            tree.append(_make_hierarchical_label(label_name, shape, x_pos, BOTTOM_Y, "top"))
 
 
 def _calculate_adaptive_positions(count: int, start: float, end: float, min_spacing: float, max_spacing: float) -> List[float]:
@@ -339,50 +375,40 @@ def _calculate_adaptive_positions(count: int, start: float, end: float, min_spac
     return [start_pos + i * actual_spacing for i in range(count)]
 
 
-def _make_global_label(name: str, shape: str, x: float, y: float, angle: int, justify: str = "left") -> List:
-    """
-    Create a global label element.
+def _make_hierarchical_label(name: str, shape: str, x: float, y: float, alignment: str) -> List[Any]:
+    """Create a hierarchical label element with alignment helpers."""
 
-    Args:
-        name: Label name
-        shape: Label shape ("input", "output", "bidirectional", "passive")
-        x: X coordinate
-        y: Y coordinate
-        angle: Rotation angle in degrees (always 0 for horizontal, reader-friendly text)
-        justify: Text justification ("left" or "right")
-                 - "left": text extends right, symbol on left (format: <>[label])
-                 - "right": text extends left, symbol on right (format: [label]<>)
-    """
-    # Snap coordinates to grid for KiCAD compliance
     x_snapped = snap_to_grid(x)
     y_snapped = snap_to_grid(y)
 
-    # All labels use horizontal text (angle 0) for readability
-    # Text justification controls where the symbol appears relative to text
+    justify_tokens = _hierarchical_label_justify(alignment)
+
+    effects = [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]]]
+    if justify_tokens:
+        effects.append([Symbol("justify"), *map(Symbol, justify_tokens)])
+
     return [
-        Symbol("global_label"),
+        Symbol("hierarchical_label"),
         name,
         [Symbol("shape"), Symbol(shape)],
-        [Symbol("at"), x_snapped, y_snapped, angle],
+        [Symbol("at"), x_snapped, y_snapped, 0],
         [Symbol("fields_autoplaced")],
-        [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]], [Symbol("justify"), Symbol(justify)]],
-        [Symbol("uuid"), Symbol(str(uuid4()))]
+        effects,
+        [Symbol("uuid"), Symbol(str(uuid4()))],
     ]
 
 
-def _add_text_to_tree(tree: List, text: str, x: float, y: float, font_size: float = 1.8) -> None:
-    """Add a text annotation to the tree."""
-    # Snap coordinates to grid
-    x_snapped = snap_to_grid(x)
-    y_snapped = snap_to_grid(y)
+def _hierarchical_label_justify(alignment: str) -> List[str]:
+    """Map a placement alignment to KiCad justify tokens."""
 
-    tree.append([
-        Symbol("text"),
-        text,
-        [Symbol("at"), x_snapped, y_snapped, 0],
-        [Symbol("effects"), [Symbol("font"), [Symbol("size"), font_size, font_size], [Symbol("thickness"), 0.4], Symbol("bold")], [Symbol("justify"), Symbol("left"), Symbol("bottom")]],
-        [Symbol("uuid"), Symbol(str(uuid4()))]
-    ])
+    mapping = {
+        "left": ["right"],
+        "right": ["left"],
+        "top": ["left", "bottom"],
+        "bottom": ["left", "top"],
+    }
+
+    return mapping.get(alignment, ["left"])
 
 
 def _remove_sheet_instances(tree: List) -> None:
@@ -401,82 +427,124 @@ def _get_root_uuid(tree: List) -> str:
     raise RuntimeError("Root UUID not found in schematic tree")
 
 
-def _add_sheet_symbols_to_tree(tree: List, module_data: Dict, sheets_dir: Path) -> Dict[str, str]:
-    """Add sheet symbols to top schematic tree. Returns mapping of module_id to sheet_uuid."""
-    sheet_uuids = {}
-    
-    # Layout in grid - snap base positions to grid
-    x_pos, y_pos = snap_to_grid(40.0), snap_to_grid(40.0)
-    sheet_width, sheet_height = snap_to_grid(50.0), snap_to_grid(40.0)
-    x_spacing, y_spacing = snap_to_grid(80.0), snap_to_grid(60.0)
+def _create_sheet_symbol(
+    module_id: str,
+    sheet_relpath: str,
+    connections: Dict[str, Set[str]],
+    origin_x: float,
+    origin_y: float,
+    sheet_width: float = 50.0,
+    sheet_height: float = 40.0,
+) -> Tuple[List[Any], str]:
+    """Create a hierarchical sheet symbol for a parent schematic."""
+
+    x = snap_to_grid(origin_x)
+    y = snap_to_grid(origin_y)
+    width = snap_to_grid(sheet_width)
+    height = snap_to_grid(sheet_height)
+
+    sheet_uuid = str(uuid4())
+
+    sheet_node: List[Any] = [
+        Symbol("sheet"),
+        [Symbol("at"), x, y],
+        [Symbol("size"), width, height],
+        [Symbol("stroke"), [Symbol("width"), 0], [Symbol("type"), Symbol("solid")], [Symbol("color"), 0, 0, 0, 0]],
+        [Symbol("fill"), [Symbol("color"), 0, 0, 0, 0.0]],
+        [Symbol("uuid"), Symbol(sheet_uuid)],
+        [
+            Symbol("property"),
+            "Sheet name",
+            module_id,
+            [Symbol("id"), 0],
+            [Symbol("at"), x, y - 2.5, 0],
+            [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]], [Symbol("justify"), Symbol("left"), Symbol("bottom")]],
+        ],
+        [
+            Symbol("property"),
+            "Sheet file",
+            sheet_relpath,
+            [Symbol("id"), 1],
+            [Symbol("at"), x, y + height + 0.5, 0],
+            [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]], [Symbol("justify"), Symbol("left"), Symbol("top")]],
+        ],
+    ]
+
+    sheet_node.extend(_build_sheet_pin_entries(connections, x, y))
+
+    return sheet_node, sheet_uuid
+
+
+def _build_sheet_pin_entries(connections: Dict[str, Set[str]], x: float, y: float) -> List[List[Any]]:
+    """Generate pin entries for a sheet symbol based on module connections."""
+
+    bidirectional_labels = set(connections.get("bidirectional_labels", set()))
+
+    ordered_labels: List[Tuple[str, str]] = []
+
+    for name in sorted(connections.get("power_outputs", [])):
+        direction = "bidirectional" if name in bidirectional_labels else "output"
+        ordered_labels.append((name, direction))
+
+    for name in sorted(connections.get("power_inputs", [])):
+        direction = "bidirectional" if name in bidirectional_labels else "input"
+        ordered_labels.append((name, direction))
+
+    for name in sorted(connections.get("signal_outputs", [])):
+        direction = "bidirectional" if name in bidirectional_labels else "output"
+        ordered_labels.append((name, direction))
+
+    for name in sorted(connections.get("signal_inputs", [])):
+        direction = "bidirectional" if name in bidirectional_labels else "input"
+        ordered_labels.append((name, direction))
+
+    pins: List[List[Any]] = []
+    pin_offset = 10.0
+    pin_step = 5.0
+
+    for label_name, direction in ordered_labels:
+        pin_y = snap_to_grid(y + pin_offset)
+        pins.append([
+            Symbol("pin"),
+            label_name,
+            Symbol(direction),
+            [Symbol("at"), x, pin_y, 0],
+            [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]]],
+            [Symbol("uuid"), Symbol(str(uuid4()))],
+        ])
+        pin_offset += pin_step
+
+    return pins
+
+
+def _add_sheet_symbols_to_tree(tree: List, module_data: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
+    """Add sheet symbols to a parent schematic. Returns module_id -> sheet_uuid mapping."""
+
+    sheet_uuids: Dict[str, str] = {}
+
+    x_origin = 40.0
+    y_origin = 40.0
+    x_spacing = 80.0
+    y_spacing = 60.0
 
     for idx, (module_id, data) in enumerate(module_data.items()):
         col = idx % 3
         row = idx // 3
-        x = snap_to_grid(x_pos + col * x_spacing)
-        y = snap_to_grid(y_pos + row * y_spacing)
-        
-        sheet_uuid = str(uuid4())
-        sheet_uuids[module_id] = sheet_uuid
-        
-        connections = data["connections"]
-        module = data["module"]
-        
-        # Create sheet node
-        sheet_node = [
-            Symbol("sheet"),
-            [Symbol("at"), x, y],
-            [Symbol("size"), sheet_width, sheet_height],
-            [Symbol("stroke"), [Symbol("width"), 0], [Symbol("type"), Symbol("solid")], [Symbol("color"), 0, 0, 0, 0]],
-            [Symbol("fill"), [Symbol("color"), 0, 0, 0, 0.0]],
-            [Symbol("uuid"), sheet_uuid],
-            [Symbol("property"), "Sheet name", module_id, [Symbol("id"), 0], [Symbol("at"), x, y - 2.5, 0], [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]], [Symbol("justify"), Symbol("left"), Symbol("bottom")]]],
-            [Symbol("property"), "Sheet file", f"sheets/{module_id}.kicad_sch", [Symbol("id"), 1], [Symbol("at"), x, y + sheet_height + 0.5, 0], [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]], [Symbol("justify"), Symbol("left"), Symbol("top")]]],
-        ]
-        
-        # Add pins
-        pin_y = 10.0
-        bidirectional_labels = set(connections.get("bidirectional_labels", set()))
+        origin_x = x_origin + col * x_spacing
+        origin_y = y_origin + row * y_spacing
 
-        all_labels: List[Tuple[str, str]] = []
+        sheet_node, sheet_uuid = _create_sheet_symbol(
+            module_id=module_id,
+            sheet_relpath=data["sheet_relpath"],
+            connections=data["connections"],
+            origin_x=origin_x,
+            origin_y=origin_y,
+        )
 
-        for name in sorted(connections["power_outputs"]):
-            direction = "bidirectional" if name in bidirectional_labels else "output"
-            all_labels.append((name, direction))
-
-        for name in sorted(connections["power_inputs"]):
-            direction = "bidirectional" if name in bidirectional_labels else "input"
-            all_labels.append((name, direction))
-
-        for name in sorted(connections["signal_outputs"]):
-            direction = "bidirectional" if name in bidirectional_labels else "output"
-            all_labels.append((name, direction))
-
-        for name in sorted(connections["signal_inputs"]):
-            direction = "bidirectional" if name in bidirectional_labels else "input"
-            all_labels.append((name, direction))
-        
-        for label_name, direction in all_labels:
-            sheet_node.append([
-                Symbol("pin"),
-                label_name,
-                Symbol(direction),
-                [Symbol("at"), x, y + pin_y, 0],
-                [Symbol("effects"), [Symbol("font"), [Symbol("size"), 1.27, 1.27]]],
-                [Symbol("uuid"), str(uuid4())]
-            ])
-            pin_y += 5.0
-        
         tree.append(sheet_node)
-    
+        sheet_uuids[module_id] = sheet_uuid
+
     return sheet_uuids
-
-
-def _add_wires_to_tree(tree: List, module_data: Dict, sheet_uuids: Dict[str, str], signals: List[Dict], rails: List[Dict]) -> None:
-    """Add wires connecting sheets (placeholder - can be enhanced)."""
-    # This is a simplified version - wires can be added based on signal/rail connections
-    # For now, we skip automatic wire generation as it requires pin position calculation
-    pass
 
 
 def _rebuild_sheet_instances_at_end(tree: List, root_uuid: str, sheet_uuids: Dict[str, str]) -> None:

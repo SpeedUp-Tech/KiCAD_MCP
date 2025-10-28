@@ -56,16 +56,34 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         # Verify result structure
         self.assertIn("top_schematic", result)
         self.assertIn("module_sheets", result)
+        self.assertIn("module_harnesses", result)
         self.assertIn("output_dir", result)
-        
-        # Verify files exist
-        self.assertTrue(Path(result["top_schematic"]).exists())
+
+        output_root = Path(result["output_dir"])
+
+        # Verify directories exist
+        self.assertTrue((output_root / "kicad").exists())
+        self.assertTrue((output_root / "kicad" / "modules").exists())
+        self.assertTrue((output_root / "kicad" / "erc").exists())
+        self.assertTrue((output_root / "kicad" / "export").exists())
+
+        top_path = Path(result["top_schematic"])
+        self.assertTrue(top_path.exists())
+        self.assertEqual(top_path, output_root / "kicad" / "top.kicad_sch")
         with open(test_case["blueprint"], 'r', encoding='utf-8') as f:
             expected_modules = len(json.load(f).get("modules", []))
         self.assertEqual(len(result["module_sheets"]), expected_modules)
         
         for module_path in result["module_sheets"].values():
             self.assertTrue(Path(module_path).exists())
+
+        for module_id, harness_path in result["module_harnesses"].items():
+            harness_file = Path(harness_path)
+            self.assertTrue(harness_file.exists())
+            self.assertEqual(
+                harness_file,
+                output_root / "kicad" / "modules" / module_id / "harness.kicad_sch"
+            )
     
     def test_02_generate_from_blueprint_140w(self):
         """Test generation from 140w笔记本充电 blueprint"""
@@ -80,6 +98,7 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         # Verify result structure
         self.assertIn("top_schematic", result)
         self.assertIn("module_sheets", result)
+        self.assertIn("module_harnesses", result)
         self.assertIn("output_dir", result)
         
         # Verify module count
@@ -165,7 +184,7 @@ class TestBlueprintToHierarchical(unittest.TestCase):
                 )
     
     def test_05_global_labels(self):
-        """Test that module schematics use global_label (not hierarchical_label)"""
+        """Test that module schematics expose hierarchical labels (no globals)."""
         test_case = self.test_cases[0]
         output_dir = self.test_output_dir / f"labels_{uuid4().hex[:8]}"
         
@@ -176,7 +195,7 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         
         total_hierarchical = 0
         total_global = 0
-        
+
         for module_path in result["module_sheets"].values():
             module_tree = loads(Path(module_path).read_text(encoding="utf-8"))
             
@@ -185,12 +204,10 @@ class TestBlueprintToHierarchical(unittest.TestCase):
             
             total_hierarchical += h_count
             total_global += g_count
-        
-        # Should have global labels
-        self.assertGreater(total_global, 0, "Should have global labels")
-        
-        # Should NOT have hierarchical labels
-        self.assertEqual(total_hierarchical, 0, "Should not have hierarchical labels")
+
+        # Should expose interfaces via hierarchical labels only
+        self.assertGreater(total_hierarchical, 0, "Should have hierarchical labels")
+        self.assertEqual(total_global, 0, "Should not have global labels")
     
     def test_06_child_sheets_no_sheet_instances(self):
         """Test that child sheets do not have sheet_instances section"""
@@ -238,7 +255,8 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         self.assertEqual(proc.returncode, 0, f"SVG export failed: {proc.stderr}")
         
         # Check that SVG files were created
-        svg_files = list(svg_dir.glob("Top-*.svg"))
+        top_stem = Path(result["top_schematic"]).stem
+        svg_files = list(svg_dir.glob(f"{top_stem}-*.svg"))
         self.assertGreater(len(svg_files), 0, "No SVG files generated")
         
         # Collect expected label names dynamically from top schematic sheet pins
@@ -351,6 +369,47 @@ class TestBlueprintToHierarchical(unittest.TestCase):
                 module["module_id"],
                 f"Title should be module_id: {module['module_id']}"
             )
+
+    def test_10_harness_references_local_sheet(self):
+        """Harness sheet should reference the module sheet via a relative path."""
+
+        test_case = self.test_cases[0]
+        output_dir = self.test_output_dir / f"harness_ref_{uuid4().hex[:8]}"
+
+        result = generate_hierarchical_schematic(
+            test_case["blueprint"],
+            str(output_dir)
+        )
+
+        first_module_id = next(iter(result["module_harnesses"]))
+        harness_path = Path(result["module_harnesses"][first_module_id])
+        self.assertTrue(harness_path.exists())
+
+        harness_tree = loads(harness_path.read_text(encoding="utf-8"))
+
+        sheet_node = next(
+            (entry for entry in harness_tree if isinstance(entry, list) and entry and entry[0] == Symbol("sheet")),
+            None
+        )
+
+        self.assertIsNotNone(sheet_node, "Harness should contain a sheet symbol")
+        assert sheet_node is not None
+
+        sheet_file_property = next(
+            (
+                item for item in sheet_node
+                if isinstance(item, list)
+                and item
+                and item[0] == Symbol("property")
+                and item[1] == "Sheet file"
+            ),
+            None,
+        )
+
+        self.assertIsNotNone(sheet_file_property, "Sheet file property missing from harness sheet")
+        assert sheet_file_property is not None
+
+        self.assertEqual(str(sheet_file_property[2]), "./sheet.kicad_sch")
 
 
 def suite():
