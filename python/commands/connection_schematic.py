@@ -1231,7 +1231,7 @@ def _safe_manhattan_route(
     - This allows routing through tight spaces and handles pins inside bboxes
     - Minimized corners/segments (highest priority) and wire length (second priority)
     """
-    # Preserve original endpoints; routing grid coordinates are derived on demand
+    # Preserve original endpoints; solver works directly in schematic millimetres
     s = (float(start[0]), float(start[1]))
     e = (float(end[0]), float(end[1]))
 
@@ -1793,11 +1793,11 @@ class ConnectionManager:
 
         Automatically routes wires using Manhattan (horizontal/vertical) pathfinding with
         intelligent obstacle avoidance. The routing algorithm:
-        - Adds stubs extending from component pins for proper clearance
-        - Uses A* pathfinding to find optimal paths that avoid symbol bodies
-        - Minimizes corners and wire length
-        - Ensures wires never run along symbol edges or through symbol bodies
-        - Snaps all coordinates to KiCAD's standard grid (1.27mm)
+        - Preserves the exact source/target coordinates while operating in real millimetres
+        - Expands in Manhattan steps (1.27 mm stride) and penalises paths that approach symbol bodies
+        - Adds clearance stubs so wires leave pins cleanly before turning
+        - Minimises corner count first, then total length, while maintaining required clearances
+        - Ensures wires never hug symbol edges or pass through component bodies
 
         Supports connecting:
         - Pin to pin: Both source and target specify component pins
