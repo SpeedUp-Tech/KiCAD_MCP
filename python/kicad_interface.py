@@ -846,11 +846,28 @@ class KiCADInterface:
                 return {"success": False, "message": str(exc)}
 
             success = result.returncode == 0
+            message_text = (result.stderr or result.stdout or "").strip()
+            report_content = None
+            if output_path and os.path.exists(output_path):
+                try:
+                    report_content = Path(output_path).read_text(
+                        encoding="utf-8", errors="replace"
+                    ).strip()
+                except OSError as exc:
+                    logger.warning(f"Unable to read ERC report at {output_path}: {exc}")
+                else:
+                    if report_content:
+                        message_text = (
+                            f"{message_text}\n\n{report_content}"
+                            if message_text
+                            else report_content
+                        )
             return {
                 "success": success,
-                "message": (result.stderr or result.stdout or "").strip(),
+                "message": message_text,
                 "stdout": (result.stdout or "").strip(),
                 "reportPath": output_path if output_path else None,
+                "reportContent": report_content,
                 "executable": executable
             }
         except Exception as e:

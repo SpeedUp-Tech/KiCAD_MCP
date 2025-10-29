@@ -150,6 +150,7 @@ def _create_module_harness(module: Dict[str, Any], connections: Dict[str, Set[st
     )
 
     tree.append(sheet_node)
+    tree.extend(_build_no_connect_markers(sheet_node))
     _rebuild_sheet_instances_at_end(tree, root_uuid, {module_id: sheet_uuid})
 
     harness_path = module_dir / "harness.kicad_sch"
@@ -515,6 +516,74 @@ def _build_sheet_pin_entries(connections: Dict[str, Set[str]], x: float, y: floa
         pin_offset += pin_step
 
     return pins
+
+
+def _build_no_connect_markers(sheet_node: List[Any]) -> List[List[Any]]:
+    """Generate no-connect markers aligned with each sheet pin."""
+
+    positions = _extract_sheet_pin_positions(sheet_node)
+    markers: List[List[Any]] = []
+
+    for x, y in positions:
+        markers.append([
+            Symbol("no_connect"),
+            [Symbol("at"), snap_to_grid(x), snap_to_grid(y)],
+            [Symbol("uuid"), Symbol(str(uuid4()))],
+        ])
+
+    return markers
+
+
+def _extract_sheet_pin_positions(sheet_node: List[Any]) -> List[Tuple[float, float]]:
+    """Return the schematic coordinates where each sheet pin connects."""
+
+    sheet_origin: Tuple[float, float] | None = None
+    sheet_size: Tuple[float, float] | None = None
+
+    for entry in sheet_node:
+        if isinstance(entry, list) and entry:
+            if entry[0] == Symbol("at") and len(entry) >= 3:
+                sheet_origin = (float(entry[1]), float(entry[2]))
+            elif entry[0] == Symbol("size") and len(entry) >= 3:
+                sheet_size = (float(entry[1]), float(entry[2]))
+
+    if sheet_origin is None or sheet_size is None:
+        return []
+
+    origin_x, origin_y = sheet_origin
+    width, height = sheet_size
+
+    positions: List[Tuple[float, float]] = []
+
+    for entry in sheet_node:
+        if not (isinstance(entry, list) and entry and entry[0] == Symbol("pin")):
+            continue
+
+        pin_at = None
+        for item in entry:
+            if isinstance(item, list) and item and item[0] == Symbol("at"):
+                pin_at = item
+                break
+
+        if pin_at is None or len(pin_at) < 3:
+            continue
+
+        pin_x = float(pin_at[1])
+        pin_y = float(pin_at[2])
+        orientation = int(pin_at[3]) if len(pin_at) >= 4 else 0
+
+        if orientation == 0:  # Points right, connection on sheet right edge
+            positions.append((origin_x + width, pin_y))
+        elif orientation == 180:  # Points left, connection on left edge
+            positions.append((origin_x, pin_y))
+        elif orientation == 90:  # Points up, connection on top edge
+            positions.append((pin_x, origin_y))
+        elif orientation == 270:  # Points down, connection on bottom edge
+            positions.append((pin_x, origin_y + height))
+        else:
+            positions.append((origin_x + width, pin_y))
+
+    return positions
 
 
 def _add_sheet_symbols_to_tree(tree: List, module_data: Dict[str, Dict[str, Any]]) -> Dict[str, str]:
