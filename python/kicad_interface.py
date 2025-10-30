@@ -775,7 +775,7 @@ class KiCADInterface:
             return {"success": False, "message": str(exc)}
 
     def _handle_run_module_erc(self, params):
-        """Compile a module sheet, build a harness, and run ERC against the harness."""
+        """Run erc test on module level schematic sheet."""
         logger.info("Running module ERC workflow")
         try:
             module_path = params.get("schematicPath")
@@ -1014,19 +1014,68 @@ class KiCADInterface:
         logger.info("Exporting schematic netlist via kicad-cli")
         try:
             schematic_path = params.get("schematicPath")
-            output_path = params.get("outputPath")
+            output_path_param = params.get("outputPath")
             netlist_format = params.get("format")
-            extra_args = params.get("extraArgs", [])
 
             if not schematic_path:
                 return {"success": False, "message": "schematicPath is required"}
-            if not output_path:
-                return {"success": False, "message": "outputPath is required"}
 
-            args = ["sch", "export", "netlist", schematic_path, "--output", output_path]
+            if "extraArgs" in params and params.get("extraArgs"):
+                return {
+                    "success": False,
+                    "message": "extraArgs is not supported for export_schematic_netlist",
+                }
+
+            schematic_path = os.path.abspath(os.path.expanduser(schematic_path))
+            if not os.path.exists(schematic_path):
+                return {
+                    "success": False,
+                    "message": f"Schematic not found: {schematic_path}",
+                }
+
+            schematic_dir = os.path.dirname(schematic_path)
+            raw_filename = os.path.basename(schematic_path)
+            raw_name, raw_ext = os.path.splitext(raw_filename)
+            if not raw_ext:
+                raw_ext = ".kicad_sch"
+
+            compiled_path = os.path.join(schematic_dir, f"{raw_name}_compiled{raw_ext}")
+
+            schematic = SchematicManager.load_schematic(schematic_path)
+            if schematic is None:
+                return {
+                    "success": False,
+                    "message": f"Failed to load schematic: {schematic_path}",
+                }
+
+            try:
+                SchematicCompiler.compile(schematic)
+            except Exception as exc:
+                logger.error(f"Schematic compilation failed: {exc}")
+                return {"success": False, "message": str(exc)}
+
+            compiled_dir = os.path.dirname(compiled_path)
+            if compiled_dir and not os.path.exists(compiled_dir):
+                Path(compiled_dir).mkdir(parents=True, exist_ok=True)
+
+            if not SchematicManager.save_schematic(schematic, compiled_path):
+                return {
+                    "success": False,
+                    "message": f"Failed to save compiled schematic: {compiled_path}",
+                }
+
+            if output_path_param:
+                output_path = os.path.abspath(os.path.expanduser(output_path_param))
+            else:
+                output_path = os.path.join(schematic_dir, f"{raw_name}.net")
+
+            output_dir = os.path.dirname(output_path)
+            if output_dir and not os.path.exists(output_dir):
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+            args = ["sch", "export", "netlist", compiled_path, "--output", output_path]
             if netlist_format:
                 args.extend(["--format", netlist_format])
-            args.extend(extra_args)
 
             try:
                 result, executable = _run_kicad_cli(args)
@@ -1040,7 +1089,7 @@ class KiCADInterface:
                 "message": result.stderr.strip() if result.stderr else "",
                 "stdout": result.stdout.strip(),
                 "outputPath": output_path if success else None,
-                "executable": executable
+                "executable": executable,
             }
         except Exception as e:
             logger.error(f"Error exporting schematic netlist: {str(e)}")
