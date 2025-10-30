@@ -119,7 +119,7 @@ try:
     from commands.export import ExportCommands
     from commands.schematic import SchematicManager
     from commands.component_schematic import ComponentManager
-    from commands.connection_schematic import ConnectionManager
+    from commands.connection_schematic import ConnectionManager, SchematicCompiler
     from commands.library_schematic import LibraryManager
     from commands.footprint import FootprintManager
     from commands.blueprint_to_hierarchical import generate_hierarchical_schematic
@@ -257,6 +257,7 @@ class KiCADInterface:
             "add_schematic_wire": self._handle_add_schematic_wire,
             "remove_schematic_connection": self._handle_remove_schematic_connection,
             "connect_schematic_pins": self._handle_connect_schematic_pins,
+            "compile_schematic": self._handle_compile_schematic,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
             "export_schematic_svg": self._handle_export_schematic_svg,
@@ -717,6 +718,58 @@ class KiCADInterface:
         except Exception as e:
             logger.error(f"Error connecting schematic pins: {str(e)}")
             return {"success": False, "message": str(e)}
+
+    def _handle_compile_schematic(self, params):
+        """Compile a schematic by materializing unlabeled nets into explicit net labels."""
+        logger.info("Compiling schematic nets into explicit labels")
+        try:
+            schematic_path = params.get("schematicPath")
+            output_path = params.get("outputPath")
+
+            if not schematic_path:
+                return {"success": False, "message": "Schematic path is required"}
+
+            schematic = SchematicManager.load_schematic(schematic_path)
+            if not schematic:
+                return {"success": False, "message": "Failed to load schematic"}
+
+            try:
+                compile_result = SchematicCompiler.compile(schematic)
+            except Exception as exc:
+                logger.error(f"Schematic compilation failed: {exc}")
+                return {"success": False, "message": str(exc)}
+
+            if output_path:
+                output_path = os.path.abspath(output_path)
+            else:
+                directory, filename = os.path.split(schematic_path)
+                base, ext = os.path.splitext(filename)
+                if not ext:
+                    ext = ".kicad_sch"
+                compiled_name = f"{base}_compiled{ext}"
+                output_path = os.path.join(directory, compiled_name)
+
+            output_dir = os.path.dirname(output_path)
+            if output_dir and not os.path.exists(output_dir):
+                os.makedirs(output_dir, exist_ok=True)
+
+            if not SchematicManager.save_schematic(schematic, output_path):
+                return {"success": False, "message": "Failed to save compiled schematic"}
+
+            labels_added = compile_result.get("labelsAdded", [])
+            response = {
+                "success": True,
+                "sourcePath": schematic_path,
+                "outputPath": output_path,
+                "labelsAdded": labels_added,
+                "generatedLabelCount": compile_result.get("generatedLabelCount", len(labels_added)),
+                "totalNets": compile_result.get("totalNets", 0),
+                "skippedExistingLabels": compile_result.get("skippedExistingLabels", 0),
+            }
+            return response
+        except Exception as exc:
+            logger.error(f"Error compiling schematic: {exc}")
+            return {"success": False, "message": str(exc)}
 
     def _handle_list_schematic_libraries(self, params):
         """List available symbol libraries"""

@@ -35,6 +35,10 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/commands/connection_schematic.py",
         ("ConnectionManager", "connect_pins"),
     ),
+    "compile_schematic": (
+        "python/commands/connection_schematic.py",
+        ("SchematicCompiler", "compile"),
+    ),
     "list_schematic_libraries": (
         "python/commands/library_schematic.py",
         ("LibraryManager", "list_available_libraries"),

@@ -3,6 +3,9 @@ from __future__ import annotations
 import logging
 import uuid
 import math
+from collections import defaultdict
+from datetime import datetime
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union, cast
 import heapq
@@ -15,8 +18,9 @@ from sexpdata import Symbol as SSymbol
 from skip.eeschema.wire import WireWrapper
 from skip.sexp.parser import ParsedValue
 from skip.eeschema.schematic.symbol import Symbol, SymbolPin
+from skip.sexp.util import writeTree
 
-from .grid_utils import snap_point_to_grid
+from .grid_utils import snap_point_to_grid, round_to_grid
 
 logger = logging.getLogger('kicad_interface')
 
@@ -216,31 +220,29 @@ def _format_pin_with_type(reference: str, pin_number: str, pin_type: str) -> str
     return f"{reference}.{pin_number}({pin_type})"
 
 
-def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]) -> Dict[str, Any]:
+def _collect_net_context(schematic: Schematic) -> Dict[str, Any]:
     """
-    Build net information by analyzing what's connected at the given wire points.
+    Build reusable connectivity indexes for a schematic.
 
-    Returns a dict with:
-    - net: Net identifier (e.g., "Net-5", "GND", "VBAT")
-    - netConnections: List of connected power/labels/pins (e.g., ["GND", "IO_LBL", "R1.1(passive)"])
+    Returns a dictionary containing:
+        - pin_locations: {(x, y): [{reference, pin, pinType}]}
+        - label_locations: {(x, y): [{name, type}]}
+        - power_locations: {(x, y): [name, ...]}
+        - wire_points_by_idx: {wire_index: [(x, y), ...]}
+        - all_wire_points: {(x, y): [wire_index, ...]}
+        - wire_to_net: {wire_index: net_id}
+        - point_to_net: {(x, y): net_id}
+        - next_net_id: next unused net identifier
     """
-    from collections import defaultdict
-
-    # Normalise wire points for spatial matching
-    wire_point_set = {_coord_key(x, y) for x, y in wire_points}
-
-    # Build spatial index of all pins
-    pin_locations: Dict[Tuple[float, float], List[Tuple[str, str, str]]] = defaultdict(list)  # (x,y) -> [(ref, pin_num, pin_type)]
-
+    pin_locations: Dict[Tuple[float, float], List[Dict[str, Any]]] = defaultdict(list)
     if hasattr(schematic, 'symbol'):
-        for symbol in schematic.symbol:
+        for symbol in getattr(schematic, 'symbol', []):
             try:
                 reference = getattr(getattr(symbol.property, 'Reference', None), 'value', None)
                 if not reference:
                     continue
 
-                # Skip power symbols - they're handled separately
-                lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '')
+                lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '') or ''
                 if lib_id and 'power' in lib_id.lower():
                     continue
 
@@ -250,67 +252,64 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
                             pin_number, _ = _ensure_pin_metadata(schematic, symbol, pin)
                             if not pin_number:
                                 continue
-
                             pin_type = _get_pin_type(pin)
                             loc = _get_pin_location(pin)
                             if loc is None:
                                 continue
-                            x, y = _coord_key(loc.x, loc.y)
-                            pin_locations[(x, y)].append((reference, pin_number, pin_type))
-                        except Exception as e:
-                            logger.warning(f"Error extracting pin: {e}")
+                            coord = _coord_key(loc.x, loc.y)
+                            pin_locations[coord].append({
+                                "reference": reference,
+                                "pin": pin_number,
+                                "pinType": pin_type,
+                            })
+                        except Exception as exc:
+                            logger.debug("Skipping pin while building net context: %s", exc)
                             continue
-            except Exception as e:
-                logger.warning(f"Error processing symbol: {e}")
+            except Exception as exc:
+                logger.debug("Skipping symbol while building net context: %s", exc)
                 continue
 
-    # Build spatial index of all wire points and group into nets
+    wire_points_by_idx: Dict[int, List[Tuple[float, float]]] = {}
     all_wire_points: Dict[Tuple[float, float], List[int]] = defaultdict(list)
-
     if hasattr(schematic, 'wire'):
-        for wire_idx, wire in enumerate(schematic.wire):
+        for wire_idx, wire in enumerate(getattr(schematic, 'wire', [])):
+            points: List[Tuple[float, float]] = []
             try:
                 if hasattr(wire, 'points'):
-                    points = wire.points
-                    if len(points) >= 2:
-                        for point in points:
-                            if hasattr(point, 'value'):
-                                coords = point.value
-                                if len(coords) >= 2:
-                                    x, y = _coord_key(coords[0], coords[1])
-                                    all_wire_points[(x, y)].append(wire_idx)
-            except Exception as e:
-                logger.warning(f"Error analyzing wire: {e}")
-                continue
+                    for point in getattr(wire, 'points', []):
+                        if hasattr(point, 'value'):
+                            coords = point.value
+                            if len(coords) >= 2:
+                                key = _coord_key(coords[0], coords[1])
+                                points.append(key)
+                                all_wire_points[key].append(wire_idx)
+            except Exception as exc:
+                logger.debug("Skipping wire while building net context: %s", exc)
+            wire_points_by_idx[wire_idx] = points
 
-    # Collect hierarchical/global/local labels keyed by coordinate
-    label_locations: Dict[Tuple[float, float], List[str]] = defaultdict(list)
+    label_locations: Dict[Tuple[float, float], List[Dict[str, Any]]] = defaultdict(list)
     try:
         if hasattr(schematic, 'tree'):
             for elem in getattr(schematic, 'tree', []):
                 if not isinstance(elem, list) or len(elem) < 2:
                     continue
-
-                head = elem[0]
                 try:
-                    if hasattr(head, 'value'):
-                        head_val = head.value() if callable(head.value) else head.value
-                    else:
-                        head_val = str(head)
+                    head = elem[0]
+                    head_val = head.value() if hasattr(head, 'value') else str(head)
                 except Exception:
-                    head_val = str(head)
+                    head_val = str(elem[0])
 
                 if head_val not in {'hierarchical_label', 'global_label', 'label'}:
                     continue
 
                 try:
-                    label_name = str(elem[1]).strip()
+                    name = str(elem[1]).strip()
                 except Exception:
                     continue
-                if not label_name:
+                if not name:
                     continue
 
-                position_found = False
+                at_node = None
                 for sub in elem:
                     if isinstance(sub, list) and len(sub) >= 3:
                         try:
@@ -318,22 +317,26 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
                         except Exception:
                             tag = str(sub[0])
                         if tag == 'at':
-                            try:
-                                x_val = float(sub[1])
-                                y_val = float(sub[2])
-                            except (TypeError, ValueError):
-                                break
-                            coord = _coord_key(x_val, y_val)
-                            if label_name not in label_locations[coord]:
-                                label_locations[coord].append(label_name)
-                            position_found = True
+                            at_node = sub
                             break
-                if not position_found:
-                    logger.debug("Label '%s' found without coordinates; ignoring", label_name)
-    except Exception as exc:
-        logger.warning("Error while indexing schematic labels: %s", exc)
 
-    # Collect power symbols (from power libraries) keyed by coordinate
+                if at_node is None:
+                    continue
+
+                try:
+                    x_val = float(at_node[1])
+                    y_val = float(at_node[2])
+                except (TypeError, ValueError):
+                    continue
+
+                coord = _coord_key(x_val, y_val)
+                label_locations[coord].append({
+                    "name": name,
+                    "type": head_val,
+                })
+    except Exception as exc:
+        logger.warning("Error while indexing schematic labels for net context: %s", exc)
+
     power_locations: Dict[Tuple[float, float], List[str]] = defaultdict(list)
     try:
         if hasattr(schematic, 'symbol'):
@@ -359,22 +362,18 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
                         coord = _coord_key(x_val, y_val)
                         if power_name not in power_locations[coord]:
                             power_locations[coord].append(power_name)
-                except Exception as inner_exc:
-                    logger.debug("Skipping power symbol due to error: %s", inner_exc)
+                except Exception as exc:
+                    logger.debug("Skipping power symbol while building net context: %s", exc)
+                    continue
     except Exception as exc:
-        logger.warning("Error while indexing power symbols: %s", exc)
+        logger.warning("Error while indexing power symbols for net context: %s", exc)
 
-    # Build wire-to-net mapping
     wire_to_net: Dict[int, int] = {}
     net_counter = 0
 
     for point, wire_indices in all_wire_points.items():
         if len(wire_indices) > 1:
-            existing_nets = set()
-            for wire_idx in wire_indices:
-                if wire_idx in wire_to_net:
-                    existing_nets.add(wire_to_net[wire_idx])
-
+            existing_nets = {wire_to_net[w] for w in wire_indices if w in wire_to_net}
             if existing_nets:
                 net_id = min(existing_nets)
                 for wire_idx in wire_indices:
@@ -392,51 +391,83 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
                 wire_to_net[wire_idx] = net_counter
                 net_counter += 1
 
-    # Map points to nets
     point_to_net: Dict[Tuple[float, float], int] = {}
     for point, wire_indices in all_wire_points.items():
         if wire_indices:
-            point_to_net[point] = wire_to_net.get(wire_indices[0], wire_indices[0])
+            net_id = wire_to_net.get(wire_indices[0])
+            if net_id is not None:
+                point_to_net[point] = net_id
 
-    # Find which net our wire points belong to
-    net_id = None
+    return {
+        "pin_locations": pin_locations,
+        "label_locations": label_locations,
+        "power_locations": power_locations,
+        "wire_points_by_idx": wire_points_by_idx,
+        "all_wire_points": dict(all_wire_points),
+        "wire_to_net": wire_to_net,
+        "point_to_net": point_to_net,
+        "next_net_id": net_counter,
+    }
+
+
+def _build_net_info_from_context(
+    schematic: Schematic,
+    wire_points: List[Tuple[float, float]],
+    context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Build net information using a precomputed connectivity context."""
+    wire_point_set = {_coord_key(x, y) for x, y in wire_points}
+
+    point_to_net: Dict[Tuple[float, float], int] = context.get("point_to_net", {})
+    net_id: Optional[int] = None
     for point in wire_point_set:
         if point in point_to_net:
             net_id = point_to_net[point]
             break
 
     if net_id is None:
-        # New net
-        net_id = net_counter
+        net_id = context.get("next_net_id", 0)
 
-    # Collect all pins on this net
     connected_pins: List[str] = []
     representative_pin: Optional[Tuple[str, str]] = None
-    for point, pins in pin_locations.items():
-        if point in point_to_net and point_to_net[point] == net_id:
-            for reference, pin_number, pin_type in pins:
-                formatted = _format_pin_with_type(reference, pin_number, pin_type)
-                if formatted not in connected_pins:
-                    connected_pins.append(formatted)
-                if representative_pin is None:
-                    representative_pin = (reference, pin_number)
+    pin_locations: Dict[Tuple[float, float], List[Dict[str, Any]]] = context.get("pin_locations", {})
 
-    # Check for labels and power symbols on this net
+    for point, pins in pin_locations.items():
+        same_net = point_to_net.get(point) == net_id or point in wire_point_set
+        if not same_net:
+            continue
+        for pin_data in pins:
+            formatted = _format_pin_with_type(
+                pin_data["reference"],
+                pin_data["pin"],
+                pin_data["pinType"],
+            )
+            if formatted not in connected_pins:
+                connected_pins.append(formatted)
+            if representative_pin is None:
+                representative_pin = (pin_data["reference"], pin_data["pin"])
+
     connected_labels: List[str] = []
+    label_locations: Dict[Tuple[float, float], List[Dict[str, Any]]] = context.get("label_locations", {})
     for point, labels in label_locations.items():
-        if point in point_to_net and point_to_net[point] == net_id:
-            for label in labels:
-                if label not in connected_labels:
-                    connected_labels.append(label)
+        same_net = point_to_net.get(point) == net_id or point in wire_point_set
+        if not same_net:
+            continue
+        for label in labels:
+            name = label.get("name")
+            if name and name not in connected_labels:
+                connected_labels.append(name)
 
     connected_power: List[str] = []
+    power_locations: Dict[Tuple[float, float], List[str]] = context.get("power_locations", {})
     for point, powers in power_locations.items():
-        if point in point_to_net and point_to_net[point] == net_id:
-            for power_name in powers:
-                if power_name not in connected_power:
-                    connected_power.append(power_name)
+        same_net = point_to_net.get(point) == net_id or point in wire_point_set
+        if not same_net:
+            continue
+        for power_name in powers:
+            if power_name not in connected_power:
+                connected_power.append(power_name)
 
-    # Determine net name
     if connected_power:
         net_name = connected_power[0]
     elif connected_labels:
@@ -449,8 +480,24 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
 
     return {
         "net": net_name,
-        "netConnections": connected_power + connected_labels + connected_pins
+        "netConnections": connected_power + connected_labels + connected_pins,
+        "connectedPower": connected_power,
+        "connectedLabels": connected_labels,
+        "connectedPins": connected_pins,
+        "netId": net_id,
     }
+
+
+def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]) -> Dict[str, Any]:
+    """
+    Build net information by analyzing what's connected at the given wire points.
+
+    Returns a dict with:
+    - net: Net identifier (e.g., "Net-5", "GND", "VBAT")
+    - netConnections: List of connected power/labels/pins (e.g., ["GND", "IO_LBL", "R1.1(passive)"])
+    """
+    context = _collect_net_context(schematic)
+    return _build_net_info_from_context(schematic, wire_points, context)
 
 
 def _find_wire_by_uuid(schematic: Schematic, wire_uuid: str) -> Optional[WireWrapper]:
@@ -1106,6 +1153,139 @@ def _refresh_wire_collection(schematic: Schematic) -> None:
             pass
     except Exception as exc:
         logger.warning("Failed to refresh wire collection: %s", exc)
+
+
+
+
+def _make_net_label_node(name: str, x: float, y: float) -> List[Any]:
+    """Create a local net label node anchored at the provided coordinate."""
+    snapped_x, snapped_y = snap_point_to_grid(float(x), float(y))
+    rounded_x = round_to_grid(snapped_x)
+    rounded_y = round_to_grid(snapped_y)
+
+    effects_node: List[Any] = [
+        SSymbol('effects'),
+        [SSymbol('font'), [SSymbol('size'), 1.27, 1.27]],
+        [SSymbol('justify'), SSymbol('left'), SSymbol('bottom')],
+    ]
+
+    return [
+        SSymbol('label'),
+        name,
+        [SSymbol('at'), rounded_x, rounded_y, 0],
+        [SSymbol('fields_autoplaced')],
+        effects_node,
+        [SSymbol('uuid'), str(uuid.uuid4())],
+    ]
+
+
+def _append_label_node(schematic: Schematic, node: List[Any]) -> None:
+    """Append a label node to the schematic and update cached wrappers."""
+    schematic.tree.append(node)
+    try:
+        node_index = len(schematic.tree) - 1
+        parsed_label = ParsedValue(schematic.tree, node, [node_index], schematic)
+        label_wrapper = schematic.wrap(parsed_label)
+        if hasattr(schematic, 'label'):
+            try:
+                schematic.label.append(label_wrapper)
+            except Exception:
+                _refresh_label_collection(schematic)
+    except Exception as exc:
+        logger.debug("Unable to append label wrapper directly: %s", exc)
+        _refresh_label_collection(schematic)
+
+
+def _refresh_label_collection(schematic: Schematic) -> None:
+    """Rebuild schematic.label wrappers to keep indices valid after edits."""
+    try:
+        if not hasattr(schematic, 'label'):
+            return
+
+        label_nodes: List[Any] = []
+        for index, node in enumerate(getattr(schematic, 'tree', [])):
+            if _is_entry(node, 'label'):
+                parsed = ParsedValue(schematic.tree, node, [index], schematic)
+                label_nodes.append(schematic.wrap(parsed))
+
+        try:
+            schematic.label._elements = label_nodes  # type: ignore[attr-defined]
+        except Exception:
+            try:
+                schematic.label.clear()
+                schematic.label.extend(label_nodes)
+            except Exception:
+                logger.debug("Unable to refresh schematic.label collection directly")
+    except Exception as exc:
+        logger.warning("Failed to refresh label collection: %s", exc)
+
+
+class SchematicCompiler:
+    """Utilities for materialising schematic nets into explicit labels."""
+
+    @staticmethod
+    def compile(schematic: Schematic) -> Dict[str, Any]:
+        """
+        Compile a schematic by attaching labels to unlabeled wire nets.
+
+        Args:
+            schematic: The schematic object to update in-memory.
+
+        Returns:
+            Dict[str, Any]: Summary of compilation results, including the labels
+            created and the total number of nets that were analysed.
+        """
+        context = _collect_net_context(schematic)
+        point_to_net: Dict[Tuple[float, float], int] = context.get("point_to_net", {})
+
+        nets: Dict[int, Dict[str, Any]] = {}
+        for point, net_id in point_to_net.items():
+            record = nets.setdefault(net_id, {"points": set()})
+            record["points"].add(point)
+
+        if not nets:
+            return {
+                "labelsAdded": [],
+                "totalNets": 0,
+                "generatedLabelCount": 0,
+                "skippedExistingLabels": 0,
+            }
+
+        created_labels: List[Dict[str, Any]] = []
+        for net_id in sorted(nets.keys()):
+            raw_points = nets[net_id]["points"]
+            if not raw_points:
+                continue
+            net_points = sorted(raw_points)
+            net_info = _build_net_info_from_context(schematic, net_points, context)
+
+            connected_labels = net_info.get("connectedLabels", [])
+            connected_power = net_info.get("connectedPower", [])
+            if connected_labels or connected_power:
+                continue
+
+            net_name = net_info["net"]
+            anchor_x, anchor_y = net_points[0]
+
+            label_node = _make_net_label_node(net_name, anchor_x, anchor_y)
+            _append_label_node(schematic, label_node)
+
+            created_labels.append({
+                "net": net_name,
+                "position": {"x": anchor_x, "y": anchor_y},
+                "connections": net_info.get("netConnections", []),
+                "netId": net_info.get("netId", net_id),
+            })
+
+        if created_labels:
+            _refresh_label_collection(schematic)
+
+        return {
+            "labelsAdded": created_labels,
+            "totalNets": len(nets),
+            "generatedLabelCount": len(created_labels),
+            "skippedExistingLabels": len(nets) - len(created_labels),
+        }
 
 
 def _atom_to_str(atom: Any) -> str:

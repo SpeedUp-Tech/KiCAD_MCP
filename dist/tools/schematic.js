@@ -206,6 +206,16 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
+    server.tool('compile_schematic', toolDescription('compile_schematic'), withSessionParams({
+        schematicPath: z.string().describe('Path to the schematic file to compile'),
+        outputPath: z.string().optional().describe('Optional destination path for the compiled schematic'),
+    }), async ({ schematicPath, outputPath }) => {
+        const result = await callKicadScript('compile_schematic', {
+            schematicPath,
+            outputPath,
+        });
+        return formatToolResult(result);
+    });
     server.tool('list_schematic_libraries', toolDescription('list_schematic_libraries'), withSessionParams({
         searchPaths: z.array(z.string()).optional().describe('Optional glob patterns or directories to search'),
     }), async ({ searchPaths }) => {
