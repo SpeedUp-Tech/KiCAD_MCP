@@ -14,6 +14,7 @@ import logging
 import os
 import subprocess
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 from datetime import datetime, timezone
@@ -124,6 +125,7 @@ try:
     from commands.footprint import FootprintManager
     from commands.blueprint_to_hierarchical import generate_hierarchical_schematic
     from commands.schematic_state import get_schematic_state
+    from commands.erc_utils import prepare_module_erc_artifacts
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -257,6 +259,7 @@ class KiCADInterface:
             "add_schematic_wire": self._handle_add_schematic_wire,
             "remove_schematic_connection": self._handle_remove_schematic_connection,
             "connect_schematic_pins": self._handle_connect_schematic_pins,
+            "run_module_erc": self._handle_run_module_erc,
             "compile_schematic": self._handle_compile_schematic,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
@@ -769,6 +772,85 @@ class KiCADInterface:
             return response
         except Exception as exc:
             logger.error(f"Error compiling schematic: {exc}")
+            return {"success": False, "message": str(exc)}
+
+    def _handle_run_module_erc(self, params):
+        """Compile a module sheet, build a harness, and run ERC against the harness."""
+        logger.info("Running module ERC workflow")
+        try:
+            module_path = params.get("schematicPath")
+            if not module_path:
+                return {"success": False, "message": "schematicPath is required"}
+
+            module_path = os.path.abspath(os.path.expanduser(module_path))
+            if not os.path.exists(module_path):
+                return {"success": False, "message": f"Module schematic not found: {module_path}"}
+
+            report_path_param = params.get("reportPath")
+            if "extraArgs" in params and params.get("extraArgs"):
+                return {
+                    "success": False,
+                    "message": "extraArgs is not supported for module ERC",
+                }
+
+            with tempfile.TemporaryDirectory(prefix="module_erc_") as temp_dir:
+                try:
+                    artifacts = prepare_module_erc_artifacts(module_path, temp_dir)
+                except Exception as exc:
+                    logger.error(f"Failed to prepare module ERC artifacts: {exc}")
+                    return {"success": False, "message": str(exc)}
+
+                harness_path = artifacts["harnessPath"]
+                compiled_path = artifacts["compiledPath"]
+
+                args = ["sch", "erc", harness_path]
+
+                report_path_abs = None
+                if report_path_param:
+                    report_path_abs = os.path.abspath(os.path.expanduser(report_path_param))
+                    report_dir = os.path.dirname(report_path_abs)
+                    if report_dir:
+                        Path(report_dir).mkdir(parents=True, exist_ok=True)
+                    args.extend(["--output", report_path_abs])
+
+                try:
+                    result, executable = _run_kicad_cli(args)
+                except FileNotFoundError as exc:
+                    logger.error(str(exc))
+                    return {"success": False, "message": str(exc)}
+
+                success = result.returncode == 0
+                message_text = (result.stderr or result.stdout or "").strip()
+
+                report_content = None
+                if report_path_abs and os.path.exists(report_path_abs):
+                    try:
+                        report_content = Path(report_path_abs).read_text(
+                            encoding="utf-8", errors="replace"
+                        ).strip()
+                    except OSError as exc:
+                        logger.warning(f"Unable to read ERC report at {report_path_abs}: {exc}")
+                    else:
+                        if report_content:
+                            message_text = (
+                                f"{message_text}\n\n{report_content}"
+                                if message_text
+                                else report_content
+                            )
+
+                target_dir_abs = os.path.dirname(module_path)
+                shutil.copyfile(compiled_path, Path(target_dir_abs) / Path(compiled_path).name)
+                shutil.copyfile(harness_path, Path(target_dir_abs) / Path(harness_path).name)
+
+                return {
+                    "success": success,
+                    "message": message_text,
+                    "stdout": (result.stdout or "").strip(),
+                    "reportPath": report_path_abs,
+                    "reportContent": report_content,
+                }
+        except Exception as exc:
+            logger.error(f"Error running module ERC: {exc}")
             return {"success": False, "message": str(exc)}
 
     def _handle_list_schematic_libraries(self, params):

@@ -3,24 +3,22 @@
 Blueprint to Hierarchical KiCAD Schematic Generator
 
 This module generates a KiCad project folder from a blueprint JSON file using a
-hierarchical sheet layout. The generated structure now follows the convention:
+streamlined hierarchical layout. The generated structure now follows the convention:
 
 output/
 └─ kicad/
-   ├─ top.kicad_sch                   (references modules/*/sheet.kicad_sch)
+   ├─ top.kicad_sch                 (references modules/{module_id}.kicad_sch)
    ├─ modules/
-   │  └─ {module_id}/
-   │     ├─ sheet.kicad_sch           (module logic with hierarchical labels)
-   │     └─ harness.kicad_sch         (local parent referencing ./sheet.kicad_sch)
+   │  └─ {module_id}.kicad_sch      (module logic with hierarchical labels)
    ├─ erc/
    └─ export/
 
 Key principles:
-1. Use SchematicManager for creating/saving schematics
-2. Modules expose interfaces via hierarchical labels (no global labels inside the sheet)
-3. The harness acts as a lightweight parent so module-level ERC can run standalone
-4. Maintain correct element ordering: sheet_instances MUST be the final entry
-5. Maintain correct path format: /root_uuid/sheet_uuid (not just /sheet_uuid)
+1. Use SchematicManager for creating/saving schematics.
+2. Modules expose interfaces via hierarchical labels (no global labels inside the sheet).
+3. The top schematic directly references module sheets; no harnesses are generated.
+4. Maintain correct element ordering: sheet_instances MUST be the final entry.
+5. Maintain correct path format: /root_uuid/sheet_uuid (not just /sheet_uuid).
 """
 
 import json
@@ -68,18 +66,13 @@ def generate_hierarchical_schematic(blueprint_path: str, output_dir: str) -> Dic
         module_id = module["module_id"]
         connections = module_connections[module_id]
 
-        module_dir = modules_dir / module_id
-        module_dir.mkdir(parents=True, exist_ok=True)
-
-        sheet_path = _create_module_sheet(module, connections, module_dir)
-        harness_path = _create_module_harness(module, connections, module_dir)
+        sheet_path = _create_module_sheet(module, connections, modules_dir)
 
         module_records[module_id] = {
             "module": module,
             "connections": connections,
             "sheet_path": sheet_path,
-            "sheet_relpath": (Path("modules") / module_id / "sheet.kicad_sch").as_posix(),
-            "harness_path": harness_path,
+            "sheet_relpath": (Path("modules") / f"{module_id}.kicad_sch").as_posix(),
         }
 
     top_path = _create_top_schematic(kicad_dir, module_records)
@@ -89,12 +82,11 @@ def generate_hierarchical_schematic(blueprint_path: str, output_dir: str) -> Dic
     return {
         "top_schematic": str(top_path),
         "module_sheets": {module_id: str(record["sheet_path"]) for module_id, record in module_records.items()},
-        "module_harnesses": {module_id: str(record["harness_path"]) for module_id, record in module_records.items()},
         "output_dir": str(output_path),
     }
 
 
-def _create_module_sheet(module: Dict[str, Any], connections: Dict[str, Set[str]], module_dir: Path) -> Path:
+def _create_module_sheet(module: Dict[str, Any], connections: Dict[str, Set[str]], modules_dir: Path) -> Path:
     """Build the module sheet using hierarchical labels and save it."""
 
     module_id = module["module_id"]
@@ -115,49 +107,11 @@ def _create_module_sheet(module: Dict[str, Any], connections: Dict[str, Set[str]
     _add_hierarchical_labels_to_tree(tree, connections)
     _remove_sheet_instances(tree)
 
-    sheet_path = module_dir / "sheet.kicad_sch"
+    sheet_path = modules_dir / f"{module_id}.kicad_sch"
     SchematicManager.save_schematic(schematic, str(sheet_path))
 
     logger.info("Created module sheet: %s", sheet_path)
     return sheet_path
-
-
-def _create_module_harness(module: Dict[str, Any], connections: Dict[str, Set[str]], module_dir: Path) -> Path:
-    """Create the harness schematic referencing the module sheet locally."""
-
-    module_id = module["module_id"]
-
-    harness = SchematicManager.create_schematic(
-        f"{module_id}_Harness",
-        metadata={
-            "title": f"{module_id} Harness",
-            "description": module.get("function", ""),
-        },
-    )
-
-    if not isinstance(harness.tree, list):
-        raise RuntimeError(f"Harness schematic tree is not a list for module {module_id}")
-
-    tree = harness.tree
-    root_uuid = _get_root_uuid(tree)
-
-    sheet_node, sheet_uuid = _create_sheet_symbol(
-        module_id=module_id,
-        sheet_relpath="./sheet.kicad_sch",
-        connections=connections,
-        origin_x=40.0,
-        origin_y=40.0,
-    )
-
-    tree.append(sheet_node)
-    tree.extend(_build_no_connect_markers(sheet_node))
-    _rebuild_sheet_instances_at_end(tree, root_uuid, {module_id: sheet_uuid})
-
-    harness_path = module_dir / "harness.kicad_sch"
-    SchematicManager.save_schematic(harness, str(harness_path))
-
-    logger.info("Created module harness: %s", harness_path)
-    return harness_path
 
 
 def _create_top_schematic(kicad_dir: Path, module_records: Dict[str, Dict[str, Any]]) -> Path:
@@ -516,74 +470,6 @@ def _build_sheet_pin_entries(connections: Dict[str, Set[str]], x: float, y: floa
         pin_offset += pin_step
 
     return pins
-
-
-def _build_no_connect_markers(sheet_node: List[Any]) -> List[List[Any]]:
-    """Generate no-connect markers aligned with each sheet pin."""
-
-    positions = _extract_sheet_pin_positions(sheet_node)
-    markers: List[List[Any]] = []
-
-    for x, y in positions:
-        markers.append([
-            Symbol("no_connect"),
-            [Symbol("at"), snap_to_grid(x), snap_to_grid(y)],
-            [Symbol("uuid"), Symbol(str(uuid4()))],
-        ])
-
-    return markers
-
-
-def _extract_sheet_pin_positions(sheet_node: List[Any]) -> List[Tuple[float, float]]:
-    """Return the schematic coordinates where each sheet pin connects."""
-
-    sheet_origin: Tuple[float, float] | None = None
-    sheet_size: Tuple[float, float] | None = None
-
-    for entry in sheet_node:
-        if isinstance(entry, list) and entry:
-            if entry[0] == Symbol("at") and len(entry) >= 3:
-                sheet_origin = (float(entry[1]), float(entry[2]))
-            elif entry[0] == Symbol("size") and len(entry) >= 3:
-                sheet_size = (float(entry[1]), float(entry[2]))
-
-    if sheet_origin is None or sheet_size is None:
-        return []
-
-    origin_x, origin_y = sheet_origin
-    width, height = sheet_size
-
-    positions: List[Tuple[float, float]] = []
-
-    for entry in sheet_node:
-        if not (isinstance(entry, list) and entry and entry[0] == Symbol("pin")):
-            continue
-
-        pin_at = None
-        for item in entry:
-            if isinstance(item, list) and item and item[0] == Symbol("at"):
-                pin_at = item
-                break
-
-        if pin_at is None or len(pin_at) < 3:
-            continue
-
-        pin_x = float(pin_at[1])
-        pin_y = float(pin_at[2])
-        orientation = int(pin_at[3]) if len(pin_at) >= 4 else 0
-
-        if orientation == 0:  # Points right, connection on sheet right edge
-            positions.append((origin_x + width, pin_y))
-        elif orientation == 180:  # Points left, connection on left edge
-            positions.append((origin_x, pin_y))
-        elif orientation == 90:  # Points up, connection on top edge
-            positions.append((pin_x, origin_y))
-        elif orientation == 270:  # Points down, connection on bottom edge
-            positions.append((pin_x, origin_y + height))
-        else:
-            positions.append((origin_x + width, pin_y))
-
-    return positions
 
 
 def _add_sheet_symbols_to_tree(tree: List, module_data: Dict[str, Dict[str, Any]]) -> Dict[str, str]:

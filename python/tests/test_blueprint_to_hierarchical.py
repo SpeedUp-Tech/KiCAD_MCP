@@ -56,7 +56,6 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         # Verify result structure
         self.assertIn("top_schematic", result)
         self.assertIn("module_sheets", result)
-        self.assertIn("module_harnesses", result)
         self.assertIn("output_dir", result)
 
         output_root = Path(result["output_dir"])
@@ -74,15 +73,12 @@ class TestBlueprintToHierarchical(unittest.TestCase):
             expected_modules = len(json.load(f).get("modules", []))
         self.assertEqual(len(result["module_sheets"]), expected_modules)
         
-        for module_path in result["module_sheets"].values():
-            self.assertTrue(Path(module_path).exists())
-
-        for module_id, harness_path in result["module_harnesses"].items():
-            harness_file = Path(harness_path)
-            self.assertTrue(harness_file.exists())
+        for module_id, module_path in result["module_sheets"].items():
+            module_file = Path(module_path)
+            self.assertTrue(module_file.exists())
             self.assertEqual(
-                harness_file,
-                output_root / "kicad" / "modules" / module_id / "harness.kicad_sch"
+                module_file,
+                output_root / "kicad" / "modules" / f"{module_id}.kicad_sch"
             )
     
     def test_02_generate_from_blueprint_140w(self):
@@ -98,7 +94,6 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         # Verify result structure
         self.assertIn("top_schematic", result)
         self.assertIn("module_sheets", result)
-        self.assertIn("module_harnesses", result)
         self.assertIn("output_dir", result)
         
         # Verify module count
@@ -370,46 +365,63 @@ class TestBlueprintToHierarchical(unittest.TestCase):
                 f"Title should be module_id: {module['module_id']}"
             )
 
-    def test_10_harness_references_local_sheet(self):
-        """Harness sheet should reference the module sheet via a relative path."""
+    def test_10_top_references_module_sheet_relative_path(self):
+        """Top-level sheet should reference module sheets via relative paths."""
 
         test_case = self.test_cases[0]
-        output_dir = self.test_output_dir / f"harness_ref_{uuid4().hex[:8]}"
+        output_dir = self.test_output_dir / f"top_refs_{uuid4().hex[:8]}"
 
         result = generate_hierarchical_schematic(
             test_case["blueprint"],
             str(output_dir)
         )
 
-        first_module_id = next(iter(result["module_harnesses"]))
-        harness_path = Path(result["module_harnesses"][first_module_id])
-        self.assertTrue(harness_path.exists())
+        top_tree = loads(Path(result["top_schematic"]).read_text(encoding="utf-8"))
 
-        harness_tree = loads(harness_path.read_text(encoding="utf-8"))
+        sheet_nodes = [
+            entry for entry in top_tree
+            if isinstance(entry, list) and entry and entry[0] == Symbol("sheet")
+        ]
 
-        sheet_node = next(
-            (entry for entry in harness_tree if isinstance(entry, list) and entry and entry[0] == Symbol("sheet")),
-            None
-        )
+        self.assertGreater(len(sheet_nodes), 0, "Top schematic should contain sheet symbols")
 
-        self.assertIsNotNone(sheet_node, "Harness should contain a sheet symbol")
-        assert sheet_node is not None
+        for sheet_node in sheet_nodes:
+            sheet_name_property = next(
+                (
+                    item for item in sheet_node
+                    if isinstance(item, list)
+                    and item
+                    and item[0] == Symbol("property")
+                    and item[1] == "Sheet name"
+                ),
+                None,
+            )
 
-        sheet_file_property = next(
-            (
-                item for item in sheet_node
-                if isinstance(item, list)
-                and item
-                and item[0] == Symbol("property")
-                and item[1] == "Sheet file"
-            ),
-            None,
-        )
+            sheet_file_property = next(
+                (
+                    item for item in sheet_node
+                    if isinstance(item, list)
+                    and item
+                    and item[0] == Symbol("property")
+                    and item[1] == "Sheet file"
+                ),
+                None,
+            )
 
-        self.assertIsNotNone(sheet_file_property, "Sheet file property missing from harness sheet")
-        assert sheet_file_property is not None
+            self.assertIsNotNone(sheet_name_property, "Sheet name property missing from top sheet")
+            self.assertIsNotNone(sheet_file_property, "Sheet file property missing from top sheet")
 
-        self.assertEqual(str(sheet_file_property[2]), "./sheet.kicad_sch")
+            assert sheet_name_property is not None
+            assert sheet_file_property is not None
+
+            module_id = str(sheet_name_property[2])
+            sheet_relpath = str(sheet_file_property[2])
+
+            self.assertEqual(
+                sheet_relpath,
+                f"modules/{module_id}.kicad_sch",
+                "Top-level sheet should reference module sheet via modules/{module_id}.kicad_sch",
+            )
 
 
 def suite():
