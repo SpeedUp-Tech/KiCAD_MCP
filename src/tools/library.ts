@@ -5,7 +5,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { logger } from '../logger.js';
-import { formatToolResult, withSessionParams } from './shared.js';
+import { formatToolResult } from './shared.js';
 
 type CommandFunction = (
   command: string,
@@ -54,7 +54,7 @@ export function registerLibraryTools(server: McpServer, callKicadScript: Command
 
   server.tool(
     'create_symbol',
-    withSessionParams({
+    {
       libraryPath: z.string().describe('Path to the .kicad_sym library file'),
       symbolName: z.string().describe('Name of the symbol to create'),
       libraryName: z.string().optional().describe('Override symbol library name (defaults to filename)'),
@@ -71,7 +71,7 @@ export function registerLibraryTools(server: McpServer, callKicadScript: Command
       bodyWidth: z.number().optional().describe('Symbol body width in mm'),
       bodyHeight: z.number().optional().describe('Symbol body height in mm'),
       pins: z.array(pinDefinitionSchema).optional().describe('Pin definitions for the symbol'),
-    }),
+    },
     async (params) => {
       const result = await callKicadScript('create_symbol', params);
       return formatToolResult(result);
@@ -80,7 +80,7 @@ export function registerLibraryTools(server: McpServer, callKicadScript: Command
 
   server.tool(
     'create_footprint',
-    withSessionParams({
+    {
       libraryPath: z.string().describe('Directory for the .pretty footprint library'),
       footprintName: z.string().describe('Name of the footprint to create'),
       attributes: z.array(z.string()).optional().describe('Optional attribute flags (smd, through_hole, etc.)'),
@@ -114,7 +114,7 @@ export function registerLibraryTools(server: McpServer, callKicadScript: Command
         .optional()
         .describe('Optional silkscreen/fabrication outline segments'),
       pads: z.array(padDefinitionSchema).describe('Pad definitions for the footprint'),
-    }),
+    },
     async (params) => {
       const result = await callKicadScript('create_footprint', params);
       return formatToolResult(result);

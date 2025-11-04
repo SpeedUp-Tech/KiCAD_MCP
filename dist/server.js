@@ -14,6 +14,7 @@ import { registerDesignRuleTools } from './tools/design-rules.js';
 import { registerExportTools } from './tools/export.js';
 import { registerSchematicTools } from './tools/schematic.js';
 import { registerLibraryTools } from './tools/library.js';
+import { registerComponentSearchTools } from './tools/component-search.js';
 // Prompt registrations
 import { registerComponentPrompts } from './prompts/component.js';
 import { registerRoutingPrompts } from './prompts/routing.js';
@@ -57,6 +58,7 @@ export class KiCADMcpServer {
         registerProjectTools(this.server, callKicad);
         registerBoardTools(this.server, callKicad);
         registerComponentTools(this.server, callKicad);
+        registerComponentSearchTools(this.server, callKicad);
         registerRoutingTools(this.server, callKicad);
         registerDesignRuleTools(this.server, callKicad);
         registerExportTools(this.server, callKicad);

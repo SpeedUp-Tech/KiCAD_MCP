@@ -57,6 +57,7 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         ("KiCADInterface", "_handle_generate_hierarchical_schematic"),
     ),
     "get_schematic_state": ("python/commands/schematic_state.py", ("get_schematic_state",)),
+    "search_mpn_part": ("python/commands/component_search.py", ("ComponentSearchCommands", "search_mpn_part")),
 }
 
 

@@ -3,38 +3,38 @@
  */
 import { z } from 'zod';
 import { logger } from '../logger.js';
-import { formatToolResult, withSessionParams } from './shared.js';
+import { formatToolResult } from './shared.js';
 export function registerProjectTools(server, callKicadScript) {
     logger.info('Registering project management tools');
-    server.tool('create_project', withSessionParams({
+    server.tool('create_project', {
         projectName: z.string().describe('Name of the project'),
         path: z.string().optional().describe('Directory where the project should be created'),
         template: z.string().optional().describe('Optional template project (.kicad_pcb) to copy settings from'),
-    }), async ({ projectName, path, template }) => {
+    }, async ({ projectName, path, template }) => {
         logger.debug('creating project ${projectName}');
         const result = await callKicadScript('create_project', { projectName, path, template });
         return formatToolResult(result);
     });
-    server.tool('open_project', withSessionParams({
+    server.tool('open_project', {
         filename: z.string().describe('Path to the KiCAD project file (.kicad_pro or .kicad_pcb)'),
-    }), async ({ filename }) => {
+    }, async ({ filename }) => {
         logger.debug('opening project ${filename}');
         const result = await callKicadScript('open_project', { filename });
         return formatToolResult(result);
     });
-    server.tool('save_project', withSessionParams({
+    server.tool('save_project', {
         filename: z.string().optional().describe('Optional path to save the project board to'),
-    }), async ({ filename }) => {
+    }, async ({ filename }) => {
         logger.debug('saving project');
         const result = await callKicadScript('save_project', { filename });
         return formatToolResult(result);
     });
-    server.tool('get_project_info', withSessionParams({}), async () => {
+    server.tool('get_project_info', {}, async () => {
         logger.debug('retrieving project info');
         const result = await callKicadScript('get_project_info', {});
         return formatToolResult(result);
     });
-    server.tool('set_project_properties', withSessionParams({
+    server.tool('set_project_properties', {
         title: z.string().optional().describe('Project title'),
         company: z.string().optional().describe('Company name'),
         revision: z.string().optional().describe('Revision identifier'),
@@ -43,23 +43,23 @@ export function registerProjectTools(server, callKicadScript) {
         comment2: z.string().optional().describe('Title block comment 2'),
         comment3: z.string().optional().describe('Title block comment 3'),
         comment4: z.string().optional().describe('Title block comment 4'),
-    }), async ({ ...properties }) => {
+    }, async ({ ...properties }) => {
         logger.debug('setting project properties');
         const result = await callKicadScript('set_project_properties', properties);
         return formatToolResult(result);
     });
-    server.tool('create_backup', withSessionParams({
+    server.tool('create_backup', {
         backupPath: z.string().optional().describe('Directory to place the backup zip archive in'),
-    }), async ({ backupPath }) => {
+    }, async ({ backupPath }) => {
         logger.debug('creating project backup');
         const result = await callKicadScript('create_backup', { backupPath });
         return formatToolResult(result);
     });
-    server.tool('archive_project', withSessionParams({
+    server.tool('archive_project', {
         outputPath: z.string().describe('Path to the archive zip to create'),
         includeLibraries: z.boolean().optional().describe('Include symbol/footprint libraries'),
         include3dModels: z.boolean().optional().describe('Include 3D model files'),
-    }), async ({ outputPath, includeLibraries, include3dModels }) => {
+    }, async ({ outputPath, includeLibraries, include3dModels }) => {
         logger.debug('archiving project to ${outputPath}');
         const result = await callKicadScript('archive_project', {
             outputPath,
@@ -68,11 +68,11 @@ export function registerProjectTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
-    server.tool('import_project', withSessionParams({
+    server.tool('import_project', {
         filename: z.string().describe('Path to the external project file to import'),
         format: z.enum(['eagle', 'altium', 'orcad']).describe('Source CAD format'),
         outputPath: z.string().describe('Directory to place the converted KiCAD project'),
-    }), async ({ filename, format, outputPath }) => {
+    }, async ({ filename, format, outputPath }) => {
         logger.debug('attempting to import ${format} project from ${filename}');
         const result = await callKicadScript('import_project', {
             filename,

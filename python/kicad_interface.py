@@ -125,6 +125,7 @@ try:
     from commands.footprint import FootprintManager
     from commands.blueprint_to_hierarchical import generate_hierarchical_schematic
     from commands.schematic_state import get_schematic_state
+    from commands.component_search import ComponentSearchCommands
     from commands.erc_utils import prepare_module_erc_artifacts
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
@@ -184,6 +185,7 @@ class KiCADInterface:
         self.export_commands = ExportCommands(self.board)
         self.symbol_library = LibraryManager()
         self.footprint_manager = FootprintManager()
+        self.component_search_commands = ComponentSearchCommands()
 
         # Schematic-related classes don't need board reference
         # as they operate directly on schematic files
@@ -222,6 +224,7 @@ class KiCADInterface:
             "place_component_array": self.component_commands.place_component_array,
             "align_components": self.component_commands.align_components,
             "duplicate_component": self.component_commands.duplicate_component,
+            "search_mpn_part": self.component_search_commands.search_mpn_part,
 
             # Routing commands
             "add_net": self.routing_commands.add_net,

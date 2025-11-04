@@ -5,7 +5,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { logger } from '../logger.js';
-import { formatToolResult, withSessionParams } from './shared.js';
+import { formatToolResult } from './shared.js';
 
 type CommandFunction = (
   command: string,
@@ -17,7 +17,7 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
 
   server.tool(
     'set_design_rules',
-    withSessionParams({
+    {
       clearance: z.number().optional().describe('Minimum clearance between copper items (mm)'),
       trackWidth: z.number().optional().describe('Default track width (mm)'),
       viaDiameter: z.number().optional().describe('Default via diameter (mm)'),
@@ -32,7 +32,7 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
       minHoleDiameter: z.number().optional().describe('Minimum hole diameter (mm)'),
       requireCourtyard: z.boolean().optional().describe('Require courtyards for all footprints'),
       courtyardClearance: z.number().optional().describe('Minimum clearance between courtyards (mm)'),
-    }),
+    },
     async ({ ...params }) => {
       const result = await callKicadScript('set_design_rules', params);
       return formatToolResult(result);
@@ -41,7 +41,7 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
 
   server.tool(
     'get_design_rules',
-    withSessionParams({}),
+    {},
     async () => {
       const result = await callKicadScript('get_design_rules', {});
       return formatToolResult(result);
@@ -50,9 +50,9 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
 
   server.tool(
     'run_drc',
-    withSessionParams({
+    {
       reportPath: z.string().optional().describe('Optional path to save the DRC report'),
-    }),
+    },
     async ({ reportPath }) => {
       const result = await callKicadScript('run_drc', { reportPath });
       return formatToolResult(result);
@@ -61,7 +61,7 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
 
   server.tool(
     'add_net_class',
-    withSessionParams({
+    {
       name: z.string().describe('Name of the net class'),
       description: z.string().optional().describe('Optional description'),
       clearance: z.number().describe('Clearance (mm)'),
@@ -73,7 +73,7 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
       diff_pair_width: z.number().optional().describe('Differential pair width (mm)'),
       diff_pair_gap: z.number().optional().describe('Differential pair gap (mm)'),
       nets: z.array(z.string()).optional().describe('Net names to assign'),
-    }),
+    },
     async ({ ...params }) => {
       const result = await callKicadScript('add_net_class', params);
       return formatToolResult(result);
@@ -82,10 +82,10 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
 
   server.tool(
     'assign_net_to_class',
-    withSessionParams({
+    {
       net: z.string().describe('Name of the net'),
       netClass: z.string().describe('Name of the net class'),
-    }),
+    },
     async ({ net, netClass }) => {
       const result = await callKicadScript('assign_net_to_class', { net, netClass });
       return formatToolResult(result);
@@ -94,13 +94,13 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
 
   server.tool(
     'set_layer_constraints',
-    withSessionParams({
+    {
       layer: z.string().describe("Layer name (e.g., 'F.Cu')"),
       minTrackWidth: z.number().optional().describe('Minimum track width for this layer (mm)'),
       minClearance: z.number().optional().describe('Minimum clearance for this layer (mm)'),
       minViaDiameter: z.number().optional().describe('Minimum via diameter (mm)'),
       minViaDrill: z.number().optional().describe('Minimum via drill size (mm)'),
-    }),
+    },
     async ({ layer, minTrackWidth, minClearance, minViaDiameter, minViaDrill }) => {
       const result = await callKicadScript('set_layer_constraints', {
         layer,
@@ -115,10 +115,10 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
 
   server.tool(
     'check_clearance',
-    withSessionParams({
+    {
       point: coordinatePointSchema().describe('Point to test clearance from'),
       layer: z.string().optional().describe('Layer to test on'),
-    }),
+    },
     async ({ point, layer }) => {
       const result = await callKicadScript('check_clearance', { point, layer });
       return formatToolResult(result);
@@ -127,9 +127,9 @@ export function registerDesignRuleTools(server: McpServer, callKicadScript: Comm
 
   server.tool(
     'get_drc_violations',
-    withSessionParams({
+    {
       severity: z.enum(['all', 'error']).optional().describe('Severity filter'),
-    }),
+    },
     async ({ severity }) => {
       const result = await callKicadScript('get_drc_violations', { severity });
       return formatToolResult(result);

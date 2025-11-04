@@ -7,7 +7,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { logger } from '../logger.js';
-import { formatToolResult, withSessionParams } from './shared.js';
+import { formatToolResult } from './shared.js';
 
 type CommandFunction = (
   command: string,
@@ -19,11 +19,11 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
 
   server.tool(
     'set_board_size',
-    withSessionParams({
+    {
       width: z.number().describe('Board width'),
       height: z.number().describe('Board height'),
       unit: z.enum(['mm', 'inch']).describe('Unit of measurement'),
-    }),
+    },
     async ({ width, height, unit }) => {
       logger.debug('set board size ${width}x${height} ${unit}');
       const result = await callKicadScript('set_board_size', { width, height, unit });
@@ -33,12 +33,12 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
 
   server.tool(
     'add_layer',
-    withSessionParams({
+    {
       name: z.string().describe('Layer name'),
       type: z.enum(['copper', 'technical', 'user', 'signal']).describe('Layer type'),
       position: z.enum(['top', 'bottom', 'inner']).describe('Layer position'),
       number: z.number().optional().describe('Layer number (for inner layers)'),
-    }),
+    },
     async ({ name, type, position, number }) => {
       logger.debug('add ${type} layer ${name}');
       const result = await callKicadScript('add_layer', { name, type, position, number });
@@ -48,9 +48,9 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
 
   server.tool(
     'set_active_layer',
-    withSessionParams({
+    {
       layer: z.string().describe('Layer name to set as active'),
-    }),
+    },
     async ({ layer }) => {
       logger.debug('set active layer ${layer}');
       const result = await callKicadScript('set_active_layer', { layer });
@@ -60,7 +60,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
 
   server.tool(
     'get_board_info',
-    withSessionParams({}),
+    {},
     async () => {
       logger.debug('get board info');
       const result = await callKicadScript('get_board_info', {});
@@ -70,7 +70,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
 
   server.tool(
     'get_layer_list',
-    withSessionParams({}),
+    {},
     async () => {
       logger.debug('get layer list');
       const result = await callKicadScript('get_layer_list', {});
@@ -80,7 +80,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
 
   server.tool(
     'add_board_outline',
-    withSessionParams({
+    {
       shape: z
         .enum(['rectangle', 'circle', 'polygon', 'rounded_rectangle'])
         .describe('Shape of the outline'),
@@ -104,7 +104,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
           unit: z.enum(['mm', 'inch']).optional().describe('Measurement unit'),
         })
         .describe('Outline parameters'),
-    }),
+    },
     async ({ shape, params }) => {
       logger.debug('add board outline ${shape}');
       const result = await callKicadScript('add_board_outline', { shape, params });
@@ -114,7 +114,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
 
   server.tool(
     'add_mounting_hole',
-    withSessionParams({
+    {
       position: z
         .object({
           x: z.number(),
@@ -124,7 +124,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
         .describe('Hole position'),
       diameter: z.number().describe('Hole diameter'),
       padDiameter: z.number().optional().describe('Optional pad diameter'),
-    }),
+    },
     async ({ position, diameter, padDiameter }) => {
       logger.debug('add mounting hole at ${position.x},${position.y}');
       const result = await callKicadScript('add_mounting_hole', {
@@ -138,7 +138,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
 
   server.tool(
     'add_board_text',
-    withSessionParams({
+    {
       text: z.string().describe('Text content'),
       position: z
         .object({
@@ -152,7 +152,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
       thickness: z.number().optional().describe('Line thickness'),
       rotation: z.number().optional().describe('Rotation angle'),
       style: z.enum(['normal', 'italic', 'bold']).optional().describe('Text style'),
-    }),
+    },
     async ({ text, position, layer, size, thickness, rotation, style }) => {
       logger.debug('add board text "${text}"');
       const result = await callKicadScript('add_board_text', {
@@ -170,7 +170,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
 
   server.tool(
     'add_zone',
-    withSessionParams({
+    {
       layer: z.string().describe('Layer for the zone'),
       net: z.string().optional().describe('Net name'),
       points: z
@@ -186,7 +186,7 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
       clearance: z.number().optional().describe('Clearance'),
       minWidth: z.number().optional().describe('Minimum width'),
       padConnection: z.enum(['thermal', 'solid', 'none']).optional().describe('Pad connection type'),
-    }),
+    },
     async ({ layer,
       net,
       points,
@@ -211,9 +211,9 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
 
   server.tool(
     'get_board_extents',
-    withSessionParams({
+    {
       unit: z.enum(['mm', 'inch']).optional().describe('Unit of measurement for the result'),
-    }),
+    },
     async ({ unit }) => {
       logger.debug('get board extents');
       const result = await callKicadScript('get_board_extents', { unit });
@@ -223,12 +223,12 @@ export function registerBoardTools(server: McpServer, callKicadScript: CommandFu
 
   server.tool(
     'get_board_2d_view',
-    withSessionParams({
+    {
       layers: z.array(z.string()).optional().describe('Optional layer names to include'),
       width: z.number().optional().describe('Image width in pixels'),
       height: z.number().optional().describe('Image height in pixels'),
       format: z.enum(['png', 'jpg', 'svg']).optional().describe('Image format'),
-    }),
+    },
     async ({ layers, width, height, format }) => {
       logger.debug('get board 2D view');
       const result = await callKicadScript('get_board_2d_view', {
