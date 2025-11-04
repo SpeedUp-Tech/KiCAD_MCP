@@ -10,3 +10,5 @@ src/generated/
 dist/generated/
 .vscode/
 KiCad-Spice-Library/
+easyeda2kicad.py/
+easyeda_cache/
