@@ -443,6 +443,7 @@ def search_mpn_part(
         FROM ranked
         JOIN v_components_search v
             ON v.lcsc = ranked.lcsc
+        WHERE v.symbol_lib = 1
         ORDER BY ranked.score ASC, v.lcsc ASC
         LIMIT ? OFFSET ?
     """
