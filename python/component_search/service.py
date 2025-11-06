@@ -126,6 +126,8 @@ _STOPWORD_TOKENS: frozenset[str] = frozenset(
     ]
 )
 
+_EXCLUDED_FAMILIES: Tuple[str, ...] = ("Resistors", "Capacitors")
+
 _IMPORTANT_ATTRIBUTE_KEYS: Tuple[str, ...] = (
     "Type",
     "Drain Source Voltage (Vdss)",
@@ -444,6 +446,7 @@ def search_mpn_part(
         JOIN v_components_search v
             ON v.lcsc = ranked.lcsc
         WHERE v.symbol_lib = 1
+          AND (v.family IS NULL OR v.family NOT IN (?, ?))
         ORDER BY ranked.score ASC, v.lcsc ASC
         LIMIT ? OFFSET ?
     """
@@ -454,6 +457,7 @@ def search_mpn_part(
             (
                 fts_query,
                 candidate_limit,
+                *_EXCLUDED_FAMILIES,
                 requested_limit_int,
                 offset_int,
             ),
