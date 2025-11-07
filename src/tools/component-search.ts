@@ -32,7 +32,7 @@ export function registerComponentSearchTools(
         .min(1)
         .max(100)
         .optional()
-        .describe('Optional maximum number of results to return (default 25)'),
+        .describe('Optional maximum number of results to return (default 10)'),
       offset: z
         .number()
         .int()

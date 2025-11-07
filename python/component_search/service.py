@@ -39,7 +39,7 @@ class ComponentSearchConfig:
     """Configuration controlling the search behaviour."""
 
     db_path: Path = field(default_factory=_default_db_path)
-    default_limit: int = 25
+    default_limit: int = 10
     max_limit: int = 100
     highlight_radius: int = 80
     candidate_multiplier: float = 1.8  # widen the net without exploding work
@@ -127,6 +127,51 @@ _STOPWORD_TOKENS: frozenset[str] = frozenset(
 )
 
 _EXCLUDED_FAMILIES: Tuple[str, ...] = ("Resistors", "Capacitors")
+
+# Families that are inherently IC-based; they may not have vendor SPICE models but
+# remain useful if a schematic symbol exists.
+_IC_FAMILIES: Tuple[str, ...] = (
+    "ADC/DAC/Data Conversion",
+    "Amplifiers",
+    "Amplifiers/Comparators",
+    "Clock and Timing",
+    "Clock/Timing",
+    "Communication Interface Chip",
+    "Communication Interface Chip/UART/485/232",
+    "Data Acquisition",
+    "Data Converters",
+    "Embedded Processors & Controllers",
+    "IoT/Communication Modules",
+    "Interface",
+    "Interface ICs",
+    "LED Drivers",
+    "Logic",
+    "Logic ICs",
+    "Memory",
+    "Motor Driver ICs",
+    "Nixie Tube Driver/LED Driver",
+    "Operational Amplifier/Comparator",
+    "Optocoupler",
+    "Optocoupler/LED/Digital Tube/Photoelectric Device",
+    "Optocouplers & LEDs & Infrared",
+    "Optocouplers/Photocouplers",
+    "Optoisolators",
+    "Photoelectric Devices",
+    "Power Management",
+    "Power Management (PMIC)",
+    "Power Management ICs",
+    "Power Modules",
+    "Power Supply Chip",
+    "Radio Frequency Chip/Antenna",
+    "RF & Radio",
+    "RF And Wireless",
+    "RTC/Clock Chip",
+    "Sensors",
+    "Signal Isolation Devices",
+    "Single Chip Microcomputer/Microcontroller",
+)
+
+_IC_FAMILY_PLACEHOLDERS = ", ".join("?" for _ in _IC_FAMILIES) or "NULL"
 
 _IMPORTANT_ATTRIBUTE_KEYS: Tuple[str, ...] = (
     "Type",
@@ -296,14 +341,24 @@ def _fts_token(term: str, *, prefix: bool = True) -> str:
     if "-" in cleaned:
         cleaned = cleaned.replace("-", " ")
 
-    if " " in cleaned:
-        normalized = re.sub(r"\s+", " ", cleaned)
+    normalized = re.sub(r"\s+", " ", cleaned)
+    if not normalized:
+        return ""
+
+    if " " in normalized:
         return f'"{normalized}"'
 
-    if prefix and len(cleaned) >= 3 and not cleaned.isdigit():
-        return f"{cleaned}*"
+    contains_punctuation = bool(re.search(r"[^\w]", normalized))
+    if contains_punctuation:
+        quoted = f'"{normalized}"'
+        if prefix and len(normalized) >= 3 and not normalized.isdigit():
+            return f"{quoted}*"
+        return quoted
 
-    return cleaned
+    if prefix and len(normalized) >= 3 and not normalized.isdigit():
+        return f"{normalized}*"
+
+    return normalized
 
 
 def _compose_fts_query(primary: Sequence[str], optional: Sequence[str]) -> str:
@@ -421,7 +476,7 @@ def search_mpn_part(
 
     conn = _get_connection(resolved_db_path)
 
-    sql = """
+    sql = f"""
         WITH ranked AS (
             SELECT
                 lcsc,
@@ -446,6 +501,11 @@ def search_mpn_part(
         JOIN v_components_search v
             ON v.lcsc = ranked.lcsc
         WHERE v.symbol_lib = 1
+          AND CASE
+                WHEN v.family IN ({_IC_FAMILY_PLACEHOLDERS}) THEN 1
+                WHEN v.spice_model IS NOT NULL THEN 1
+                ELSE 0
+              END = 1
           AND (v.family IS NULL OR v.family NOT IN (?, ?))
         ORDER BY ranked.score ASC, v.lcsc ASC
         LIMIT ? OFFSET ?
@@ -457,6 +517,7 @@ def search_mpn_part(
             (
                 fts_query,
                 candidate_limit,
+                *_IC_FAMILIES,
                 *_EXCLUDED_FAMILIES,
                 requested_limit_int,
                 offset_int,
