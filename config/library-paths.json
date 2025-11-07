@@ -1,0 +1,10 @@
+{
+  "symbolSearchPaths": [
+    "./symbol_lib/symbols",
+    "/mnt/shared/symbol_lib/symbols"
+  ],
+  "footprintSearchPaths": [
+    "./symbol_lib/footprints",
+    "/mnt/shared/symbol_lib/footprints"
+  ]
+}

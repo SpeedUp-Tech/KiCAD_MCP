@@ -12,6 +12,7 @@ Missing tables are created on the fly; existing entries are left untouched.
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -128,6 +129,49 @@ def _collect_footprint_entries(
     return entries
 
 
+def _path_for_config(path: Path, project_root: Path) -> str:
+    resolved = path.resolve()
+    try:
+        return str(resolved.relative_to(project_root))
+    except ValueError:
+        return str(resolved)
+
+
+def _merge_paths(existing: Iterable[str], additions: Iterable[str]) -> List[str]:
+    merged: List[str] = []
+    seen: set[str] = set()
+    for item in list(existing) + list(additions):
+        if not item:
+            continue
+        normalized = str(item)
+        if normalized not in seen:
+            seen.add(normalized)
+            merged.append(normalized)
+    return merged
+
+
+def _update_library_paths_config(project_root: Path, symbols_dir: Path, footprints_dir: Path) -> None:
+    config_path = project_root / "config" / "library-paths.json"
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+
+    data: dict[str, List[str]] = {}
+    if config_path.exists():
+        try:
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise TableUpdateError(f"Failed to parse {config_path}: {exc}") from exc
+
+    symbol_entry = _path_for_config(symbols_dir, project_root)
+    footprint_entry = _path_for_config(footprints_dir, project_root)
+
+    data["symbolSearchPaths"] = _merge_paths(data.get("symbolSearchPaths", []), [symbol_entry])
+    data["footprintSearchPaths"] = _merge_paths(
+        data.get("footprintSearchPaths", []), [footprint_entry]
+    )
+
+    config_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     symbol_lib_dir: Path = args.symbol_lib_dir.resolve()
@@ -161,6 +205,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         _write_table(fp_table_path, fp_lines)
     else:
         added_fp = 0
+
+    project_root = symbol_lib_dir.parent
+    _update_library_paths_config(project_root, symbols_dir, footprints_dir)
 
     if not args.quiet:
         print(

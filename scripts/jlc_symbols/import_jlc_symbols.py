@@ -67,7 +67,7 @@ class ComponentCandidate:
 # Constants and helpers
 # ---------------------------------------------------------------------------
 
-SYMBOL_HEADER = '(kicad_symbol_lib (version 20211014) (generator "KiCAD_MCP"))\n)\n'
+SYMBOL_HEADER = '(kicad_symbol_lib (version 20211014) (generator "KiCAD_MCP")\n'
 NOISY_LOG_SNIPPETS = [
     "Unknow symbol designator",
     "This id is already",

@@ -3,6 +3,7 @@ from __future__ import annotations
 from skip import Schematic
 import os
 import copy
+import json
 import math
 import uuid
 import logging
@@ -18,6 +19,53 @@ from skip.sexp.parser import ParsedValue
 from skip.sexp.util import loadTree
 
 from .grid_utils import snap_to_grid, snap_point_to_grid
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+LIBRARY_PATHS_CONFIG = PROJECT_ROOT / 'config' / 'library-paths.json'
+DEFAULT_SYMBOL_SEARCH_PATHS = [
+    PROJECT_ROOT / 'symbol_lib' / 'symbols',
+    Path('/mnt/shared/symbol_lib/symbols'),
+]
+_LIBRARY_PATHS_CACHE: Dict[str, List[Path]] = {}
+logger = logging.getLogger('kicad_interface')
+
+
+def _resolve_config_path(entry: str) -> Optional[Path]:
+    try:
+        path_obj = Path(entry).expanduser()
+        if not path_obj.is_absolute():
+            path_obj = (PROJECT_ROOT / path_obj).resolve()
+        return path_obj
+    except Exception as exc:
+        logger.warning("Invalid path '%s' in %s: %s", entry, LIBRARY_PATHS_CONFIG, exc)
+        return None
+
+
+def _get_configured_search_paths(key: str, defaults: Iterable[Path]) -> List[Path]:
+    cached = _LIBRARY_PATHS_CACHE.get(key)
+    if cached is not None:
+        return cached
+
+    paths: List[Path] = []
+    if LIBRARY_PATHS_CONFIG.exists():
+        try:
+            config_data = json.loads(LIBRARY_PATHS_CONFIG.read_text(encoding='utf-8'))
+            configured = config_data.get(key, [])
+            if isinstance(configured, list):
+                for entry in configured:
+                    if not entry:
+                        continue
+                    resolved = _resolve_config_path(str(entry))
+                    if resolved and resolved not in paths:
+                        paths.append(resolved)
+        except Exception as exc:
+            logger.warning("Unable to read %s: %s", LIBRARY_PATHS_CONFIG, exc)
+
+    if not paths:
+        paths = [Path(p) for p in defaults if p]
+
+    _LIBRARY_PATHS_CACHE[key] = paths
+    return paths
 
 ConnectionManager: Any | None = None
 try:
@@ -63,9 +111,6 @@ def _require_connection_manager() -> Any:
     if ConnectionManager is None:
         raise RuntimeError("ConnectionManager is not available")
     return ConnectionManager
-
-logger = logging.getLogger('kicad_interface')
-
 
 _STANDARD_PROPERTY_NAMES = {'Reference', 'Value', 'Footprint', 'Datasheet'}
 _DEFAULT_FONT_SIZE = 1.27
@@ -315,6 +360,10 @@ def _resolve_library_path(
             if not path:
                 continue
             search_roots.append(Path(path).expanduser())
+
+    for default_path in _get_configured_search_paths('symbolSearchPaths', DEFAULT_SYMBOL_SEARCH_PATHS):
+        if default_path and default_path.exists():
+            search_roots.append(default_path)
 
     def _append_env(var: str) -> None:
         env_value = os.environ.get(var)
