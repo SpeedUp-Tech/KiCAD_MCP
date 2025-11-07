@@ -1,0 +1,13 @@
+from __future__ import annotations
+
+from typing import Any
+
+class Symbol:
+    def __init__(self, value: str | bytes | None = ...) -> None: ...
+    def value(self) -> str: ...
+
+
+def loads(source: str | bytes, *args: Any, **kwargs: Any) -> Any: ...
+
+
+def dumps(obj: Any, *args: Any, **kwargs: Any) -> str: ...

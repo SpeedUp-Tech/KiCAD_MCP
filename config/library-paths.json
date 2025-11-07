@@ -1,4 +1,5 @@
 {
+  "symbolDbPath": "./symbol_lib/kicad_symbols.sqlite3",
   "symbolSearchPaths": [
     "./symbol_lib/symbols",
     "/mnt/shared/symbol_lib/symbols"

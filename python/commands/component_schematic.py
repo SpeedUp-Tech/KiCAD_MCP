@@ -7,6 +7,7 @@ import json
 import math
 import uuid
 import logging
+import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -27,6 +28,8 @@ DEFAULT_SYMBOL_SEARCH_PATHS = [
     Path('/mnt/shared/symbol_lib/symbols'),
 ]
 _LIBRARY_PATHS_CACHE: Dict[str, List[Path]] = {}
+_SYMBOL_DB_PATHS_CACHE: Optional[List[Path]] = None
+_SYMBOL_DB_CONNECTIONS: Dict[Path, sqlite3.Connection] = {}
 logger = logging.getLogger('kicad_interface')
 
 
@@ -66,6 +69,84 @@ def _get_configured_search_paths(key: str, defaults: Iterable[Path]) -> List[Pat
 
     _LIBRARY_PATHS_CACHE[key] = paths
     return paths
+
+
+def _collect_db_path_entry(entry: str, paths: List[Path]) -> None:
+    if not entry:
+        return
+    resolved = _resolve_config_path(entry)
+    if resolved and resolved not in paths:
+        paths.append(resolved)
+
+
+def _get_symbol_db_paths() -> List[Path]:
+    global _SYMBOL_DB_PATHS_CACHE
+    if _SYMBOL_DB_PATHS_CACHE is not None:
+        return _SYMBOL_DB_PATHS_CACHE
+
+    paths: List[Path] = []
+    if LIBRARY_PATHS_CONFIG.exists():
+        try:
+            config_data = json.loads(LIBRARY_PATHS_CONFIG.read_text(encoding='utf-8'))
+            db_entry = config_data.get('symbolDbPath')
+            if isinstance(db_entry, str):
+                _collect_db_path_entry(db_entry, paths)
+            db_list = config_data.get('symbolDbPaths')
+            if isinstance(db_list, list):
+                for entry in db_list:
+                    if isinstance(entry, str):
+                        _collect_db_path_entry(entry, paths)
+            search_entries = config_data.get('symbolSearchPaths', [])
+            if isinstance(search_entries, list):
+                for entry in search_entries:
+                    if not isinstance(entry, str):
+                        continue
+                    lowered = entry.strip().lower()
+                    if lowered.endswith(('.db', '.sqlite', '.sqlite3')):
+                        _collect_db_path_entry(entry, paths)
+        except Exception as exc:
+            logger.warning("Unable to parse %s for symbol DB paths: %s", LIBRARY_PATHS_CONFIG, exc)
+
+    if not paths:
+        default_db = PROJECT_ROOT / 'symbol_lib' / 'kicad_symbols.sqlite3'
+        paths.append(default_db)
+
+    _SYMBOL_DB_PATHS_CACHE = paths
+    return paths
+
+
+def _load_symbol_from_db(library_name: str, symbol_name: str) -> Optional[List[Any]]:
+    for db_path in _get_symbol_db_paths():
+        if not db_path or not db_path.exists():
+            continue
+        conn = _SYMBOL_DB_CONNECTIONS.get(db_path)
+        if conn is None:
+            try:
+                conn = sqlite3.connect(str(db_path))
+                conn.row_factory = sqlite3.Row
+                _SYMBOL_DB_CONNECTIONS[db_path] = conn
+            except Exception as exc:
+                logger.warning("Failed to open symbol DB %s: %s", db_path, exc)
+                continue
+        try:
+            cursor = conn.execute(
+                "SELECT sexp FROM symbol_index WHERE library = ? AND mpn = ?",
+                (library_name, symbol_name),
+            )
+            row = cursor.fetchone()
+        except Exception as exc:
+            logger.warning("Symbol DB query failed for %s:%s in %s: %s", library_name, symbol_name, db_path, exc)
+            continue
+
+        if row:
+            sexp_text = row["sexp"] if isinstance(row, sqlite3.Row) else row[0]
+            try:
+                return sexpdata.loads(sexp_text)
+            except Exception as exc:
+                logger.error("Failed to parse symbol %s:%s from DB %s: %s", library_name, symbol_name, db_path, exc)
+                raise
+
+    return None
 
 ConnectionManager: Any | None = None
 try:
@@ -416,6 +497,21 @@ def _resolve_library_path(
     raise FileNotFoundError(error_msg)
 
 
+def _load_symbol_definition(
+    library_name: str,
+    symbol_name: str,
+    library_path_hint: Optional[str],
+    extra_search_paths: Optional[Iterable[str]],
+) -> List[Any]:
+    db_symbol = _load_symbol_from_db(library_name, symbol_name)
+    if db_symbol is not None:
+        return db_symbol
+
+    library_path = _resolve_library_path(library_name, library_path_hint, extra_search_paths)
+    library_tree = loadTree(str(library_path))
+    return _find_library_symbol(library_tree, symbol_name)
+
+
 def _find_library_symbol(tree: List[Any], symbol_name: str) -> List[Any]:
     for entry in tree:
         if _is_entry(entry, 'symbol') and len(entry) >= 2:
@@ -564,9 +660,7 @@ class ComponentManager:
         library_path_hint = component_def.get('libraryPath') or component_def.get('library_path')
         search_paths = component_def.get('librarySearchPaths') or component_def.get('searchPaths')
 
-        library_path = _resolve_library_path(library_name, library_path_hint, search_paths)
-        library_tree = loadTree(str(library_path))
-        library_symbol = _find_library_symbol(library_tree, symbol_name)
+        library_symbol = _load_symbol_definition(library_name, symbol_name, library_path_hint, search_paths)
         library_properties = _extract_library_properties(library_symbol)
         pin_numbers = _collect_pin_numbers(library_symbol)
 

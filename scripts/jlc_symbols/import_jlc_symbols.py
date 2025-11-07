@@ -585,7 +585,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                         process_category_batch,
                         category,
                         items,
-                        str(args.output),
+                        args.output,
                         args.overwrite,
                         str(cache_db_path) if cache_db_path else None,
                         args.log_level,
