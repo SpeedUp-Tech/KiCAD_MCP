@@ -52,7 +52,7 @@ class SearchMPNResult:
     lcsc: str
     mpn: Optional[str]
     package: Optional[str]
-    family: Optional[str]
+    library: Optional[str]
     class_name: Optional[str]
     datasheet: Optional[str]
     joints: Optional[int]
@@ -67,7 +67,7 @@ class SearchMPNResult:
             "lcsc": self.lcsc,
             "mpn": self.mpn,
             "package": self.package,
-            "family": self.family,
+            "library": self.library,
             "class": self.class_name,
             "datasheet": self.datasheet,
             "joints": self.joints,
@@ -492,7 +492,7 @@ def search_mpn_part(
             v.package AS package,
             v.joints AS joints,
             v.datasheet AS datasheet,
-            v.family AS family,
+            v.library AS library,
             v.class AS class,
             v.attributes AS attributes,
             v.specs AS specs,
@@ -552,7 +552,7 @@ def search_mpn_part(
                     attributes_json or "",
                     row["mpn"] or "",
                     row["package"] or "",
-                    row["family"] or "",
+                    row["library"] or "",
                     row["class"] or "",
                 ]
             )
@@ -576,7 +576,7 @@ def search_mpn_part(
             lcsc=str(row["lcsc"]),
             mpn=row["mpn"],
             package=row["package"],
-            family=row["family"],
+            library=row["library"],
             class_name=row["class"],
             datasheet=row["datasheet"],
             joints=row["joints"],
