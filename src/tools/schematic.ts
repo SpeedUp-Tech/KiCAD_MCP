@@ -21,17 +21,15 @@ const schematicPointSchema = z
   .describe('Schematic point coordinates');
 
 const schematicComponentSchema = z.object({
-  type: z.string().describe('Symbol identifier (e.g., R, C, U)'),
+  type: z.string().describe('Symbol identifier (e.g., R, C, U for generic symbols; or MPN for specific non-primitive symbols)'),
   reference: z.string().describe('Reference designator (e.g., R1)'),
-  value: z.string().optional().describe('Component value'),
+  value: z.string().optional().describe('Component value, very important for generic symbols'),
   library: z.string().optional().describe('Symbol library name'),
   x: z.number().optional().describe('X position in schematic units'),
   y: z.number().optional().describe('Y position in schematic units'),
   rotation: z.number().optional().describe('Rotation in degrees'),
   properties: z.record(z.any()).optional().describe('Additional property overrides'),
-  unit: z.number().optional().describe('Unit number for multi-unit symbols'),
   footprint: z.string().optional().describe('Associated PCB footprint name'),
-  datasheet: z.string().optional().describe('Datasheet URL'),
 });
 
 const componentUpdateValueSchema = z.union([

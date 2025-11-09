@@ -64,7 +64,6 @@ class SearchMPNResult:
 
     def to_dict(self) -> Dict[str, object]:
         return {
-            "lcsc": self.lcsc,
             "mpn": self.mpn,
             "package": self.package,
             "library": self.library,
@@ -130,6 +129,8 @@ _EXCLUDED_FAMILIES: Tuple[str, ...] = ("Resistors", "Capacitors")
 
 # Families that are inherently IC-based; they may not have vendor SPICE models but
 # remain useful if a schematic symbol exists.
+FILTERED_FTS_TABLE = "v_components_search_filtered_fts"
+
 _IC_FAMILIES: Tuple[str, ...] = (
     "ADC/DAC/Data Conversion",
     "Amplifiers",
@@ -170,8 +171,6 @@ _IC_FAMILIES: Tuple[str, ...] = (
     "Signal Isolation Devices",
     "Single Chip Microcomputer/Microcontroller",
 )
-
-_IC_FAMILY_PLACEHOLDERS = ", ".join("?" for _ in _IC_FAMILIES) or "NULL"
 
 _IMPORTANT_ATTRIBUTE_KEYS: Tuple[str, ...] = (
     "Type",
@@ -480,10 +479,10 @@ def search_mpn_part(
         WITH ranked AS (
             SELECT
                 lcsc,
-                bm25(v_components_search_fts) AS score
-            FROM v_components_search_fts
-            WHERE v_components_search_fts MATCH ?
-            ORDER BY score ASC
+                bm25({FILTERED_FTS_TABLE}) AS score
+            FROM {FILTERED_FTS_TABLE}
+            WHERE {FILTERED_FTS_TABLE} MATCH ?
+            ORDER BY score ASC, lcsc ASC
             LIMIT ?
         )
         SELECT
@@ -500,13 +499,6 @@ def search_mpn_part(
         FROM ranked
         JOIN v_components_search v
             ON v.lcsc = ranked.lcsc
-        WHERE v.symbol_lib = 1
-          AND CASE
-                WHEN v.family IN ({_IC_FAMILY_PLACEHOLDERS}) THEN 1
-                WHEN v.spice_model IS NOT NULL THEN 1
-                ELSE 0
-              END = 1
-          AND (v.family IS NULL OR v.family NOT IN (?, ?))
         ORDER BY ranked.score ASC, v.lcsc ASC
         LIMIT ? OFFSET ?
     """
@@ -517,8 +509,6 @@ def search_mpn_part(
             (
                 fts_query,
                 candidate_limit,
-                *_IC_FAMILIES,
-                *_EXCLUDED_FAMILIES,
                 requested_limit_int,
                 offset_int,
             ),
