@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Optional, Union, List
 
 from component_search import ComponentSearchConfig, search_mpn_part as execute_search
 
@@ -52,6 +52,13 @@ class ComponentSearchCommands:
                 db_path=self._resolve_db_path(db_path),
                 config=self._config,
             )
+            if isinstance(result, dict) and result.get("results"):
+                enriched: List[Dict[str, Any]] = []
+                for item in result["results"]:
+                    record: Dict[str, Any] = dict(item)
+                    record["footprint"] = item.get("footprint") or ""
+                    enriched.append(record)
+                result["results"] = enriched
             return result
         except Exception as exc:  # pragma: no cover - defensive guard
             logger.error("Unhandled error during component search: %s", exc, exc_info=True)

@@ -24,6 +24,7 @@ from .harness_utils import (
     save_harness_schematic,
 )
 from .schematic import SchematicManager
+from .library_export import export_project_libraries
 
 
 def prepare_module_erc_artifacts(module_path: str, output_dir: str) -> Dict[str, Any]:
@@ -53,6 +54,7 @@ def prepare_module_erc_artifacts(module_path: str, output_dir: str) -> Dict[str,
         raise RuntimeError(f"Failed to load schematic: {module_path}")
 
     compile_summary = SchematicCompiler.compile(schematic)
+    library_export = export_project_libraries(schematic, module_path)
 
     module_stem = Path(module_path).stem
     compiled_filename = f"{module_stem}_compiled.kicad_sch"
@@ -76,5 +78,6 @@ def prepare_module_erc_artifacts(module_path: str, output_dir: str) -> Dict[str,
         "compiledPath": str(compiled_path),
         "harnessPath": str(harness_path),
         "compileSummary": compile_summary,
+        "libraryExport": library_export,
         "labelCount": len(labels),
     }

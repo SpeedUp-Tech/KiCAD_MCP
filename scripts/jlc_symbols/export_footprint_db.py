@@ -69,7 +69,10 @@ def _extract_footprint_name(text: str, source: Path) -> str | None:
         quoted, bare = match.groups()
         name = quoted or bare
         if name:
-            return name.strip()
+            cleaned = name.strip()
+            if cleaned.startswith("easyeda2kicad:"):
+                cleaned = cleaned.split("easyeda2kicad:", 1)[1].strip()
+            return cleaned
     LOGGER.warning("Unable to determine footprint name in %s", source)
     return None
 

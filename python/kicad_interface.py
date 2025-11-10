@@ -127,6 +127,7 @@ try:
     from commands.schematic_state import get_schematic_state
     from commands.component_search import ComponentSearchCommands
     from commands.erc_utils import prepare_module_erc_artifacts
+    from commands.library_export import export_project_libraries
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -157,12 +158,16 @@ def _resolve_kicad_cli() -> str:
     )
 
 
-def _run_kicad_cli(args: List[str], cwd: Optional[str] = None) -> Tuple[subprocess.CompletedProcess[str], str]:
+def _run_kicad_cli(
+    args: List[str],
+    cwd: Optional[str] = None,
+    env: Optional[Dict[str, str]] = None,
+) -> Tuple[subprocess.CompletedProcess[str], str]:
     """Run a kicad-cli command and return the completed process and executable path."""
     executable = _resolve_kicad_cli()
     command = [executable, *args]
     logger.debug(f"Running kicad-cli command: {' '.join(command)}")
-    completed = subprocess.run(command, capture_output=True, text=True, cwd=cwd)
+    completed = subprocess.run(command, capture_output=True, text=True, cwd=cwd, env=env)
     return completed, executable
 
 
@@ -762,6 +767,12 @@ class KiCADInterface:
             if not SchematicManager.save_schematic(schematic, output_path):
                 return {"success": False, "message": "Failed to save compiled schematic"}
 
+            try:
+                library_export = export_project_libraries(schematic, schematic_path)
+            except Exception as exc:  # noqa: BLE001
+                logger.error("Failed to export project libraries: %s", exc)
+                return {"success": False, "message": f"Failed to export project libraries: {exc}"}
+
             labels_added = compile_result.get("labelsAdded", [])
             response = {
                 "success": True,
@@ -771,6 +782,7 @@ class KiCADInterface:
                 "generatedLabelCount": compile_result.get("generatedLabelCount", len(labels_added)),
                 "totalNets": compile_result.get("totalNets", 0),
                 "skippedExistingLabels": compile_result.get("skippedExistingLabels", 0),
+                "libraryExport": library_export,
             }
             return response
         except Exception as exc:
@@ -805,6 +817,11 @@ class KiCADInterface:
 
                 harness_path = artifacts["harnessPath"]
                 compiled_path = artifacts["compiledPath"]
+                library_export = artifacts.get("libraryExport") or {}
+                library_config_dir = (
+                    library_export.get("configHome")
+                    or library_export.get("baseDir")
+                )
 
                 args = ["sch", "erc", harness_path]
 
@@ -816,8 +833,13 @@ class KiCADInterface:
                         Path(report_dir).mkdir(parents=True, exist_ok=True)
                     args.extend(["--output", report_path_abs])
 
+                cli_env = None
+                if library_config_dir and os.path.isdir(library_config_dir):
+                    cli_env = os.environ.copy()
+                    cli_env["KICAD_CONFIG_HOME"] = library_config_dir
+
                 try:
-                    result, executable = _run_kicad_cli(args)
+                    result, executable = _run_kicad_cli(args, env=cli_env)
                 except FileNotFoundError as exc:
                     logger.error(str(exc))
                     return {"success": False, "message": str(exc)}
@@ -851,6 +873,7 @@ class KiCADInterface:
                     "stdout": (result.stdout or "").strip(),
                     "reportPath": report_path_abs,
                     "reportContent": report_content,
+                    "libraryExport": library_export,
                 }
         except Exception as exc:
             logger.error(f"Error running module ERC: {exc}")

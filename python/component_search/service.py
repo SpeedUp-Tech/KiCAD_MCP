@@ -52,6 +52,7 @@ class SearchMPNResult:
     lcsc: str
     mpn: Optional[str]
     package: Optional[str]
+    footprint: Optional[str]
     library: Optional[str]
     class_name: Optional[str]
     datasheet: Optional[str]
@@ -66,6 +67,7 @@ class SearchMPNResult:
         return {
             "mpn": self.mpn,
             "package": self.package,
+            "footprint": self.footprint,
             "library": self.library,
             "class": self.class_name,
             "datasheet": self.datasheet,
@@ -489,6 +491,7 @@ def search_mpn_part(
             v.lcsc AS lcsc,
             v.mpn AS mpn,
             v.package AS package,
+            c.footprint AS footprint,
             v.joints AS joints,
             v.datasheet AS datasheet,
             v.library AS library,
@@ -499,6 +502,8 @@ def search_mpn_part(
         FROM ranked
         JOIN v_components_search v
             ON v.lcsc = ranked.lcsc
+        JOIN components c
+            ON c.lcsc = ranked.lcsc
         ORDER BY ranked.score ASC, v.lcsc ASC
         LIMIT ? OFFSET ?
     """
@@ -566,6 +571,7 @@ def search_mpn_part(
             lcsc=str(row["lcsc"]),
             mpn=row["mpn"],
             package=row["package"],
+            footprint=row["footprint"],
             library=row["library"],
             class_name=row["class"],
             datasheet=row["datasheet"],
