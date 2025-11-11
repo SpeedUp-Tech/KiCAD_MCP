@@ -425,8 +425,10 @@ class KiCADInterface:
             if position:
                 component_info["position"] = position
 
-            state_text = get_schematic_state(schematic, output_format="text")
-            return {"success": True, "component": component_info, "CurrentSchematicStates": state_text}
+            # state_text = get_schematic_state(schematic, output_format="text")
+            # return {"success": True, "component": component_info, "CurrentSchematicStates": state_text}
+            return {"success": True, "component": component_info}
+            
         except Exception as e:
             logger.error(f"Error adding component to schematic: {str(e)}")
             return {"success": False, "message": str(e)}
@@ -471,13 +473,14 @@ class KiCADInterface:
                     "message": "Component updated but failed to save schematic",
                 }
 
-            state_text = get_schematic_state(schematic, output_format="text")
+            # state_text = get_schematic_state(schematic, output_format="text")
             return {
                 "success": True,
                 "component": result.get("component"),
                 "changedFields": result.get("changedFields", []),
-                "CurrentSchematicStates": state_text,
+            #     "CurrentSchematicStates": state_text,
             }
+        
         except Exception as exc:
             logger.error(f"Error updating component: {exc}")
             return {"success": False, "message": str(exc)}
@@ -523,13 +526,13 @@ class KiCADInterface:
             note = result.get('note', '')
             removed_connections = result.get('removedConnections', [])
 
-            state_text = get_schematic_state(schematic, output_format="text")
+            # state_text = get_schematic_state(schematic, output_format="text")
             return {
                 "success": True,
                 "removedComponents": removed_components,
                 "note": note,
                 "removedConnections": removed_connections,
-                "CurrentSchematicStates": state_text,
+                # "CurrentSchematicStates": state_text,
             }
         except Exception as exc:
             logger.error(f"Error removing component: {exc}")
@@ -682,8 +685,10 @@ class KiCADInterface:
                     "message": "Connection removed but failed to save schematic",
                 }
 
-            state_text = get_schematic_state(schematic, output_format="text")
-            return {"success": True, **result, "CurrentSchematicStates": state_text}
+            # state_text = get_schematic_state(schematic, output_format="text")
+            # return {"success": True, **result, "CurrentSchematicStates": state_text}
+            return {"success": True, **result}
+        
         except Exception as exc:
             logger.error(f"Error removing schematic connection: {exc}")
             return {"success": False, "message": str(exc)}
@@ -724,8 +729,9 @@ class KiCADInterface:
             if not save_ok:
                 return {"success": False, "message": "Pins connected but failed to save schematic"}
 
-            state_text = get_schematic_state(schematic, output_format="text")
-            return {"success": True, **result, "CurrentSchematicStates": state_text}
+            # state_text = get_schematic_state(schematic, output_format="text")
+            # return {"success": True, **result, "CurrentSchematicStates": state_text}
+            return {"success": True, **result}
         except Exception as e:
             logger.error(f"Error connecting schematic pins: {str(e)}")
             return {"success": False, "message": str(e)}
