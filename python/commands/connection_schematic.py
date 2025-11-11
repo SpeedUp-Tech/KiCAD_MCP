@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union, cast
-import heapq
 import sexpdata
 
 
@@ -21,6 +20,13 @@ from skip.eeschema.schematic.symbol import Symbol
 from skip.sexp.util import writeTree
 
 from .grid_utils import snap_point_to_grid, round_to_grid
+from python.router.manhattan import (
+    COORD_KEY_PRECISION,
+    RoutingObstacles,
+    coord_key as _coord_key,
+    safe_manhattan_route,
+    segment_length as _segment_length,
+)
 
 logger = logging.getLogger('kicad_interface')
 
@@ -37,19 +43,14 @@ if _skip_symbol_module is not None and hasattr(_skip_symbol_module, "SymbolPin")
 
 _DEFAULT_WIRE_WIDTH = 0.254
 _VALID_STROKE_TYPES = {'default', 'dash', 'dot'}
-COORD_KEY_PRECISION = 6
 MIN_ROUTED_SEGMENT_MM = 0.5  # Minimum acceptable segment length
-COLLISION_BUFFER_MM = 0.5    # Clearance radius used for collision checks
 
 # Stub configuration
 KICAD_SCHEMATIC_GRID_MM = 1.27  # Standard KiCAD grid spacing
 DEFAULT_STUB_LENGTH_MM = 1.27  # 1 grid = 1.27mm
 
-# Routing configuration
+# Routing configuration for bbox expansion
 BBOX_CLEARANCE_MM = 0.5 * KICAD_SCHEMATIC_GRID_MM  # 0.5 grid = 0.635mm clearance around symbols
-DISTANCE_PENALTY_WEIGHT = 2.0  # Penalty weight for getting close to symbols (reduced to allow tighter routing)
-CLEARANCE_THRESHOLD_MM = 1.0 * KICAD_SCHEMATIC_GRID_MM  # Encourage staying 1 grid away from symbols
-INSIDE_BBOX_PENALTY = 10.0  # Heavy penalty for routing inside symbol bboxes (but not hard-blocked)
 
 
 def format_anonymous_net_name(net_id: Optional[Any]) -> str:
@@ -129,10 +130,6 @@ def _normalise_points(
     return filtered
 
 
-def _coord_key(x: float, y: float) -> Tuple[float, float]:
-    return (round(float(x), COORD_KEY_PRECISION), round(float(y), COORD_KEY_PRECISION))
-
-
 def _build_wire_node(
     points: Sequence[Tuple[float, float]],
     *,
@@ -188,26 +185,6 @@ def _wire_payload(wrapper: WireWrapper) -> Dict[str, Any]:
         'strokeType': getattr(getattr(wrapper.stroke, 'type', None), 'value', None),
         'length': _polyline_length(raw_points) if len(raw_points) >= 2 else 0.0,
     }
-
-
-def _segment_length(a: Tuple[float, float], b: Tuple[float, float]) -> float:
-    return math.hypot(b[0] - a[0], b[1] - a[1])
-
-
-def _point_segment_distance(point: Tuple[float, float], a: Tuple[float, float], b: Tuple[float, float]) -> float:
-    px, py = point
-    ax, ay = a
-    bx, by = b
-    dx = bx - ax
-    dy = by - ay
-    seg_len_sq = dx * dx + dy * dy
-    if seg_len_sq <= 0.0:
-        return math.hypot(px - ax, py - ay)
-    t = ((px - ax) * dx + (py - ay) * dy) / seg_len_sq
-    t = max(0.0, min(1.0, t))
-    nearest_x = ax + t * dx
-    nearest_y = ay + t * dy
-    return math.hypot(px - nearest_x, py - nearest_y)
 
 
 def _validate_segment_lengths(points: Sequence[Sequence[float]], *, min_length: float, context: str) -> None:
@@ -1153,6 +1130,15 @@ def _collect_wire_vertices(schematic: Schematic) -> List[Tuple[float, float]]:
     return pts
 
 
+def _build_routing_obstacles(schematic: Schematic) -> RoutingObstacles:
+    """Assemble precomputed geometry used by the standalone routing module."""
+    return RoutingObstacles(
+        pin_vertices=_collect_pin_coords(schematic),
+        node_vertices=_collect_wire_vertices(schematic),
+        symbol_bboxes=_collect_symbol_bboxes(schematic),
+    )
+
+
 def _is_entry(node: Any, name: str) -> bool:
     try:
         if not isinstance(node, list):
@@ -1546,428 +1532,6 @@ def _collect_symbol_bboxes(schematic: Schematic) -> List[Tuple[Tuple[float, floa
     except Exception:
         pass
     return boxes
-
-def _distance_to_rect_edge(px: float, py: float, rect: Tuple[float, float, float, float]) -> float:
-    """Calculate the shortest distance from a point to the edge of a rectangle.
-
-    Args:
-        px, py: Point coordinates
-        rect: Rectangle as (xmin, ymin, xmax, ymax)
-
-    Returns:
-        Distance to nearest edge. Returns 0 if point is inside or on the rectangle.
-    """
-    xmin, ymin, xmax, ymax = rect
-
-    # Distance in X direction
-    if px < xmin:
-        dx = xmin - px
-    elif px > xmax:
-        dx = px - xmax
-    else:
-        dx = 0.0  # Inside X range
-
-    # Distance in Y direction
-    if py < ymin:
-        dy = ymin - py
-    elif py > ymax:
-        dy = py - ymax
-    else:
-        dy = 0.0  # Inside Y range
-
-    # If both dx and dy are 0, point is inside rectangle
-    if dx == 0.0 and dy == 0.0:
-        return 0.0
-
-    # Euclidean distance to nearest edge
-    return math.sqrt(dx * dx + dy * dy)
-
-
-def _segment_intersects_rect(a: Tuple[float, float], b: Tuple[float, float], rect: Tuple[float, float, float, float]) -> bool:
-    """Check if a Manhattan segment intersects or touches a rectangle.
-
-    Treats touching the rectangle boundary as an intersection to prevent wires
-    from running along symbol edges.
-    """
-    x1, y1 = a
-    x2, y2 = b
-    xmin, ymin, xmax, ymax = rect
-    # horizontal segment: treat touching rectangle boundary as intersection
-    if y1 == y2:
-        y = y1
-        if not (ymin <= y <= ymax):
-            return False
-        lo, hi = (x1, x2) if x1 <= x2 else (x2, x1)
-        return not (hi <= xmin or lo >= xmax)
-    # vertical segment: treat touching rectangle boundary as intersection
-    if x1 == x2:
-        x = x1
-        if not (xmin <= x <= xmax):
-            return False
-        lo, hi = (y1, y2) if y1 <= y2 else (y2, y1)
-        return not (hi <= ymin or lo >= ymax)
-    return False
-
-
-def _segment_runs_along_rect_edge(
-    a: Tuple[float, float],
-    b: Tuple[float, float],
-    rect: Tuple[float, float, float, float],
-    tolerance: float = 0.15,
-) -> bool:
-    """Check if a segment runs along (parallel to and touching) a rectangle edge.
-
-    This is stricter than _segment_intersects_rect - it specifically detects when
-    a segment is running along the boundary of a rectangle, which we want to prevent
-    even for excluded symbols.
-
-    Args:
-        a: First endpoint (x, y)
-        b: Second endpoint (x, y)
-        rect: Rectangle (xmin, ymin, xmax, ymax)
-        tolerance: Tolerance for floating point comparison (default 0.15 to account for rounding to 1 decimal place)
-
-    Returns:
-        True if the segment runs along any edge of the rectangle
-    """
-    x1, y1 = a
-    x2, y2 = b
-    xmin, ymin, xmax, ymax = rect
-
-    # Horizontal segment
-    if y1 == y2:
-        y = y1
-        # Check if segment is on top or bottom edge
-        if abs(y - ymin) < tolerance or abs(y - ymax) < tolerance:
-            lo, hi = (x1, x2) if x1 <= x2 else (x2, x1)
-            # Check if segment overlaps with rectangle in x direction
-            if not (hi <= xmin or lo >= xmax):
-                return True
-
-    # Vertical segment
-    if x1 == x2:
-        x = x1
-        # Check if segment is on left or right edge
-        if abs(x - xmin) < tolerance or abs(x - xmax) < tolerance:
-            lo, hi = (y1, y2) if y1 <= y2 else (y2, y1)
-            # Check if segment overlaps with rectangle in y direction
-            if not (hi <= ymin or lo >= ymax):
-                return True
-
-    return False
-
-
-def _manhattan_astar_route(
-    schematic: Schematic,
-    start: Tuple[float, float],
-    end: Tuple[float, float],
-    step: float,
-    bboxes: List[Tuple[Tuple[float, float, float, float], Symbol]],
-    forbidden_points: Iterable[Tuple[float, float]],
-    max_expansions: int = 12000,
-    bend_penalty: float = 1.0,  # Increased to prioritize fewer corners
-) -> Optional[List[Tuple[float, float]]]:
-    """Manhattan A* that operates directly in schematic millimetres.
-
-    - Obstacles are the interiors of symbol body rectangles (handled as soft penalties).
-    - Start/end positions are preserved exactly; no grid snapping is applied.
-    - Returns a list of points including the true start and end, or None if no path is found.
-    - Cost function prioritizes: 1) Fewer bends, 2) Shorter distance, 3) Clearance from bodies.
-    """
-    sx, sy = start
-    ex, ey = end
-
-    rects: List[Tuple[float, float, float, float]] = [r for (r, _sym) in bboxes]
-
-    allowed_endpoints = {_coord_key(sx, sy), _coord_key(ex, ey)}
-    forb_set = {
-        _coord_key(px, py)
-        for (px, py) in set(forbidden_points)
-        if _coord_key(px, py) not in allowed_endpoints
-    }
-
-    span_steps_x = abs(sx - ex) / step if step else 0.0
-    span_steps_y = abs(sy - ey) / step if step else 0.0
-    margin_steps = max(10.0, max(span_steps_x, span_steps_y) + 6.0)
-    margin_distance = margin_steps * step
-
-    xmin = min(sx, ex) - margin_distance
-    xmax = max(sx, ex) + margin_distance
-    ymin = min(sy, ey) - margin_distance
-    ymax = max(sy, ey) + margin_distance
-
-    def blocked(px: float, py: float) -> bool:
-        """Check if a millimetre-space node is outside the window or collides with pins/nodes."""
-        if px < xmin or px > xmax or py < ymin or py > ymax:
-            return True
-        key = _coord_key(px, py)
-        if key in forb_set:
-            return True
-        return False
-
-    DIRS = [(1, 0), (-1, 0), (0, 1), (0, -1)]
-
-    def heuristic(px: float, py: float) -> float:
-        return abs(px - ex) + abs(py - ey)
-
-    def state_key(px: float, py: float, direction: int) -> Tuple[Tuple[float, float], int]:
-        return (_coord_key(px, py), direction)
-
-    start_state = (sx, sy, -1)
-    open_heap: List[Tuple[float, float, Tuple[float, float, int]]] = []
-    heapq.heappush(open_heap, (heuristic(sx, sy), 0.0, start_state))
-    came_from: Dict[Tuple[Tuple[float, float], int], Tuple[float, float, int]] = {}
-    gscore: Dict[Tuple[Tuple[float, float], int], float] = {state_key(*start_state): 0.0}
-
-    expansions = 0
-    GOAL_EPS = 1e-6
-    end_key = _coord_key(ex, ey)
-
-    while open_heap and expansions < max_expansions:
-        f, g, (x, y, dprev) = heapq.heappop(open_heap)
-        expansions += 1
-
-        current_key = _coord_key(x, y)
-        if current_key == end_key:
-            path: List[Tuple[float, float]] = [(x, y)]
-            state = (x, y, dprev)
-            skey = state_key(*state)
-            while skey in came_from:
-                state = came_from[skey]
-                path.append((state[0], state[1]))
-                skey = state_key(*state)
-            path.reverse()
-
-            simplified: List[Tuple[float, float]] = []
-            for pt in path:
-                if not simplified:
-                    simplified.append(pt)
-                    continue
-                simplified.append(pt)
-                if len(simplified) >= 3:
-                    a, b, c = simplified[-3], simplified[-2], simplified[-1]
-                    if (abs(a[0] - b[0]) <= GOAL_EPS and abs(b[0] - c[0]) <= GOAL_EPS) or (
-                        abs(a[1] - b[1]) <= GOAL_EPS and abs(b[1] - c[1]) <= GOAL_EPS
-                    ):
-                        simplified.pop(-2)
-
-            if _coord_key(*simplified[0]) != _coord_key(sx, sy):
-                simplified.insert(0, (sx, sy))
-            if _coord_key(*simplified[-1]) != end_key:
-                simplified.append((ex, ey))
-
-            return simplified
-
-        for i, (dx, dy) in enumerate(DIRS):
-            candidates: List[Tuple[float, float]] = []
-
-            if dx != 0:
-                nx = x + dx * step
-                ny = y
-                nx = round(nx, COORD_KEY_PRECISION)
-                ny = round(ny, COORD_KEY_PRECISION)
-                candidates.append((nx, ny))
-
-                remaining_x = ex - x
-                if remaining_x != 0.0 and (remaining_x > 0) == (dx > 0):
-                    if abs(remaining_x) <= step + GOAL_EPS:
-                        candidates.append((round(ex, COORD_KEY_PRECISION), ny))
-
-            else:
-                nx = x
-                ny = y + dy * step
-                nx = round(nx, COORD_KEY_PRECISION)
-                ny = round(ny, COORD_KEY_PRECISION)
-                candidates.append((nx, ny))
-
-                remaining_y = ey - y
-                if remaining_y != 0.0 and (remaining_y > 0) == (dy > 0):
-                    if abs(remaining_y) <= step + GOAL_EPS:
-                        candidates.append((nx, round(ey, COORD_KEY_PRECISION)))
-
-            for nx, ny in candidates:
-                if blocked(nx, ny):
-                    continue
-
-                cost = 1.0
-                if dprev != -1 and dprev != i:
-                    cost += bend_penalty
-
-                min_distance = float('inf')
-                is_inside_any_bbox = False
-
-                for rect in rects:
-                    dist = _distance_to_rect_edge(nx, ny, rect)
-                    min_distance = min(min_distance, dist)
-                    xmin_r, ymin_r, xmax_r, ymax_r = rect
-                    if (xmin_r <= nx <= xmax_r) and (ymin_r <= ny <= ymax_r):
-                        is_inside_any_bbox = True
-
-                if is_inside_any_bbox:
-                    cost += INSIDE_BBOX_PENALTY
-                elif min_distance < CLEARANCE_THRESHOLD_MM:
-                    distance_penalty = (CLEARANCE_THRESHOLD_MM - min_distance) * DISTANCE_PENALTY_WEIGHT
-                    cost += distance_penalty
-
-                ng = g + cost
-                ns = state_key(nx, ny, i)
-                if ng < gscore.get(ns, float('inf')):
-                    gscore[ns] = ng
-                    came_from[ns] = (x, y, dprev)
-                    nf = ng + heuristic(nx, ny)
-                    heapq.heappush(open_heap, (nf, ng, (nx, ny, i)))
-
-    return None
-
-
-def _safe_manhattan_route(
-    schematic: Schematic,
-    start: Tuple[float, float],
-    end: Tuple[float, float],
-    exclude_symbols: Optional[Iterable[Symbol]] = None,  # Kept for API compatibility but no longer used
-) -> List[Tuple[float, float]]:
-    """Simplified two-level routing logic using A* with soft penalties.
-
-    Priority levels:
-    1. Manhattan A* with distance penalties - Primary pathfinding algorithm
-    2. Adaptive stubs - Fallback when A* fails
-
-    Routing strategy:
-    - Hard blocks: Only forbidden pin/node points and search bounds
-    - Soft penalties: Symbol bboxes (heavy penalty inside, lighter penalty nearby)
-    - This allows routing through tight spaces and handles pins inside bboxes
-    - Minimized corners/segments (highest priority) and wire length (second priority)
-    """
-    # Preserve original endpoints; solver works directly in schematic millimetres
-    s = (float(start[0]), float(start[1]))
-    e = (float(end[0]), float(end[1]))
-
-    if s == e:
-        raise ValueError('Pins share the same coordinates; cannot connect')
-
-    pin_coords_set = set(_collect_pin_coords(schematic))
-    node_coords_set = set(_collect_wire_vertices(schematic))
-    bboxes = _collect_symbol_bboxes(schematic)
-
-    # Allow using the endpoints themselves
-    allowed_endpoints = {_coord_key(*s), _coord_key(*e)}
-
-    forbidden_vertices_set = (pin_coords_set | node_coords_set) - allowed_endpoints
-    forbidden_vertices = list(forbidden_vertices_set)
-    pin_collision_points = [v for v in pin_coords_set if v not in allowed_endpoints]
-
-    def ok_route(points: List[Tuple[float, float]]) -> bool:
-        """Validate that a route doesn't pass through forbidden pin/node points."""
-        if len(points) < 2:
-            return False
-
-        # Internal vertices must keep clearance from forbidden points
-        for pt in points[1:-1]:
-            for fv in forbidden_vertices:
-                if _segment_length(pt, fv) < COLLISION_BUFFER_MM:
-                    return False
-
-        # Each segment must keep clearance from collision points
-        for a, b in zip(points, points[1:]):
-            seg_len = _segment_length(a, b)
-            if seg_len <= 0.0:
-                # Zero-length segment is never acceptable
-                return False
-            for pc in pin_collision_points:
-                if _point_segment_distance(pc, a, b) < COLLISION_BUFFER_MM:
-                    return False
-
-        return True
-
-    step = KICAD_SCHEMATIC_GRID_MM
-
-    # LEVEL 1: Manhattan A* - Primary routing algorithm
-    # Pass ALL bboxes including excluded symbols - the A* will allow start/end to be inside them
-    astar_route = _manhattan_astar_route(
-        schematic,
-        s,
-        e,
-        step,
-        bboxes,  # Include all symbols - A* allows start/end inside rects
-        forbidden_vertices,
-        max_expansions=12000,
-        bend_penalty=1.0,  # High penalty to minimize corners
-    )
-    if astar_route is not None and ok_route(astar_route):
-        return astar_route
-
-    # LEVEL 2: Adaptive stubs - Fallback when A* fails
-    # Try escaping from start or end point in all four directions
-    escape_vectors = [(0, step), (0, -step), (step, 0), (-step, 0)]
-
-    def try_escape(from_start: bool) -> Optional[List[Tuple[float, float]]]:
-        """Try to escape from start or end point and route via A* from the escape point."""
-        for dx, dy in escape_vectors:
-            esc = (
-                (s[0] + dx, s[1] + dy)
-                if from_start
-                else (e[0] + dx, e[1] + dy)
-            )
-            esc = (
-                round(esc[0], COORD_KEY_PRECISION),
-                round(esc[1], COORD_KEY_PRECISION),
-            )
-
-            esc_rounded = _coord_key(*esc)
-
-            # Skip if escape point is forbidden
-            if esc_rounded in forbidden_vertices_set:
-                continue
-
-            # Try routing from/to the escape point using A*
-            if from_start:
-                # Route from escape point to end
-                escape_route = _manhattan_astar_route(
-                    schematic,
-                    esc,
-                    e,
-                    step,
-                    bboxes,  # Include all symbols
-                    forbidden_vertices,
-                    max_expansions=8000,
-                    bend_penalty=1.0,
-                )
-                if escape_route is not None:
-                    # Prepend the stub from start to escape
-                    full_route = [s] + escape_route
-                    if ok_route(full_route):
-                        return full_route
-            else:
-                # Route from start to escape point
-                escape_route = _manhattan_astar_route(
-                    schematic,
-                    s,
-                    esc,
-                    step,
-                    bboxes,  # Include all symbols
-                    forbidden_vertices,
-                    max_expansions=8000,
-                    bend_penalty=1.0,
-                )
-                if escape_route is not None:
-                    # Append the stub from escape to end
-                    full_route = escape_route + [e]
-                    if ok_route(full_route):
-                        return full_route
-        return None
-
-    # Try escaping from start or end
-    r = try_escape(True) or try_escape(False)
-    if r is not None:
-        return r
-
-    # If all attempts failed, raise with guidance
-    raise ValueError(
-        'Routing failed: could not find a Manhattan path that avoids pin endpoints/nodes and symbol bodies. '
-        'Try repositioning or rotating one of the components to provide clearance.'
-    )
-
-
 
 class ConnectionManager:
     """Manage connections between components"""
@@ -2479,10 +2043,12 @@ class ConnectionManager:
             route_start = (source_point[0], source_point[1])
             route_end = (target_point[0], target_point[1])
 
-            route_points = _safe_manhattan_route(
-                schematic,
+            obstacles = _build_routing_obstacles(schematic)
+            route_points = safe_manhattan_route(
                 route_start,
                 route_end,
+                obstacles=obstacles,
+                grid_step=KICAD_SCHEMATIC_GRID_MM,
             )
 
             # Use the route points directly as the wire path, but ensure true endpoints are included
