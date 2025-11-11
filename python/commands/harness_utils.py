@@ -13,6 +13,7 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 from uuid import uuid4
 
 from sexpdata import Symbol
+from skip import Schematic
 
 from .grid_utils import snap_to_grid
 from .schematic import SchematicManager

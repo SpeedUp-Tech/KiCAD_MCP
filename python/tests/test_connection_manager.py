@@ -161,7 +161,7 @@ class ConnectionManagerTests(unittest.TestCase):
         self.assertIn('summary', result['created'])
         self.assertIn('R1.1', result['created']['summary'])
         self.assertIn('R2.1', result['created']['summary'])
-        self.assertTrue(result['net'].startswith('Net-('))
+        self.assertTrue(result['net'].startswith('Net '))
         self.assertIn('R1.1(passive)', result['netConnections'])
         self.assertIn('R2.1(passive)', result['netConnections'])
 
@@ -201,7 +201,7 @@ class ConnectionManagerTests(unittest.TestCase):
         self.assertIn('summary', result['created'])
         self.assertIn('R1.2', result['created']['summary'])
         self.assertIn('R2.1', result['created']['summary'])
-        self.assertTrue(result['net'].startswith('Net-('))
+        self.assertTrue(result['net'].startswith('Net '))
         self.assertIn('R1.2(passive)', result['netConnections'])
         self.assertIn('R2.1(passive)', result['netConnections'])
 

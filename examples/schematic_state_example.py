@@ -149,8 +149,8 @@ def analyze_schematic_state(state):
     nets = set()
     for conn in connections:
         # Extract net ID from connection string
-        if '[Net-' in conn:
-            net_id = conn.split('[Net-')[1].split(']')[0]
+        if '[Net ' in conn:
+            net_id = conn.split('[Net ')[1].split(']')[0]
             nets.add(net_id)
     
     print(f"🕸️  Unique Nets: {len(nets)}")
@@ -268,4 +268,3 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
-

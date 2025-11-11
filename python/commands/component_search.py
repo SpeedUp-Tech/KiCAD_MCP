@@ -40,6 +40,13 @@ class ComponentSearchCommands:
         """
 
         query = params.get("query")
+        if not isinstance(query, str):
+            return {
+                "success": False,
+                "message": "Query parameter is required and must be a string",
+                "errorDetails": "The 'query' parameter was missing or not a string",
+            }
+
         limit = params.get("limit")
         offset = params.get("offset", 0)
         db_path = params.get("dbPath")
@@ -54,7 +61,10 @@ class ComponentSearchCommands:
             )
             if isinstance(result, dict) and result.get("results"):
                 enriched: List[Dict[str, Any]] = []
-                for item in result["results"]:
+                results_list = result["results"]
+                if not isinstance(results_list, list):
+                    return result
+                for item in results_list:
                     record: Dict[str, Any] = dict(item)
                     record["footprint"] = item.get("footprint") or ""
                     enriched.append(record)

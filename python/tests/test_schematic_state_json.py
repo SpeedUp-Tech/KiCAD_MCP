@@ -99,9 +99,9 @@ class SchematicStateJsonTests(unittest.TestCase):
         )
         self.assertTrue(has_r2_scl)
 
-        # Expect an unlabeled net between R1.2 and R2.2 with a synthetic Net-(Ref-Pad) name
+        # Expect an unlabeled net between R1.2 and R2.2 with a synthetic generic net name
         has_unlabeled_pair = any(
-            conn.get('net', '').startswith('Net-(') and (
+            conn.get('net', '').startswith('Net ') and (
                 (is_pin(conn.get('a', {}), 'R1', '2') and is_pin(conn.get('b', {}), 'R2', '2')) or
                 (is_pin(conn.get('a', {}), 'R2', '2') and is_pin(conn.get('b', {}), 'R1', '2'))
             )

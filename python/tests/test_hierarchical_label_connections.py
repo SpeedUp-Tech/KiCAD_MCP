@@ -263,8 +263,9 @@ class HierarchicalLabelConnectionTests(unittest.TestCase):
         self.assertIn('netConnections', result)
         self.assertIn('R1.1', result['created']['summary'])
         self.assertIn('R2.1', result['created']['summary'])
-        self.assertEqual(result['net'], 'Net-(R1-Pad1)')
-        self.assertEqual(result['created']['net'], 'Net-(R1-Pad1)')
+        self.assertTrue(result['net'].startswith('Net '))
+        self.assertTrue(result['created']['net'].startswith('Net '))
+        self.assertEqual(result['net'], result['created']['net'])
         self.assertIn('R1.1(passive)', result['netConnections'])
         self.assertIn('R2.1(passive)', result['netConnections'])
 

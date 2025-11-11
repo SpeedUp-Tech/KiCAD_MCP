@@ -26,6 +26,9 @@ try:
     from .connection_schematic import _iter_symbol_pins as _cs_iter_symbol_pins
     from .connection_schematic import _ensure_pin_metadata as _cs_ensure_pin_metadata
     from .connection_schematic import _get_pin_location as _cs_get_pin_location
+    from .connection_schematic import (
+        format_anonymous_net_name as _cs_format_anonymous_net_name,
+    )
 except Exception:
     def _cs_iter_symbol_pins(symbol: Any) -> List[Any]:
         pins = getattr(symbol, 'pin', None)
@@ -53,6 +56,13 @@ except Exception:
         if loc is None:
             loc = getattr(pin, '_mcp_location', None)
         return loc
+
+    def _cs_format_anonymous_net_name(net_id: Optional[Any]) -> str:
+        try:
+            numeric_id = int(net_id)
+        except (TypeError, ValueError):
+            numeric_id = -1
+        return f"Net {numeric_id}"
 
 logger = logging.getLogger('kicad_interface')
 
@@ -407,7 +417,7 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
     Notes:
     - Labels (local/global/hierarchical) and power rails are first-class endpoints.
     - NetName comes from any label or power symbol present on the wire's endpoints; otherwise a stable
-      synthetic name (Net-(Ref-Pad)) is used based on wire connectivity groups.
+      synthetic name (e.g., Net 5) is used based on wire connectivity groups.
     - This function is read-only and reflects the schematic AS-IS.
     """
     # Spatial index of endpoints (pins and labels)
@@ -487,14 +497,8 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
         # Fallback to label if we cannot confidently parse as pin
         return {"kind": "label", "name": name}
 
-    def _fallback_net_name(nodes: List[str], default_id: int) -> str:
-        for endpoint in nodes:
-            if endpoint in label_names_set:
-                continue
-            if "." in endpoint:
-                ref, pin = endpoint.split(".", 1)
-                return f"Net-({ref}-Pad{pin})"
-        return f"Net-{default_id}"
+    def _fallback_net_name(_: List[str], default_id: int) -> str:
+        return _cs_format_anonymous_net_name(default_id)
 
     # Build wire endpoint list and a connectivity map for unlabeled net IDs
     wire_points: Dict[Tuple[float, float], List[int]] = defaultdict(list)

@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union, cast
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple, Union, cast
 import heapq
 import sexpdata
 
@@ -17,12 +17,22 @@ from sexpdata import Symbol as SSymbol
 
 from skip.eeschema.wire import WireWrapper
 from skip.sexp.parser import ParsedValue
-from skip.eeschema.schematic.symbol import Symbol, SymbolPin
+from skip.eeschema.schematic.symbol import Symbol
 from skip.sexp.util import writeTree
 
 from .grid_utils import snap_point_to_grid, round_to_grid
 
 logger = logging.getLogger('kicad_interface')
+
+
+try:
+    from skip.eeschema.schematic import symbol as _skip_symbol_module
+except Exception:  # pragma: no cover - skip internals may be unavailable in stubs
+    _skip_symbol_module = None
+
+_SYMBOL_PIN_CTOR: Optional[Callable[[Any, Any], Any]] = None
+if _skip_symbol_module is not None and hasattr(_skip_symbol_module, "SymbolPin"):
+    _SYMBOL_PIN_CTOR = getattr(_skip_symbol_module, "SymbolPin")
 
 
 _DEFAULT_WIRE_WIDTH = 0.254
@@ -40,6 +50,23 @@ BBOX_CLEARANCE_MM = 0.5 * KICAD_SCHEMATIC_GRID_MM  # 0.5 grid = 0.635mm clearanc
 DISTANCE_PENALTY_WEIGHT = 2.0  # Penalty weight for getting close to symbols (reduced to allow tighter routing)
 CLEARANCE_THRESHOLD_MM = 1.0 * KICAD_SCHEMATIC_GRID_MM  # Encourage staying 1 grid away from symbols
 INSIDE_BBOX_PENALTY = 10.0  # Heavy penalty for routing inside symbol bboxes (but not hard-blocked)
+
+
+def format_anonymous_net_name(net_id: Optional[Any]) -> str:
+    """
+    Provide a stable placeholder name for unnamed nets.
+
+    The numeric id is derived from the local connectivity grouping so it remains
+    consistent as long as the wire topology does not change.
+    """
+    if net_id is None:
+        numeric_id = -1
+    else:
+        try:
+            numeric_id = int(net_id)
+        except (TypeError, ValueError):
+            numeric_id = -1
+    return f"Net {numeric_id}"
 
 
 def _coerce_point(value: Any, *, label: str) -> Tuple[float, float]:
@@ -429,7 +456,6 @@ def _build_net_info_from_context(
         net_id = context.get("next_net_id", 0)
 
     connected_pins: List[str] = []
-    representative_pin: Optional[Tuple[str, str]] = None
     pin_locations: Dict[Tuple[float, float], List[Dict[str, Any]]] = context.get("pin_locations", {})
 
     for point, pins in pin_locations.items():
@@ -444,8 +470,6 @@ def _build_net_info_from_context(
             )
             if formatted not in connected_pins:
                 connected_pins.append(formatted)
-            if representative_pin is None:
-                representative_pin = (pin_data["reference"], pin_data["pin"])
 
     connected_labels: List[str] = []
     label_locations: Dict[Tuple[float, float], List[Dict[str, Any]]] = context.get("label_locations", {})
@@ -472,11 +496,8 @@ def _build_net_info_from_context(
         net_name = connected_power[0]
     elif connected_labels:
         net_name = connected_labels[0]
-    elif representative_pin:
-        ref, pad = representative_pin
-        net_name = f"Net-({ref}-Pad{pad})"
     else:
-        net_name = f"Net-{net_id}"
+        net_name = format_anonymous_net_name(net_id)
 
     return {
         "net": net_name,
@@ -493,7 +514,7 @@ def _build_net_info(schematic: Schematic, wire_points: List[Tuple[float, float]]
     Build net information by analyzing what's connected at the given wire points.
 
     Returns a dict with:
-    - net: Net identifier (e.g., "Net-5", "GND", "VBAT")
+    - net: Net identifier (e.g., "Net 5", "GND", "VBAT")
     - netConnections: List of connected power/labels/pins (e.g., ["GND", "IO_LBL", "R1.1(passive)"])
     """
     context = _collect_net_context(schematic)
@@ -781,33 +802,40 @@ def _enrich_pin_from_library(
 
     # Location (absolute) using symbol transform
     if _get_pin_location(pin) is None:
-        try:
-            lib_pin_parsed = ParsedValue(schematic.tree, lib_pin_node, lib_pin_path, schematic)
-            wrapped = SymbolPin(pin, lib_pin_parsed)
-            loc_value = wrapped.location
-            point = SimpleNamespace(
-                x=float(getattr(loc_value, 'x', 0.0)),
-                y=float(getattr(loc_value, 'y', 0.0)),
-                rotation=float(getattr(loc_value, 'rotation', 0.0)),
-            )
+        hydrated = False
+        ctor = _SYMBOL_PIN_CTOR
+        if ctor is not None:
             try:
-                pin.__dict__['_mcp_location'] = point
+                lib_pin_parsed = ParsedValue(schematic.tree, lib_pin_node, lib_pin_path, schematic)
+                wrapped: Any = ctor(pin, lib_pin_parsed)
+                loc_value = getattr(wrapped, 'location', None)
+                point = SimpleNamespace(
+                    x=float(getattr(loc_value, 'x', 0.0)),
+                    y=float(getattr(loc_value, 'y', 0.0)),
+                    rotation=float(getattr(loc_value, 'rotation', 0.0)),
+                )
+                try:
+                    pin.__dict__['_mcp_location'] = point
+                except Exception:
+                    setattr(pin, '_mcp_location', point)
+                try:
+                    setattr(pin, 'location', point)
+                except Exception:
+                    pass
+                if not number:
+                    number = str(getattr(wrapped, 'number', '')).strip()
+                    setattr(pin, 'number', number)
+                if not name:
+                    name = str(getattr(wrapped, 'name', '')).strip()
+                    setattr(pin, 'name', name)
+                if not hasattr(pin, 'electrical_type'):
+                    setattr(pin, 'electrical_type', getattr(wrapped, 'electrical_type', 'passive'))
+                hydrated = True
             except Exception:
-                setattr(pin, '_mcp_location', point)
-            try:
-                setattr(pin, 'location', point)
-            except Exception:
-                pass
-            if not number:
-                number = str(wrapped.number).strip()
-                setattr(pin, 'number', number)
-            if not name:
-                name = str(wrapped.name).strip()
-                setattr(pin, 'name', name)
-            if not hasattr(pin, 'electrical_type'):
-                setattr(pin, 'electrical_type', getattr(wrapped, 'electrical_type', 'passive'))
-        except Exception:
-            # Fall back to simple transform if SymbolPin instantiation fails
+                hydrated = False
+
+        if not hydrated:
+            # Fall back to simple transform if SymbolPin instantiation fails or is unavailable
             pin_x, pin_y, _ = _extract_pin_at_from_raw(lib_pin_node)
             if pin_x is None or pin_y is None:
                 pin_x = pin_y = 0.0
@@ -831,6 +859,8 @@ def _enrich_pin_from_library(
                 pin.__dict__['_mcp_location'] = point
             except Exception:
                 setattr(pin, '_mcp_location', point)
+            if not hasattr(pin, 'electrical_type'):
+                setattr(pin, 'electrical_type', getattr(pin, 'electrical_type', 'passive'))
 
     try:
         setattr(pin, '_mcp_pin_enriched', True)
@@ -1186,9 +1216,10 @@ def _append_label_node(schematic: Schematic, node: List[Any]) -> None:
         node_index = len(schematic.tree) - 1
         parsed_label = ParsedValue(schematic.tree, node, [node_index], schematic)
         label_wrapper = schematic.wrap(parsed_label)
-        if hasattr(schematic, 'label'):
+        label_collection = getattr(schematic, 'label', None)
+        if label_collection is not None:
             try:
-                schematic.label.append(label_wrapper)
+                label_collection.append(label_wrapper)
             except Exception:
                 _refresh_label_collection(schematic)
     except Exception as exc:
@@ -1199,7 +1230,8 @@ def _append_label_node(schematic: Schematic, node: List[Any]) -> None:
 def _refresh_label_collection(schematic: Schematic) -> None:
     """Rebuild schematic.label wrappers to keep indices valid after edits."""
     try:
-        if not hasattr(schematic, 'label'):
+        label_collection = getattr(schematic, 'label', None)
+        if label_collection is None:
             return
 
         label_nodes: List[Any] = []
@@ -1209,11 +1241,11 @@ def _refresh_label_collection(schematic: Schematic) -> None:
                 label_nodes.append(schematic.wrap(parsed))
 
         try:
-            schematic.label._elements = label_nodes  # type: ignore[attr-defined]
+            label_collection._elements = label_nodes  # type: ignore[attr-defined]
         except Exception:
             try:
-                schematic.label.clear()
-                schematic.label.extend(label_nodes)
+                label_collection.clear()
+                label_collection.extend(label_nodes)
             except Exception:
                 logger.debug("Unable to refresh schematic.label collection directly")
     except Exception as exc:
@@ -1821,8 +1853,8 @@ def _safe_manhattan_route(
     allowed_endpoints = {_coord_key(*s), _coord_key(*e)}
 
     forbidden_vertices_set = (pin_coords_set | node_coords_set) - allowed_endpoints
-    forbidden_vertices = [tuple(v) for v in forbidden_vertices_set]
-    pin_collision_points = [tuple(v) for v in pin_coords_set if v not in allowed_endpoints]
+    forbidden_vertices = list(forbidden_vertices_set)
+    pin_collision_points = [v for v in pin_coords_set if v not in allowed_endpoints]
 
     def ok_route(points: List[Tuple[float, float]]) -> bool:
         """Validate that a route doesn't pass through forbidden pin/node points."""
@@ -2094,10 +2126,10 @@ class ConnectionManager:
                 "removed": {
                     "source": Endpoint,    # { kind: "pin", reference, pin, unit?, pinType? } or { kind: "label", label }
                     "target": Endpoint,    # same as source
-                    "net": "Net-5",
-                    "summary": "R1.1(passive) - R2.2(passive) [Net-5]"
+                    "net": "Net 5",
+                    "summary": "R1.1(passive) - R2.2(passive) [Net 5]"
                 },
-                "net": "Net-5",
+                "net": "Net 5",
                 "netConnections": ["R1.1(passive)"]
             }
 
@@ -2398,10 +2430,10 @@ class ConnectionManager:
                 "created": {
                     "source": Endpoint,    # { kind: "pin", reference, pin, unit?, pinType? } or { kind: "label", label }
                     "target": Endpoint,    # same as source
-                    "net": "Net-7",       # resolved net name/id
-                    "summary": "R1.1(passive) - R2.2(input) [Net-7]"  # human-friendly
+                    "net": "Net 7",       # resolved net name/id
+                    "summary": "R1.1(passive) - R2.2(input) [Net 7]"  # human-friendly
                 },
-                "net": "Net-7",
+                "net": "Net 7",
                 "netConnections": ["R1.1(passive)", "R2.2(input)"]
             }
 

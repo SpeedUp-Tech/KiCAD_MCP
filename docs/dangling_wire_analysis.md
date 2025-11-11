@@ -24,7 +24,7 @@ The KiCad ERC report for `test_cases/3A充电方案/kicad/modules/Battery_Protec
 
 6. **Netlist export**: `kicad-cli sch export netlist` shows only three nets: `/VBAT_CHG`, `/VBAT_PACK`, `GND`. R1’s branches do not appear in the netlist at all.
 
-7. **Tool behavior**: Reviewing `connect_schematic_pins` confirms it never writes net names. The helper `_build_net_info` calculates a temporary name (e.g., `Net-(R1-Pad1)`) for return values but does not update the schematic.
+7. **Tool behavior**: Reviewing `connect_schematic_pins` confirms it never writes net names. The helper `_build_net_info` calculates a temporary name (e.g., `Net 0`) for return values but does not update the schematic.
 
 ## Root Cause
 The R1 connections form internal nets that have **no net labels and no hierarchical/export pins**. Although wires visually connect R1 to Q1, KiCad’s ERC treats these nets as “anonymous” and local, so they appear as dangling during ERC.
