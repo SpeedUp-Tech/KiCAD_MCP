@@ -17,6 +17,7 @@ DISTANCE_PENALTY_WEIGHT = 2.0
 CLEARANCE_THRESHOLD_MM = 1.0 * KICAD_SCHEMATIC_GRID_MM
 INSIDE_BBOX_PENALTY = 10.0
 POST_PROCESS_RECT_CLEARANCE_MM = 0.5 * KICAD_SCHEMATIC_GRID_MM
+EDGE_CONGESTION_WEIGHT = 1.5
 
 __all__ = [
     "BBox",
@@ -110,6 +111,65 @@ class RoutingObstacles:
         return forbidden_vertices, pin_collisions
 
 
+def _build_wire_segments_from_nodes(node_vertices: Sequence[Point]) -> List[Tuple[Point, Point]]:
+    """Heuristically reconstruct wire segments from schematic wire nodes."""
+    segments: List[Tuple[Point, Point]] = []
+    pts = list(node_vertices)
+    idx = 0
+    total = len(pts)
+    while idx + 1 < total:
+        start = pts[idx]
+        end = pts[idx + 1]
+        idx += 2
+        if start == end:
+            continue
+        if not (math.isclose(start[0], end[0]) or math.isclose(start[1], end[1])):
+            continue
+        segments.append((start, end))
+    return segments
+
+
+def _edge_key(a: Point, b: Point) -> Tuple[Point, Point]:
+    """Return a stable key for an undirected grid edge."""
+    pa = coord_key(*a)
+    pb = coord_key(*b)
+    return (pa, pb) if pa <= pb else (pb, pa)
+
+
+def _iter_segment_edges(a: Point, b: Point, grid_step: float) -> Iterable[Tuple[Point, Point]]:
+    """Yield edge keys that cover the Manhattan segment a-b."""
+    ax, ay = a
+    bx, by = b
+    if math.isclose(ax, bx):
+        direction = 1.0 if by > ay else -1.0
+        cur = ay
+        while not math.isclose(cur, by):
+            step = direction * min(grid_step, abs(by - cur))
+            nxt = cur + step
+            yield _edge_key((ax, cur), (ax, nxt))
+            cur = nxt
+    elif math.isclose(ay, by):
+        direction = 1.0 if bx > ax else -1.0
+        cur = ax
+        while not math.isclose(cur, bx):
+            step = direction * min(grid_step, abs(bx - cur))
+            nxt = cur + step
+            yield _edge_key((cur, ay), (nxt, ay))
+            cur = nxt
+
+
+def _build_edge_congestion_map(
+    node_vertices: Sequence[Point],
+    grid_step: float,
+) -> dict[Tuple[Point, Point], int]:
+    """Convert existing wires into a congestion counter per edge."""
+    congestion: dict[Tuple[Point, Point], int] = {}
+    for start, end in _build_wire_segments_from_nodes(node_vertices):
+        for edge in _iter_segment_edges(start, end, grid_step):
+            congestion[edge] = congestion.get(edge, 0) + 1
+    return congestion
+
+
 def _iter_symbol_pin_candidates(symbol: Any) -> List[Any]:
     """Return best-effort list of pin-like objects from a symbol."""
     pins_attr = getattr(symbol, "pin", None)
@@ -200,6 +260,7 @@ def _manhattan_astar_route(
     max_expansions: int,
     bend_penalty: float,
     rect_blocking: bool = False,
+    edge_congestion: Optional[dict[Tuple[Point, Point], int]] = None,
 ) -> Optional[List[Point]]:
     """A* expansion over a Manhattan grid with soft penalties for symbol bodies."""
     sx, sy = start
@@ -340,6 +401,10 @@ def _manhattan_astar_route(
                 elif min_distance < CLEARANCE_THRESHOLD_MM:
                     distance_penalty = (CLEARANCE_THRESHOLD_MM - min_distance) * DISTANCE_PENALTY_WEIGHT
                     cost += distance_penalty
+                if edge_congestion:
+                    edge = _edge_key((x, y), (nx, ny))
+                    if edge in edge_congestion:
+                        cost += EDGE_CONGESTION_WEIGHT * edge_congestion[edge]
 
                 tentative_g = g_cost + cost
                 ns = state_key(nx, ny, i)
@@ -388,6 +453,7 @@ def safe_manhattan_route(
     max_astar_expansions: int = SAFE_ROUTING_DEFAULT_EXPANSIONS,
     bend_penalty: float = 1.0,
     collision_buffer: float = COLLISION_BUFFER_MM,
+    edge_congestion: Optional[dict[Tuple[Point, Point], int]] = None,
     rect_blocking: bool = False,
 ) -> List[Point]:
     """
@@ -400,6 +466,7 @@ def safe_manhattan_route(
         max_astar_expansions: Expansion cap for the primary A* search.
         bend_penalty: Penalty applied when the direction changes.
         collision_buffer: Clearance radius around forbidden vertices.
+        edge_congestion: Optional precomputed congestion map for existing wires.
         rect_blocking: If True, treat symbol rectangles as hard obstacles.
 
     Returns:
@@ -418,6 +485,8 @@ def safe_manhattan_route(
     forbidden_vertices, pin_collision_points = obstacles.build_forbidden_sets(allowed_endpoints)
 
     rects = [bbox[0] for bbox in obstacles.symbol_bboxes]
+    if edge_congestion is None:
+        edge_congestion = _build_edge_congestion_map(obstacles.node_vertices, grid_step)
     astar_route = _manhattan_astar_route(
         s,
         e,
@@ -427,6 +496,7 @@ def safe_manhattan_route(
         max_expansions=max_astar_expansions,
         bend_penalty=bend_penalty,
         rect_blocking=rect_blocking,
+        edge_congestion=edge_congestion,
     )
     if astar_route is not None and _route_respects_clearance(astar_route, forbidden_vertices, pin_collision_points, collision_buffer=collision_buffer):
         return astar_route
@@ -459,6 +529,7 @@ def safe_manhattan_route(
                     max_expansions=8000,
                     bend_penalty=bend_penalty,
                     rect_blocking=rect_blocking,
+                    edge_congestion=edge_congestion,
                 )
                 if escape_route is not None:
                     full_route = [s] + escape_route
@@ -474,6 +545,7 @@ def safe_manhattan_route(
                     max_expansions=8000,
                     bend_penalty=bend_penalty,
                     rect_blocking=rect_blocking,
+                    edge_congestion=edge_congestion,
                 )
                 if escape_route is not None:
                     full_route = escape_route + [e]
@@ -569,6 +641,21 @@ def _segment_hits_forbidden_points(
         if point_segment_distance(fp, a, b) < collision_buffer:
             return True
     return False
+
+
+def _segment_congestion_penalty(
+    a: Point,
+    b: Point,
+    *,
+    grid_step: float,
+    edge_congestion: Optional[dict[Tuple[Point, Point], int]],
+) -> float:
+    if not edge_congestion:
+        return 0.0
+    penalty = 0.0
+    for edge in _iter_segment_edges(a, b, grid_step):
+        penalty += EDGE_CONGESTION_WEIGHT * edge_congestion.get(edge, 0)
+    return penalty
 
 
 def _can_connect_directly(
@@ -702,13 +789,20 @@ def safe_manhattan_route_improved(
         node_vertices=obstacles.node_vertices,
         symbol_bboxes=expanded_bboxes,
     )
+    edge_congestion = _build_edge_congestion_map(obstacles.node_vertices, grid_step)
 
     allowed_endpoints = {coord_key(*s), coord_key(*e)}
     forbidden_vertices, _ = expanded_obstacles.build_forbidden_sets(allowed_endpoints)
     rects = [bbox[0] for bbox in expanded_bboxes]
     forbidden_set = set(forbidden_vertices)
 
-    if _can_connect_directly(s, e, rects, forbidden_set, collision_buffer=collision_buffer):
+    direct_congestion = _segment_congestion_penalty(
+        s,
+        e,
+        grid_step=grid_step,
+        edge_congestion=edge_congestion,
+    )
+    if _can_connect_directly(s, e, rects, forbidden_set, collision_buffer=collision_buffer) and direct_congestion <= 0.0:
         route = [s, e]
     else:
         route = safe_manhattan_route(
@@ -719,6 +813,7 @@ def safe_manhattan_route_improved(
             max_astar_expansions=max_astar_expansions,
             bend_penalty=bend_penalty,
             collision_buffer=collision_buffer,
+            edge_congestion=edge_congestion,
             rect_blocking=True,
         )
 

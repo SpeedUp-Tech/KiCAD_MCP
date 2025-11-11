@@ -194,6 +194,28 @@ class BatteryProtectionRoutingTest(unittest.TestCase):
         self.assertEqual(route[0], start)
         self.assertEqual(route[-1], end)
 
+    def test_wire_overlap_penalty_creates_detour(self):
+        """Routes should avoid sitting directly on top of an existing wire."""
+        node_vertices = [
+            (10.0, 10.0),
+            (30.0, 10.0),
+        ]
+        obstacles = RoutingObstacles([], node_vertices, [])
+        start = (10.0, 10.0)
+        end = (30.0, 10.0)
+
+        route = safe_manhattan_route_improved(
+            start,
+            end,
+            obstacles=obstacles,
+        )
+
+        self.assertGreater(len(route), 2, "Route should detour around the existing wire")
+        self.assertTrue(
+            any(abs(pt[1] - 10.0) > 1e-6 for pt in route[1:-1]),
+            "Intermediate points should leave the overlapping row",
+        )
+
     def test_pin_length_expansion_extends_symbol_bbox(self):
         """Pin tips must be absorbed into the symbol bbox used for routing."""
 
