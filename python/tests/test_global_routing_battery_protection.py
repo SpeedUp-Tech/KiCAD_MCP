@@ -23,7 +23,7 @@ from python.router.manhattan_improved import (
     _expand_symbol_bboxes,
     _prepare_rects_for_clearance,
     _remove_unnecessary_turns,
-    safe_manhattan_route_improved,
+    safe_manhattan_route,
 )
 from sexpdata import Symbol
 from uuid import uuid4
@@ -185,7 +185,7 @@ class BatteryProtectionRoutingTest(unittest.TestCase):
         start = (126.62, 67.47)  # R1 pin 1
         end = (126.62, 100.17)    # R2 pin 1
 
-        route = safe_manhattan_route_improved(
+        route = safe_manhattan_route(
             start, end,
             obstacles=obstacles,
         )
@@ -204,7 +204,7 @@ class BatteryProtectionRoutingTest(unittest.TestCase):
         start = (10.0, 10.0)
         end = (30.0, 10.0)
 
-        route = safe_manhattan_route_improved(
+        route = safe_manhattan_route(
             start,
             end,
             obstacles=obstacles,
@@ -434,7 +434,7 @@ class BatteryProtectionRoutingTest(unittest.TestCase):
         improved_success, improved_times, improved_total_time = self._run_connection_set(
             sch_improved,
             test_connections,
-            router_override=safe_manhattan_route_improved,
+            router_override=safe_manhattan_route,
         )
 
         # Collect improved routes for analysis

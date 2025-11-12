@@ -31,8 +31,8 @@ __all__ = [
     "coord_key",
     "point_segment_distance",
     "POST_PROCESS_RECT_CLEARANCE_MM",
+    "manhattan_route_core",
     "safe_manhattan_route",
-    "safe_manhattan_route_improved",
     "segment_length",
 ]
 
@@ -455,7 +455,7 @@ def _route_respects_clearance(
     return True
 
 
-def safe_manhattan_route(
+def manhattan_route_core(
     start: Point,
     end: Point,
     *,
@@ -787,7 +787,7 @@ def _remove_unnecessary_turns(
     return simplified
 
 
-def safe_manhattan_route_improved(
+def safe_manhattan_route(
     start: Point,
     end: Point,
     *,
@@ -832,7 +832,7 @@ def safe_manhattan_route_improved(
     if _can_connect_directly(s, e, rects, forbidden_set, collision_buffer=collision_buffer) and direct_congestion <= 0.0:
         route = [s, e]
     else:
-        route = safe_manhattan_route(
+        route = manhattan_route_core(
             s,
             e,
             obstacles=expanded_obstacles,

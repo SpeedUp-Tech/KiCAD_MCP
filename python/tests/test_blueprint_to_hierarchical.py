@@ -32,8 +32,8 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         
         cls.test_cases = [
             {
-                "name": "3A充电方案",
-                "blueprint": "test_cases/3A充电方案/blueprint.json",
+                "name": "3A_Charger",
+                "blueprint": "test_cases/3A_Charger/blueprint.json",
                 "expected_modules": 6,
             },
             {
@@ -44,7 +44,7 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         ]
     
     def test_01_generate_from_blueprint_3a(self):
-        """Test generation from 3A充电方案 blueprint"""
+        """Test generation from 3A_Charger blueprint"""
         test_case = self.test_cases[0]
         output_dir = self.test_output_dir / f"{test_case['name']}_{uuid4().hex[:8]}"
         
