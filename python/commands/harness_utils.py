@@ -243,6 +243,8 @@ def build_no_connect_markers(sheet_node: List) -> List[List]:
     return markers
 
 
+
+
 def extract_sheet_pin_positions(sheet_node: List) -> List[Tuple[float, float]]:
     """Return the schematic coordinates where each sheet pin connects."""
     origin = None

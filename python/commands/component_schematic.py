@@ -194,6 +194,7 @@ def _require_connection_manager() -> Any:
     return ConnectionManager
 
 _STANDARD_PROPERTY_NAMES = {'Reference', 'Value', 'Footprint', 'Datasheet'}
+_PRIMITIVE_SYMBOL_NAMES = {'R', 'C', 'L', 'V', 'I', 'E', 'F', 'G', 'H'}
 _DEFAULT_FONT_SIZE = 1.27
 _PROPERTY_OFFSET = 2.54
 
@@ -280,6 +281,87 @@ def _coerce_unit_identifier(unit: Any) -> Optional[str]:
         return str(int(unit))
     except (TypeError, ValueError):
         return str(unit)
+
+
+def _is_primitive_symbol(symbol_name: str) -> bool:
+    """Return True if the symbol comes from the generic primitive set."""
+    if not symbol_name:
+        return False
+    return symbol_name.strip().upper() in _PRIMITIVE_SYMBOL_NAMES
+
+
+def _is_value_visible(value_text: str, hidden: bool) -> bool:
+    """Determine if the Value property should be rendered visibly."""
+    normalized = value_text.strip().lower()
+    if hidden:
+        return False
+    if not normalized or normalized == 'hide':
+        return False
+    return True
+
+
+def _label_offsets_for_value(rotation: float, value_text: str, hidden: bool) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+    """
+    Return ((ref_dx, ref_dy), (val_dx, val_dy)) for Reference/Value based on visibility.
+    Reference sits on the anchor when the value is hidden/empty, otherwise the pair is
+    placed diagonally to avoid overlap irrespective of rotation.
+    """
+    if _is_value_visible(value_text, hidden):
+        return (
+            _rotate_offset(-_PROPERTY_OFFSET, -_PROPERTY_OFFSET, rotation),
+            _rotate_offset(_PROPERTY_OFFSET, _PROPERTY_OFFSET, rotation),
+        )
+    return (
+        (0.0, 0.0),
+        _rotate_offset(0.0, _PROPERTY_OFFSET, rotation),
+    )
+
+
+def _property_is_hidden(property_node: Optional[List[Any]]) -> bool:
+    if not property_node:
+        return False
+    for entry in property_node:
+        if _is_entry(entry, 'effects'):
+            for effect in entry[1:]:
+                if _is_entry(effect, 'hide'):
+                    if len(effect) < 2:
+                        return True
+                    return _atom_to_str(effect[1]).strip().lower() in {'yes', 'true', '1'}
+    return False
+
+
+def _update_property_position(
+    property_node: Optional[List[Any]],
+    x: float,
+    y: float,
+    rotation: float,
+    offset: Tuple[float, float],
+) -> None:
+    if not property_node:
+        return
+    at_node: Optional[List[Any]] = None
+    for entry in property_node:
+        if _is_entry(entry, 'at'):
+            at_node = entry
+            break
+    if not at_node or len(at_node) < 4:
+        return
+    dx, dy = offset
+    at_node[1] = round(x + dx, 6)
+    at_node[2] = round(y + dy, 6)
+    at_node[3] = round(rotation, 6)
+
+
+def _refresh_reference_value_positions(symbol_node: List[Any], x: float, y: float, rotation: float) -> None:
+    ref_node = _find_property_node(symbol_node, 'Reference')
+    val_node = _find_property_node(symbol_node, 'Value')
+    value_text = ''
+    if val_node and len(val_node) >= 3:
+        value_text = _atom_to_str(val_node[2])
+    hidden = _property_is_hidden(val_node)
+    ref_offset, val_offset = _label_offsets_for_value(rotation, value_text, hidden)
+    _update_property_position(ref_node, x, y, rotation, ref_offset)
+    _update_property_position(val_node, x, y, rotation, val_offset)
 
 
 def _refresh_symbol_collection(schematic: Schematic) -> None:
@@ -669,7 +751,11 @@ class ComponentManager:
         component_value = component_def.get('value')
         if component_value is None:
             component_value = library_properties.get('Value') or symbol_name
-        component_value = str(component_value)
+        component_value = str(component_value).strip()
+        primitive_symbol = _is_primitive_symbol(symbol_name)
+        value_hidden = not primitive_symbol
+        if value_hidden:
+            component_value = 'hide'
 
         footprint = component_def.get('footprint') or library_properties.get('Footprint') or ''
         datasheet = component_def.get('datasheet') or library_properties.get('Datasheet') or ''
@@ -707,12 +793,11 @@ class ComponentManager:
         instance_uuid = str(uuid.uuid4())
         component_uuid = str(uuid.uuid4())
 
-        ref_dx, ref_dy = _rotate_offset(0, -_PROPERTY_OFFSET, rotation)
-        val_dx, val_dy = _rotate_offset(0, _PROPERTY_OFFSET, rotation)
+        (ref_dx, ref_dy), (val_dx, val_dy) = _label_offsets_for_value(rotation, component_value, value_hidden)
 
         properties: List[Any] = [
             _make_property('Reference', reference, x + ref_dx, y + ref_dy, rotation),
-            _make_property('Value', component_value, x + val_dx, y + val_dy, rotation),
+            _make_property('Value', component_value, x + val_dx, y + val_dy, rotation, hide=value_hidden),
             _make_property('Footprint', str(footprint), x, y, rotation, hide=True),
             _make_property('Datasheet', str(datasheet), x, y, rotation, hide=True),
         ]
@@ -1128,18 +1213,7 @@ class ComponentManager:
             symbol.at.value = [round(x, 6), round(y, 6), round(rotation, 6)]
             changed_fields.extend(['x', 'y', 'rotation'])
 
-            ref_node = _find_property_node(symbol_node, 'Reference')
-            val_node = _find_property_node(symbol_node, 'Value')
-            ref_dx, ref_dy = _rotate_offset(0, -_PROPERTY_OFFSET, rotation)
-            val_dx, val_dy = _rotate_offset(0, _PROPERTY_OFFSET, rotation)
-            if ref_node and len(ref_node) >= 4 and _is_entry(ref_node[3], 'at'):
-                ref_node[3][1] = round(x + ref_dx, 6)
-                ref_node[3][2] = round(y + ref_dy, 6)
-                ref_node[3][3] = round(rotation, 6)
-            if val_node and len(val_node) >= 4 and _is_entry(val_node[3], 'at'):
-                val_node[3][1] = round(x + val_dx, 6)
-                val_node[3][2] = round(y + val_dy, 6)
-                val_node[3][3] = round(rotation, 6)
+            _refresh_reference_value_positions(symbol_node, x, y, rotation)
 
 
         if new_reference and new_reference != target_ref:
@@ -1151,6 +1225,7 @@ class ComponentManager:
             if getattr(symbol.property.Value, 'value', None) != new_value:
                 symbol.property.Value.value = new_value
                 changed_fields.append('value')
+                _refresh_reference_value_positions(symbol_node, x, y, rotation)
 
         if 'datasheet' in updates and updates['datasheet'] is not None:
             new_datasheet = str(updates['datasheet'])
