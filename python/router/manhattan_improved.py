@@ -18,6 +18,9 @@ CLEARANCE_THRESHOLD_MM = 1.0 * KICAD_SCHEMATIC_GRID_MM
 INSIDE_BBOX_PENALTY = 10.0
 POST_PROCESS_RECT_CLEARANCE_MM = 0.5 * KICAD_SCHEMATIC_GRID_MM
 EDGE_CONGESTION_WEIGHT = 1.5
+CONGESTION_SATURATION = 3.0
+PIN_CONGESTION_RELAX_MM = 1.0 * KICAD_SCHEMATIC_GRID_MM
+BEND_PENALTY_WEIGHT = 2.0
 
 __all__ = [
     "BBox",
@@ -403,8 +406,16 @@ def _manhattan_astar_route(
                     cost += distance_penalty
                 if edge_congestion:
                     edge = _edge_key((x, y), (nx, ny))
-                    if edge in edge_congestion:
-                        cost += EDGE_CONGESTION_WEIGHT * edge_congestion[edge]
+                    base = edge_congestion.get(edge, 0)
+                    if base > 0:
+                        edge_mid = ((edge[0][0] + edge[1][0]) * 0.5, (edge[0][1] + edge[1][1]) * 0.5)
+                        scale = EDGE_CONGESTION_WEIGHT * min(base, CONGESTION_SATURATION)
+                        if (
+                            segment_length(edge_mid, start) <= PIN_CONGESTION_RELAX_MM
+                            or segment_length(edge_mid, end) <= PIN_CONGESTION_RELAX_MM
+                        ):
+                            scale *= 0.5
+                        cost += scale
 
                 tentative_g = g_cost + cost
                 ns = state_key(nx, ny, i)
@@ -451,7 +462,7 @@ def safe_manhattan_route(
     obstacles: RoutingObstacles,
     grid_step: float = KICAD_SCHEMATIC_GRID_MM,
     max_astar_expansions: int = SAFE_ROUTING_DEFAULT_EXPANSIONS,
-    bend_penalty: float = 1.0,
+    bend_penalty: float = BEND_PENALTY_WEIGHT,
     collision_buffer: float = COLLISION_BUFFER_MM,
     edge_congestion: Optional[dict[Tuple[Point, Point], int]] = None,
     rect_blocking: bool = False,
@@ -649,12 +660,26 @@ def _segment_congestion_penalty(
     *,
     grid_step: float,
     edge_congestion: Optional[dict[Tuple[Point, Point], int]],
+    start: Point,
+    end: Point,
 ) -> float:
     if not edge_congestion:
         return 0.0
     penalty = 0.0
-    for edge in _iter_segment_edges(a, b, grid_step):
-        penalty += EDGE_CONGESTION_WEIGHT * edge_congestion.get(edge, 0)
+    for idx, edge in enumerate(_iter_segment_edges(a, b, grid_step)):
+        base = edge_congestion.get(edge, 0)
+        if base <= 0:
+            continue
+        scale = EDGE_CONGESTION_WEIGHT * min(base, CONGESTION_SATURATION)
+        mid_x = (edge[0][0] + edge[1][0]) * 0.5
+        mid_y = (edge[0][1] + edge[1][1]) * 0.5
+        mid_point = (mid_x, mid_y)
+        if (
+            segment_length(mid_point, start) <= PIN_CONGESTION_RELAX_MM
+            or segment_length(mid_point, end) <= PIN_CONGESTION_RELAX_MM
+        ):
+            scale *= 0.5
+        penalty += scale
     return penalty
 
 
@@ -769,7 +794,7 @@ def safe_manhattan_route_improved(
     obstacles: RoutingObstacles,
     grid_step: float = KICAD_SCHEMATIC_GRID_MM,
     max_astar_expansions: int = SAFE_ROUTING_DEFAULT_EXPANSIONS,
-    bend_penalty: float = 1.0,
+    bend_penalty: float = BEND_PENALTY_WEIGHT,
     collision_buffer: float = COLLISION_BUFFER_MM,
     post_process_clearance: float = POST_PROCESS_RECT_CLEARANCE_MM,
 ) -> List[Point]:
@@ -801,6 +826,8 @@ def safe_manhattan_route_improved(
         e,
         grid_step=grid_step,
         edge_congestion=edge_congestion,
+        start=s,
+        end=e,
     )
     if _can_connect_directly(s, e, rects, forbidden_set, collision_buffer=collision_buffer) and direct_congestion <= 0.0:
         route = [s, e]
