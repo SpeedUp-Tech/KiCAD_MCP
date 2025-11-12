@@ -430,10 +430,30 @@ class KiCADInterface:
             if position:
                 component_info["position"] = position
 
+            # Extract pin information
+            pins = []
+            if hasattr(component_obj, 'pin'):
+                from python.commands.connection_schematic import _iter_symbol_pins, _ensure_pin_metadata, _get_pin_type
+
+                for pin in _iter_symbol_pins(component_obj):
+                    pin_number, pin_name = _ensure_pin_metadata(schematic, component_obj, pin)
+                    if not pin_number:
+                        continue
+
+                    pin_type = _get_pin_type(pin) or 'passive'
+
+                    pins.append({
+                        'number': pin_number,
+                        'name': pin_name or '',
+                        'type': pin_type,
+                    })
+
+            component_info["pins"] = pins
+
             # state_text = get_schematic_state(schematic, output_format="text")
             # return {"success": True, "component": component_info, "CurrentSchematicStates": state_text}
             return {"success": True, "component": component_info}
-            
+
         except Exception as e:
             logger.error(f"Error adding component to schematic: {str(e)}")
             return {"success": False, "message": str(e)}
