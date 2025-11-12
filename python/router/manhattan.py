@@ -15,7 +15,7 @@ COORD_KEY_PRECISION = 6
 COLLISION_BUFFER_MM = 0.5
 DISTANCE_PENALTY_WEIGHT = 2.0
 CLEARANCE_THRESHOLD_MM = 1.0 * KICAD_SCHEMATIC_GRID_MM
-INSIDE_BBOX_PENALTY = 10.0
+INSIDE_BBOX_PENALTY = 100.0
 POST_PROCESS_RECT_CLEARANCE_MM = 0.5 * KICAD_SCHEMATIC_GRID_MM
 EDGE_CONGESTION_WEIGHT = 1.5
 CONGESTION_SATURATION = 3.0
@@ -280,7 +280,7 @@ def _manhattan_astar_route(
     span_steps_y = abs(sy - ey) / step if step else 0.0
     margin_steps = max(10.0, max(span_steps_x, span_steps_y) + 6.0)
     if rect_blocking:
-        margin_steps = max(margin_steps, max(span_steps_x, span_steps_y) + 40.0)
+        margin_steps = max(margin_steps, max(span_steps_x, span_steps_y) + 200.0)
     margin_distance = margin_steps * step
 
     xmin = min(sx, ex) - margin_distance
@@ -396,7 +396,7 @@ def _manhattan_astar_route(
                     dist = _distance_to_rect_edge(nx, ny, rect)
                     min_distance = min(min_distance, dist)
                     xmin_r, ymin_r, xmax_r, ymax_r = rect
-                    if (xmin_r <= nx <= xmax_r) and (ymin_r <= ny <= ymax_r):
+                    if (xmin_r < nx < xmax_r) and (ymin_r < ny < ymax_r):
                         inside = True
 
                 if inside:

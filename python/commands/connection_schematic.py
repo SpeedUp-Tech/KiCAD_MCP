@@ -49,9 +49,6 @@ MIN_ROUTED_SEGMENT_MM = 0.5  # Minimum acceptable segment length
 KICAD_SCHEMATIC_GRID_MM = 1.27  # Standard KiCAD grid spacing
 DEFAULT_STUB_LENGTH_MM = 1.27  # 1 grid = 1.27mm
 
-# Routing configuration for bbox expansion
-BBOX_CLEARANCE_MM = 0.5 * KICAD_SCHEMATIC_GRID_MM  # 0.5 grid = 0.635mm clearance around symbols
-
 
 def format_anonymous_net_name(net_id: Optional[Any]) -> str:
     """
@@ -1488,12 +1485,11 @@ def _symbol_body_bbox_from_lib(schematic: Schematic, sym: Symbol) -> Optional[Tu
 
 
 def _collect_symbol_bboxes(schematic: Schematic) -> List[Tuple[Tuple[float, float, float, float], Symbol]]:
-    """Compute each symbol body's axis-aligned bbox from library geometry and expand by a fixed clearance.
+    """Compute each symbol body's axis-aligned bbox from library geometry.
 
     Fallback to pin-extents only if library geometry is unavailable. Power symbols are skipped.
     """
     boxes: List[Tuple[Tuple[float, float, float, float], Symbol]] = []
-    clearance = BBOX_CLEARANCE_MM  # 0.5 grid clearance for routing
     try:
         if hasattr(schematic, 'symbol') and schematic.symbol is not None:
             for sym in schematic.symbol:
@@ -1522,12 +1518,11 @@ def _collect_symbol_bboxes(schematic: Schematic) -> List[Tuple[Tuple[float, floa
                     xs = [p[0] for p in pts]
                     ys = [p[1] for p in pts]
                     rect = (min(xs), min(ys), max(xs), max(ys))
-                # Expand by fixed clearance (no grid snapping - A* handles grid internally)
-                xmin, ymin, xmax, ymax = rect
-                xmin_expanded = xmin - clearance
-                ymin_expanded = ymin - clearance
-                xmax_expanded = xmax + clearance
-                ymax_expanded = ymax + clearance
+                # Use bbox as-is without expansion
+                xmin_expanded = rect[0]
+                ymin_expanded = rect[1]
+                xmax_expanded = rect[2]
+                ymax_expanded = rect[3]
                 boxes.append(((xmin_expanded, ymin_expanded, xmax_expanded, ymax_expanded), sym))
     except Exception:
         pass
