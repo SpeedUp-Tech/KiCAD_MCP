@@ -121,5 +121,17 @@ export function registerLibraryTools(server: McpServer, callKicadScript: Command
     }
   );
 
+  server.tool(
+    'get_symbol_pinout',
+    {
+      library: z.string().describe('Name of the KiCAD symbol library (e.g., Device, MCU_Microchip)'),
+      symbol: z.string().describe('Symbol or MPN identifier to match exactly inside the library'),
+    },
+    async (params) => {
+      const result = await callKicadScript('get_symbol_pinout', params);
+      return formatToolResult(result);
+    }
+  );
+
   logger.info('Library tools registered');
 }

@@ -262,6 +262,7 @@ class KiCADInterface:
             # Library commands
             "create_symbol": self.symbol_library.create_symbol,
             "create_footprint": self.footprint_manager.create_footprint,
+            "get_symbol_pinout": self.symbol_library.get_symbol_pinout,
 
             # Schematic commands
             "create_schematic": self._handle_create_schematic,

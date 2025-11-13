@@ -3,7 +3,12 @@ from skip import Schematic
 import os
 import glob
 import logging
+import sqlite3
+import re
+from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
+
+import sexpdata
 
 logger = logging.getLogger('kicad_interface')
 
@@ -17,8 +22,85 @@ def symbol_name_from_qualified(qualified: str) -> str:
     """Extract the symbol name from library-qualified identifier."""
     return qualified.split(':', 1)[1] if ':' in qualified else qualified
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_SYMBOL_DB = PROJECT_ROOT / 'symbol_lib' / 'kicad_symbols.sqlite3'
+_PIN_SORT_PATTERN = re.compile(r'(-?\d+(?:\.\d+)?)')
+
 class LibraryManager:
     """Manage symbol libraries"""
+
+    @staticmethod
+    def _atom_to_str(atom: Any) -> str:
+        """Convert an S-expression atom (Symbol, str, etc.) to string."""
+        try:
+            if isinstance(atom, sexpdata.Symbol):
+                return atom.value()
+            if isinstance(atom, str):
+                return atom
+        except Exception:
+            pass
+        return str(atom)
+
+    @staticmethod
+    def _is_entry(node: Any, name: str) -> bool:
+        """Return True if node is an S-expression list with the given head symbol."""
+        if not isinstance(node, list) or not node:
+            return False
+        head = node[0]
+        if isinstance(head, sexpdata.Symbol):
+            return head.value() == name
+        return str(head) == name
+
+    @staticmethod
+    def _extract_pin_map_from_symbol_tree(symbol_tree: Any) -> Dict[str, Dict[str, str]]:
+        """Traverse the symbol S-expression and return pin metadata keyed by number."""
+        pins: Dict[str, Dict[str, str]] = {}
+
+        def _walk(node: Any) -> None:
+            if not isinstance(node, list) or not node:
+                return
+
+            if LibraryManager._is_entry(node, 'pin'):
+                pin_number = ''
+                pin_name = ''
+                pin_type = 'passive'
+                for idx, entry in enumerate(node[1:], start=1):
+                    if idx == 1 and not isinstance(entry, list):
+                        candidate = LibraryManager._atom_to_str(entry).strip()
+                        if candidate:
+                            pin_type = candidate
+                    elif LibraryManager._is_entry(entry, 'name') and len(entry) > 1:
+                        pin_name = LibraryManager._atom_to_str(entry[1]).strip()
+                    elif LibraryManager._is_entry(entry, 'number') and len(entry) > 1:
+                        pin_number = LibraryManager._atom_to_str(entry[1]).strip()
+
+                if pin_number:
+                    existing = pins.get(pin_number, {})
+                    chosen_name = pin_name or existing.get('name', '')
+                    chosen_type = pin_type or existing.get('type', 'passive')
+                    pins[pin_number] = {'name': chosen_name, 'type': chosen_type}
+                return
+
+            for child in node[1:]:
+                _walk(child)
+
+        _walk(symbol_tree)
+        return pins
+
+    @staticmethod
+    def _pin_sort_key(pin_number: str) -> Tuple[int, float, str]:
+        """Sort pins numerically when possible, otherwise lexicographically."""
+        cleaned = pin_number.strip()
+        if not cleaned:
+            return (2, float('inf'), pin_number)
+        match = _PIN_SORT_PATTERN.search(cleaned)
+        if match:
+            try:
+                numeric = float(match.group(1))
+                return (0, numeric, cleaned)
+            except ValueError:
+                pass
+        return (1, float('inf'), cleaned)
 
     @staticmethod
     def list_available_libraries(search_paths=None):
@@ -125,6 +207,100 @@ class LibraryManager:
                 "message": "Failed to create symbol",
                 "errorDetails": str(exc)
             }
+
+    @staticmethod
+    def get_symbol_pinout(params: Dict[str, Any]) -> Dict[str, Any]:
+        """Return pin name/type mappings for a symbol stored in the SQLite symbol index."""
+        symbol_input = params.get("symbol") or params.get("symbolName") or params.get("mpn") or params.get("type")
+        library_input = params.get("library") or params.get("libraryName")
+        db_override = params.get("symbolDbPath")
+
+        symbol_name = str(symbol_input).strip() if symbol_input else ""
+        library_name = str(library_input).strip() if library_input else ""
+
+        if not symbol_name or not library_name:
+            return {
+                "success": False,
+                "message": "Both 'symbol' (or mpn/type) and 'library' are required inputs"
+            }
+
+        db_path = DEFAULT_SYMBOL_DB
+        if db_override:
+            candidate = Path(str(db_override)).expanduser()
+            if not candidate.is_absolute():
+                candidate = (PROJECT_ROOT / candidate).resolve()
+            db_path = candidate
+
+        if not db_path.exists():
+            return {
+                "success": False,
+                "message": f"Symbol database not found at {db_path}"
+            }
+
+        row: Optional[sqlite3.Row] = None
+        try:
+            with sqlite3.connect(str(db_path)) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute(
+                    "SELECT mpn, library, sexp FROM symbol_index WHERE library = ? AND mpn = ?",
+                    (library_name, symbol_name),
+                )
+                row = cursor.fetchone()
+        except sqlite3.Error as exc:
+            logger.error("Failed to query symbol index at %s: %s", db_path, exc)
+            return {
+                "success": False,
+                "message": "Unable to query symbol database",
+                "errorDetails": str(exc),
+            }
+
+        if row is None:
+            return {
+                "success": False,
+                "message": f"Symbol '{symbol_name}' not found in library '{library_name}'",
+            }
+
+        sexp_text = row["sexp"] if isinstance(row, sqlite3.Row) else row[2]
+        try:
+            parsed = sexpdata.loads(sexp_text)
+        except Exception as exc:
+            logger.error("Failed to parse symbol %s:%s S-expression: %s", library_name, symbol_name, exc)
+            return {
+                "success": False,
+                "message": f"Unable to parse symbol data for {library_name}:{symbol_name}",
+                "errorDetails": str(exc),
+            }
+
+        symbol_node: Optional[Any] = None
+        if LibraryManager._is_entry(parsed, 'symbol'):
+            symbol_node = parsed
+        elif isinstance(parsed, list):
+            for entry in parsed:
+                if LibraryManager._is_entry(entry, 'symbol'):
+                    symbol_node = entry
+                    break
+
+        if symbol_node is None:
+            return {
+                "success": False,
+                "message": f"Symbol definition for {library_name}:{symbol_name} does not contain pin data",
+            }
+
+        pin_map = LibraryManager._extract_pin_map_from_symbol_tree(symbol_node)
+        ordered_keys = sorted(pin_map.keys(), key=LibraryManager._pin_sort_key)
+        ordered_pins = [
+            {"number": key, "name": pin_map[key]["name"], "type": pin_map[key]["type"]}
+            for key in ordered_keys
+        ]
+
+        return {
+            "success": True,
+            "message": f"Retrieved pinout for {library_name}:{symbol_name}",
+            "symbol": row["mpn"] if isinstance(row, sqlite3.Row) else symbol_name,
+            "library": row["library"] if isinstance(row, sqlite3.Row) else library_name,
+            "pinCount": len(ordered_keys),
+            "pins": ordered_pins,
+        }
 
     @staticmethod
     def _build_symbol_entry(
