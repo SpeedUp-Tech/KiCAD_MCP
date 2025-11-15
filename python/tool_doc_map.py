@@ -43,6 +43,10 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/kicad_interface.py",
         ("KiCADInterface", "_handle_run_module_erc"),
     ),
+    "run_skidl_erc": (
+        "python/kicad_interface.py",
+        ("KiCADInterface", "_handle_run_skidl_erc"),
+    ),
     "list_schematic_libraries": (
         "python/commands/library_schematic.py",
         ("LibraryManager", "list_available_libraries"),

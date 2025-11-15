@@ -317,6 +317,20 @@ export function registerSchematicTools(
   );
 
   server.tool(
+    'run_skidl_erc',
+    toolDescription('run_skidl_erc'),
+    {
+      skidlPath: z.string().describe('Path to the SKiDL file to execute'),
+    },
+    async ({ skidlPath }) => {
+      const result = await callKicadScript('run_skidl_erc', {
+        skidlPath,
+      });
+      return formatToolResult(result);
+    }
+  );
+
+  server.tool(
     'list_schematic_libraries',
     toolDescription('list_schematic_libraries'),
     {

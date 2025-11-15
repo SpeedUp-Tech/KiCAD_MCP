@@ -246,24 +246,23 @@ def Part(*args, **kwargs):
     never touches KiCad symbol files. Otherwise this simply forwards the call.
     """
 
+    args_list = list(args)
     lib = kwargs.get("lib")
     name = kwargs.get("name")
 
-    if len(args) >= 1:
-        lib = args[0]
-    if len(args) >= 2:
-        name = args[1]
+    if len(args_list) >= 1:
+        lib = args_list[0]
+    if len(args_list) >= 2:
+        name = args_list[1]
 
     if isinstance(lib, str) and isinstance(name, str):
         db_lib = _LIB_REGISTRY.resolve(lib, name, kwargs.get("tool"))
         if db_lib:
-            # Replace the library string with the DatabaseSchLib object
-            # Always use keyword argument to avoid type confusion
-            kwargs["lib"] = db_lib
-            # Remove the first positional argument if it was the library
-            if len(args) >= 1:
-                args = args[1:]
-    return _SkidlPart(*args, **kwargs)
+            if len(args_list) >= 1:
+                args_list[0] = db_lib
+            else:
+                kwargs["lib"] = db_lib
+    return _SkidlPart(*tuple(args_list), **kwargs)
 
 
 __all__ = ["Part", "SymbolDatabase", "DatabaseLibraryRegistry"]

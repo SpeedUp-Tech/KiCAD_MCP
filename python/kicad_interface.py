@@ -274,6 +274,7 @@ class KiCADInterface:
             "remove_schematic_connection": self._handle_remove_schematic_connection,
             "connect_schematic_pins": self._handle_connect_schematic_pins,
             "run_module_erc": self._handle_run_module_erc,
+            "run_skidl_erc": self._handle_run_skidl_erc,
             "compile_schematic": self._handle_compile_schematic,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
@@ -909,6 +910,90 @@ class KiCADInterface:
                 }
         except Exception as exc:
             logger.error(f"Error running module ERC: {exc}")
+            return {"success": False, "message": str(exc)}
+
+    def _handle_run_skidl_erc(self, params):
+        """Execute a SKiDL ERC harness script using the KiCAD conda Python interpreter."""
+        logger.info("Running SKiDL ERC harness")
+        try:
+            skidl_path = params.get("skidlPath")
+            if not skidl_path:
+                return {"success": False, "message": "skidlPath is required"}
+
+            skidl_path = os.path.abspath(os.path.expanduser(skidl_path))
+            if not os.path.exists(skidl_path):
+                return {"success": False, "message": f"SKiDL file not found: {skidl_path}"}
+
+            skidl_dir = os.path.dirname(skidl_path) or None
+            command = [sys.executable, skidl_path]
+            logger.debug("Executing SKiDL ERC script: %s", " ".join(command))
+
+            try:
+                env = os.environ.copy()
+                project_root = str(PROJECT_ROOT)
+                existing_pythonpath = env.get("PYTHONPATH")
+                if existing_pythonpath:
+                    env["PYTHONPATH"] = os.pathsep.join(
+                        [project_root, existing_pythonpath]
+                    )
+                else:
+                    env["PYTHONPATH"] = project_root
+                env.setdefault("PROJECT_ROOT", project_root)
+
+                symbol_dir_candidates = [
+                    env.get("KICAD_SYMBOL_DIR"),
+                    str(Path(project_root) / "symbol_lib" / "symbols"),
+                    str(Path("/usr/share/kicad") / "symbols"),
+                ]
+                resolved_symbol_dir = None
+                for candidate in symbol_dir_candidates:
+                    if candidate and Path(candidate).exists():
+                        resolved_symbol_dir = candidate
+                        break
+                if resolved_symbol_dir:
+                    for env_var in [
+                        "KICAD_SYMBOL_DIR",
+                        "KICAD6_SYMBOL_DIR",
+                        "KICAD7_SYMBOL_DIR",
+                        "KICAD8_SYMBOL_DIR",
+                        "KICAD9_SYMBOL_DIR",
+                    ]:
+                        env.setdefault(env_var, resolved_symbol_dir)
+
+                result = subprocess.run(
+                    command,
+                    capture_output=True,
+                    text=True,
+                    cwd=skidl_dir,
+                    env=env,
+                    check=False,
+                )
+            except OSError as exc:
+                logger.error("Failed to run SKiDL ERC script: %s", exc)
+                return {"success": False, "message": f"Failed to run SKiDL file: {exc}"}
+
+            stdout = (result.stdout or "").strip()
+            stderr = (result.stderr or "").strip()
+            combined_message = "\n\n".join(filter(None, [stdout, stderr]))
+            success = result.returncode == 0
+            if not combined_message:
+                combined_message = (
+                    "SKiDL ERC completed successfully"
+                    if success
+                    else f"SKiDL ERC exited with code {result.returncode}"
+                )
+
+            return {
+                "success": success,
+                "message": combined_message,
+                "stdout": stdout,
+                "stderr": stderr,
+                "exitCode": result.returncode,
+                "command": command,
+                "workingDirectory": skidl_dir,
+            }
+        except Exception as exc:
+            logger.error("Error running SKiDL ERC: %s", exc)
             return {"success": False, "message": str(exc)}
 
     def _handle_list_schematic_libraries(self, params):
