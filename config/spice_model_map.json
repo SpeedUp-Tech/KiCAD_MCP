@@ -1,0 +1,32 @@
+{
+  "Device::R": {
+    "type": "pyspice",
+    "name": "R"
+  },
+  "Device::C": {
+    "type": "pyspice",
+    "name": "C"
+  },
+  "Device::L": {
+    "type": "pyspice",
+    "name": "L"
+  },
+  "Device::V": {
+    "type": "pyspice",
+    "name": "V"
+  },
+  "Device::I": {
+    "type": "pyspice",
+    "name": "I"
+  },
+  "Triode_MOS_Tube_Transistor::FDMC510P-MS": {
+    "type": "subckt",
+    "lib_file": "spice_lib/custom/battery_protection_stubs.lib",
+    "name": "FDMC510P_STUB"
+  },
+  "Power_Supply_Chip::AP9101CAK-ATTRG1": {
+    "type": "subckt",
+    "lib_file": "spice_lib/custom/battery_protection_stubs.lib",
+    "name": "AP9101_STUB"
+  }
+}
