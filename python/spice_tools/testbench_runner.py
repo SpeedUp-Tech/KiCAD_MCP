@@ -29,6 +29,10 @@ def _patched_part_init(self, *args, **kwargs):
     dest = kwargs.get("dest")
     if isinstance(dest, str) and dest.upper() == "INSTANCE":
         kwargs["dest"] = skidl_part.NETLIST
+        lib_name = kwargs.get("lib")
+        if isinstance(lib_name, str) and lib_name.lower() == "pyspice":
+            kwargs["lib"] = pyspice_sklib.pyspice_lib
+
     return _ORIG_PART_INIT(self, *args, **kwargs)
 
 
@@ -94,8 +98,18 @@ def _determine_sim_end_ms(use_case: Dict[str, Any]) -> float:
 
 
 def _connect_two_terminal(part, pos_net: Net, neg_net: Net, pos_pin: str = "p", neg_pin: str = "n"):
-    pos_net += part[pos_pin]
-    neg_net += part[neg_pin]
+    instance = _normalize_part_instance(part)
+    pos_net += instance[pos_pin]
+    neg_net += instance[neg_pin]
+
+
+def _normalize_part_instance(part):
+    if isinstance(part, (list, tuple)):
+        for candidate in part:
+            if candidate is not None:
+                return candidate
+        raise ValueError("Expected at least one part instance for source creation.")
+    return part
 
 
 def _build_vin_source(vchg: Net, gnd: Net, vin_cfg: Dict[str, Any], sim_end_ms: float):
@@ -145,10 +159,25 @@ def _build_vin_source(vchg: Net, gnd: Net, vin_cfg: Dict[str, Any], sim_end_ms: 
     _connect_two_terminal(src, vchg, gnd)
 
 
-def _build_load(vpack: Net, gnd: Net, load_cfg: Dict[str, Any], when_cfg: Dict[str, Any], sim_end_ms: float):
+def _build_load(
+    vpack: Net,
+    gnd: Net,
+    load_cfg: Dict[str, Any],
+    when_cfg: Dict[str, Any],
+    sim_end_ms: float,
+    nets: Dict[str, Net],
+    branch_sensors: Dict[str, str],
+):
+    needs_load_node = any(branch.endswith("LOAD") or branch.startswith("LOAD") for branch in branch_sensors)
     if load_cfg["type"] == "const_current":
         current = float(load_cfg["I_A"]) @ u_A
         apply_ms = when_cfg.get("apply_load_at_ms")
+        load_net = vpack
+        if needs_load_node:
+            load_net = nets.get("LOAD")
+            if load_net is None:
+                load_net = Net("LOAD")
+                nets["LOAD"] = load_net
         if isinstance(apply_ms, (int, float)):
             eps = 1e-6
             values = [
@@ -160,7 +189,7 @@ def _build_load(vpack: Net, gnd: Net, load_cfg: Dict[str, Any], when_cfg: Dict[s
             load = PWLI(ref="ILOAD", values=values)
         else:
             load = I(ref="ILOAD", dc_value=current)
-        _connect_two_terminal(load, vpack, gnd)
+        _connect_two_terminal(load, load_net, gnd)
     elif load_cfg["type"] == "battery_model":
         vbatt = V(ref="BAT", dc_value=float(load_cfg.get("voc_V", 4.0)) @ u_V)
         _connect_two_terminal(vbatt, vpack, gnd)
@@ -170,7 +199,30 @@ def _build_load(vpack: Net, gnd: Net, load_cfg: Dict[str, Any], when_cfg: Dict[s
         raise ValueError("Load type not supported in prototype.")
 
 
-def _create_circuit(subckt_fn, use_case, sim_end_ms):
+def _extract_branch_sensors(use_case: Dict[str, Any]) -> Dict[str, str]:
+    sensors: Dict[str, str] = {}
+    counter = 1
+    for measurement in use_case.get("then", {}).get("measurements", []):
+        branch = measurement.get("args", {}).get("branch")
+        if not branch:
+            continue
+        key = branch.strip()
+        if not key:
+            continue
+        if key not in sensors:
+            sensors[key] = f"VBRANCH_{counter}"
+            counter += 1
+    return sensors
+
+
+def _parse_branch(branch_name: str) -> Tuple[str, str]:
+    parts = [p.strip() for p in branch_name.split("->", 1)]
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        raise ValueError(f"Invalid branch identifier '{branch_name}'")
+    return parts[0], parts[1]
+
+
+def _create_circuit(subckt_fn, use_case, sim_end_ms, branch_sensors: Dict[str, str]):
     circuit = Circuit()
     skidl.config.backup_lib = pyspice_sklib.pyspice_lib
     skidl.config.query_backup_lib = True
@@ -178,19 +230,30 @@ def _create_circuit(subckt_fn, use_case, sim_end_ms):
         gnd = Net("GND")
         vchg = Net("VBAT_CHG")
         vpack = Net("VBAT_PACK")
+        nets = {"GND": gnd, "VBAT_CHG": vchg, "VBAT_PACK": vpack}
 
         vin_cfg = use_case["given"]["VIN"]
         _build_vin_source(vchg, gnd, vin_cfg, sim_end_ms)
 
         load_cfg = use_case["given"]["load"]
-        _build_load(vpack, gnd, load_cfg, use_case.get("when", {}) or {}, sim_end_ms)
+        _build_load(vpack, gnd, load_cfg, use_case.get("when", {}) or {}, sim_end_ms, nets, branch_sensors)
+
+        for branch_name, probe_ref in branch_sensors.items():
+            start_node, end_node = _parse_branch(branch_name)
+            try:
+                start_net = nets[start_node]
+                end_net = nets[end_node]
+            except KeyError as exc:
+                raise ValueError(f"Unknown net '{exc.args[0]}' in branch '{branch_name}'") from exc
+            probe = V(ref=probe_ref, dc_value=0 @ u_V)
+            _connect_two_terminal(probe, start_net, end_net)
 
         subckt_fn(GND=gnd, VBAT_CHG=vchg, VBAT_PACK=vpack)
 
     return circuit
 
 
-def _evaluate_measurements(analysis, use_case):
+def _evaluate_measurements(analysis, use_case, branch_sensors: Dict[str, str]):
     results = []
     for measurement in use_case["then"]["measurements"]:
         mid = measurement["id"]
@@ -201,7 +264,13 @@ def _evaluate_measurements(analysis, use_case):
         if fn == "mean":
             node_diff = args.get("node_diff")
             node = args.get("node")
-            if node_diff:
+            branch = args.get("branch")
+            if branch:
+                probe_ref = branch_sensors.get(branch)
+                if probe_ref is None:
+                    raise ValueError(f"No branch sensor found for '{branch}'")
+                values = analysis.branches[probe_ref]
+            elif node_diff:
                 values = analysis[node_diff[0]] - analysis[node_diff[1]]
             else:
                 values = analysis[node]
@@ -238,10 +307,11 @@ def run_testbench(module_path: Path, testbench_path: Path) -> List[Dict[str, Any
     for use_case in data["use_cases"]:
         try:
             sim_end_ms = _determine_sim_end_ms(use_case)
-            circuit = _create_circuit(subckt_fn, use_case, sim_end_ms)
+            branch_sensors = _extract_branch_sensors(use_case)
+            circuit = _create_circuit(subckt_fn, use_case, sim_end_ms, branch_sensors)
             simulator = circuit.simulator(temperature=use_case.get("given", {}).get("ambient", {}).get("temp_C", 25))
             analysis = simulator.transient(step_time=1 @ u_ms, end_time=sim_end_ms @ u_ms)
-            measurements = _evaluate_measurements(analysis, use_case)
+            measurements = _evaluate_measurements(analysis, use_case, branch_sensors)
             reports.append({"use_case": use_case["name"], "measurements": measurements})
         except Exception as exc:
             reports.append({"use_case": use_case["name"], "error": str(exc)})

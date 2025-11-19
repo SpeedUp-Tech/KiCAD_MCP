@@ -21,20 +21,20 @@ declare const ConfigSchema: z.ZodObject<{
         idleTimeoutMs: z.ZodDefault<z.ZodNumber>;
         evictionPolicy: z.ZodDefault<z.ZodEnum<["lru", "fifo"]>>;
     }, "strip", z.ZodTypeAny, {
-        mode: "auto" | "singleton" | "per-connection";
+        mode: "singleton" | "per-connection" | "auto";
         maxProcesses: number;
         idleTimeoutMs: number;
         evictionPolicy: "lru" | "fifo";
     }, {
-        mode?: "auto" | "singleton" | "per-connection" | undefined;
+        mode?: "singleton" | "per-connection" | "auto" | undefined;
         maxProcesses?: number | undefined;
         idleTimeoutMs?: number | undefined;
         evictionPolicy?: "lru" | "fifo" | undefined;
     }>>;
 }, "strip", z.ZodTypeAny, {
-    name: string;
     description: string;
     version: string;
+    name: string;
     logLevel: "error" | "warn" | "info" | "debug";
     pythonPath?: string | undefined;
     pythonExecutable?: string | undefined;
@@ -42,15 +42,15 @@ declare const ConfigSchema: z.ZodObject<{
     logDir?: string | undefined;
     responseTimeoutMs?: number | undefined;
     processManagement?: {
-        mode: "auto" | "singleton" | "per-connection";
+        mode: "singleton" | "per-connection" | "auto";
         maxProcesses: number;
         idleTimeoutMs: number;
         evictionPolicy: "lru" | "fifo";
     } | undefined;
 }, {
-    name?: string | undefined;
     description?: string | undefined;
     version?: string | undefined;
+    name?: string | undefined;
     pythonPath?: string | undefined;
     pythonExecutable?: string | undefined;
     kicadPath?: string | undefined;
@@ -58,7 +58,7 @@ declare const ConfigSchema: z.ZodObject<{
     logDir?: string | undefined;
     responseTimeoutMs?: number | undefined;
     processManagement?: {
-        mode?: "auto" | "singleton" | "per-connection" | undefined;
+        mode?: "singleton" | "per-connection" | "auto" | undefined;
         maxProcesses?: number | undefined;
         idleTimeoutMs?: number | undefined;
         evictionPolicy?: "lru" | "fifo" | undefined;
