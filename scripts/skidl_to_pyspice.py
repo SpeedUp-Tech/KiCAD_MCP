@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-CLI wrapper for python.skidl_tools.pyspice_converter.
+CLI wrapper for python.spice_tools.pyspice_converter.
 """
 
 from __future__ import annotations
@@ -9,7 +9,7 @@ import argparse
 from pathlib import Path
 import textwrap
 
-from python.skidl_tools import DEFAULT_MAPPING_PATH, convert_skidl_module
+from python.spice_tools import convert_skidl_module
 
 
 def main() -> None:
@@ -18,16 +18,16 @@ def main() -> None:
     parser.add_argument("--subckt", required=True, help="Subcircuit function name to instantiate.")
     parser.add_argument("--output", required=True, type=Path, help="Destination path for the PySpice module.")
     parser.add_argument(
-        "--mapping",
-        type=Path,
-        default=DEFAULT_MAPPING_PATH,
-        help="JSON mapping of (library,name) to SPICE models.",
-    )
-    parser.add_argument(
         "--subckt-output",
         type=str,
         default=None,
         help="Optional override for the generated subcircuit name.",
+    )
+    parser.add_argument(
+        "--model-db",
+        type=Path,
+        default=None,
+        help="Override path to the SPICE model database.",
     )
     args = parser.parse_args()
 
@@ -35,8 +35,8 @@ def main() -> None:
         input_path=args.input,
         subckt_name=args.subckt,
         output_path=args.output,
-        mapping_path=args.mapping,
         subckt_output=args.subckt_output,
+        model_db_path=args.model_db,
     )
     print(
         textwrap.dedent(
@@ -50,4 +50,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

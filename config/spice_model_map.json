@@ -21,12 +21,12 @@
   },
   "Triode_MOS_Tube_Transistor::FDMC510P-MS": {
     "type": "subckt",
-    "lib_file": "spice_lib/custom/battery_protection_stubs.lib",
-    "name": "FDMC510P_STUB"
+    "lib_file": "spice_lib/custom/battery_protection_models.lib",
+    "name": "FDMC510P_BHV"
   },
   "Power_Supply_Chip::AP9101CAK-ATTRG1": {
     "type": "subckt",
-    "lib_file": "spice_lib/custom/battery_protection_stubs.lib",
-    "name": "AP9101_STUB"
+    "lib_file": "spice_lib/custom/battery_protection_models.lib",
+    "name": "AP9101_BHV"
   }
 }

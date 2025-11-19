@@ -2,24 +2,25 @@
 Helpers to convert DB-backed SKiDL modules into PySpice-ready subcircuits.
 
 The converter loads a SKiDL module, instantiates the requested @SubCircuit,
-maps each part to a PySpice primitive or SPICE .SUBCKT according to a JSON
-mapping file, and writes a new Python module that can be imported by PySpice.
+maps each part to a PySpice primitive or SPICE .SUBCKT using the shared model
+database, and writes a new Python module that can be imported by PySpice.
 """
 
 from __future__ import annotations
 
 import importlib.util
 import inspect
-import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Tuple, Optional
+
+import os
 
 from skidl import Circuit, Net
 
+from .model_db import search_spice_model, DEFAULT_MODEL_DB
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MAPPING_PATH = REPO_ROOT / "config" / "spice_model_map.json"
 
 
 @dataclass
@@ -81,27 +82,41 @@ def _unique_sorted(items: Iterable[str]) -> List[str]:
     return sorted(dict.fromkeys(items))
 
 
-def _load_mapping(mapping_path: Path) -> Dict[str, dict]:
-    if not mapping_path.exists():
-        raise FileNotFoundError(f"Mapping file {mapping_path} not found.")
-    return json.loads(mapping_path.read_text(encoding="utf-8"))
+def _relative_path(target: Path, base: Path) -> str:
+    target_abs = target.resolve()
+    base_abs = base.resolve()
+    rel = os.path.relpath(target_abs, base_abs)
+    return Path(rel).as_posix()
 
 
-def _resolve_model(mapping: Dict[str, dict], library: str, name: str) -> dict:
-    key = f"{library}::{name}"
-    if key not in mapping:
-        available = ", ".join(sorted(mapping.keys()))
-        raise KeyError(f"No SPICE mapping found for {key}. Known keys: {available}")
-    return mapping[key]
+PRIMITIVE_MODELS = {
+    "Device::R": {"type": "pyspice", "name": "R"},
+    "Device::C": {"type": "pyspice", "name": "C"},
+    "Device::L": {"type": "pyspice", "name": "L"},
+    "Device::V": {"type": "pyspice", "name": "V"},
+    "Device::I": {"type": "pyspice", "name": "I"},
+}
+
+
+def _parse_subckt_name(model_content: str) -> Optional[str]:
+    for raw in model_content.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("*"):
+            continue
+        if line.upper().startswith(".SUBCKT"):
+            tokens = line.split()
+            if len(tokens) >= 2:
+                return tokens[1]
+    return None
 
 
 def _emit_module(
-    output: Path,
+    output_path: Path,
     subckt_out: str,
     interface_nets: List[str],
     circuit,
     parts: List[PartRecord],
-    mapping: Dict[str, dict],
+    model_specs: Dict[str, dict],
 ) -> None:
     internal_nets = [
         net.name
@@ -140,7 +155,11 @@ def _emit_module(
     lines.append("")
 
     for part in sorted(parts, key=lambda p: p.ref):
-        model = _resolve_model(mapping, part.library, part.name)
+        key = f"{part.library}::{part.name}"
+        model = model_specs.get(key)
+        if model is None:
+            available = ", ".join(sorted(model_specs.keys()))
+            raise KeyError(f"No SPICE model registered for {key}. Known keys: {available}")
         inst_kwargs = [
             f"ref='{part.ref}'",
             "dest='INSTANCE'",
@@ -151,7 +170,10 @@ def _emit_module(
         if model["type"] == "pyspice":
             inst = f"Part(lib='pyspice', name='{model['name']}', {', '.join(inst_kwargs)})"
         elif model["type"] == "subckt":
-            rel_path = model["lib_file"]
+            lib_path = Path(model["lib_file"])
+            if not lib_path.is_absolute():
+                lib_path = (REPO_ROOT / lib_path).resolve()
+            rel_path = _relative_path(lib_path, output_path.parent)
             lib_var = lib_vars.get(rel_path)
             if lib_var is None:
                 lib_var = f"_LIB_{len(lib_vars)}"
@@ -181,15 +203,15 @@ def _emit_module(
     lines.append(f"        {subckt_out}(**interface)")
     lines.append("    print(f'Generated PySpice netlist with {len(circuit.parts)} parts and {len(circuit.nets)} nets.')")
 
-    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    output_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def convert_skidl_module(
     input_path: Path,
     subckt_name: str,
     output_path: Path,
-    mapping_path: Path | None = None,
     subckt_output: str | None = None,
+    model_db_path: Path | None = None,
 ) -> str:
     """
     Convert a SKiDL module/subcircuit into a PySpice-ready Python module.
@@ -200,13 +222,48 @@ def convert_skidl_module(
     module = _load_module(input_path.resolve())
     circuit, interface = _instantiate_subckt(module, subckt_name)
     parts = [_extract_part(part) for part in circuit.parts]
-    mapping = _load_mapping(mapping_path or DEFAULT_MAPPING_PATH)
     subckt_out = subckt_output or f"{subckt_name}_pyspice"
 
+    model_specs: Dict[str, dict] = {}
+    model_specs.update(PRIMITIVE_MODELS)
+
+    db_models: Dict[str, dict] = {}
+    model_db = model_db_path or DEFAULT_MODEL_DB
+    for part in parts:
+        key = f"{part.library}::{part.name}"
+        if key in model_specs or key in db_models:
+            continue
+        entry = search_spice_model(name=part.name, library=part.library, db_path=model_db)
+        if entry is None:
+            raise KeyError(f"No SPICE model found in database for {key}.")
+        subckt = _parse_subckt_name(entry["model_content"])
+        if not subckt:
+            raise ValueError(f"Unable to determine .SUBCKT name for model {key}.")
+        db_models[key] = {
+            "subckt": subckt,
+            "content": entry["model_content"].strip(),
+        }
+
+    model_lib_path = output_path.with_suffix(".spice.lib")
+    lib_rel_path = None
+    if db_models:
+        model_lib_path.parent.mkdir(parents=True, exist_ok=True)
+        combined = "\n\n".join(model["content"] for model in db_models.values()) + "\n"
+        model_lib_path.write_text(combined, encoding="utf-8")
+        lib_rel_path = model_lib_path.resolve().as_posix()
+        for key, model in db_models.items():
+            model_specs[key] = {
+                "type": "subckt",
+                "lib_file": lib_rel_path,
+                "name": model["subckt"],
+            }
+    else:
+        if model_lib_path.exists():
+            model_lib_path.unlink()
+
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    _emit_module(output_path, subckt_out, interface, circuit, parts, mapping)
+    _emit_module(output_path, subckt_out, interface, circuit, parts, model_specs)
     return subckt_out
 
 
-__all__ = ["convert_skidl_module", "DEFAULT_MAPPING_PATH"]
-
+__all__ = ["convert_skidl_module"]
