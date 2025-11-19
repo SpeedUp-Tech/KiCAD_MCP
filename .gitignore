@@ -8,6 +8,7 @@ results/
 .venv/
 src/generated/
 dist/generated/
+dist/.tsbuildinfo
 .vscode/
 KiCad-Spice-Library/
 easyeda2kicad.py/
