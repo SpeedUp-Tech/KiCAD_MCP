@@ -68,7 +68,7 @@ All responses are structured JSON; no human-in-the-loop parsing is required.
 ```
 
 - **TypeScript server** (`src/`) owns MCP protocol handling, logging, and process management. Tools live in modular files under `src/tools/` (board, schematic, library, etc.).
-- **Python command modules** (`python/commands/`) isolate domain logic for projects, schematics, routing, symbols, footprints, exports, and more. The central router is `python/kicad_interface.py`.
+- **Python command modules** (`python/commands/`) are organized into subpackages (`pcb/`, `kicad_schematics/`, `database_tools/`, `skidl_tools/`) that isolate board ops, schematic manipulation, library/search tooling, and SKiDL helpers. The central router is `python/kicad_interface.py`.
 - **Resources & prompts** (`src/resources/`, `src/prompts/`) provide contextual info and guided prompt templates to the agent.
 
 ---

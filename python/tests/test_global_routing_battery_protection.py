@@ -12,9 +12,9 @@ import time
 from contextlib import contextmanager, nullcontext
 from typing import List
 
-from python.commands.component_schematic import ComponentManager
-from python.commands.connection_schematic import ConnectionManager, _collect_symbol_bboxes
-from python.commands.schematic import SchematicManager
+from python.commands.kicad_schematics.component_schematic import ComponentManager
+from python.commands.kicad_schematics.connection_schematic import ConnectionManager, _collect_symbol_bboxes
+from python.commands.kicad_schematics.schematic import SchematicManager
 from python.router.manhattan import RoutingObstacles, coord_key, safe_manhattan_route
 from python.router.manhattan_improved import (
     COLLISION_BUFFER_MM,
@@ -728,7 +728,7 @@ class BatteryProtectionRoutingTest(unittest.TestCase):
         """Temporarily replace the global Manhattan router used by ConnectionManager."""
         import python.router as router_pkg
         from python.router import manhattan as manhattan_module
-        import python.commands.connection_schematic as connection_module
+        import python.commands.kicad_schematics.connection_schematic as connection_module
 
         original_router_pkg = router_pkg.safe_manhattan_route
         original_manhattan = manhattan_module.safe_manhattan_route

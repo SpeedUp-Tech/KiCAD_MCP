@@ -117,22 +117,22 @@ except Exception as e:
 # Import command handlers
 try:
     logger.info("Importing command handlers...")
-    from commands.project import ProjectCommands
-    from commands.board import BoardCommands
-    from commands.component import ComponentCommands
-    from commands.routing import RoutingCommands
-    from commands.design_rules import DesignRuleCommands
-    from commands.export import ExportCommands
-    from commands.schematic import SchematicManager
-    from commands.component_schematic import ComponentManager
-    from commands.connection_schematic import ConnectionManager, SchematicCompiler
-    from commands.library_schematic import LibraryManager
-    from commands.footprint import FootprintManager
-    from commands.blueprint_to_hierarchical import generate_hierarchical_schematic
-    from commands.schematic_state import get_schematic_state
-    from commands.component_search import ComponentSearchCommands
-    from commands.erc_utils import prepare_module_erc_artifacts
-    from commands.library_export import export_project_libraries
+    from commands.pcb.project import ProjectCommands
+    from commands.pcb.board import BoardCommands
+    from commands.pcb.component import ComponentCommands
+    from commands.pcb.routing import RoutingCommands
+    from commands.pcb.design_rules import DesignRuleCommands
+    from commands.pcb.export import ExportCommands
+    from commands.kicad_schematics.schematic import SchematicManager
+    from commands.kicad_schematics.component_schematic import ComponentManager
+    from commands.kicad_schematics.connection_schematic import ConnectionManager, SchematicCompiler
+    from commands.database_tools.library_schematic import LibraryManager
+    from commands.database_tools.footprint import FootprintManager
+    from commands.kicad_schematics.blueprint_to_hierarchical import generate_hierarchical_schematic
+    from commands.kicad_schematics.schematic_state import get_schematic_state
+    from commands.database_tools.component_search import ComponentSearchCommands
+    from commands.kicad_schematics.erc_utils import prepare_module_erc_artifacts
+    from commands.database_tools.library_export import export_project_libraries
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -435,7 +435,7 @@ class KiCADInterface:
             # Extract pin information
             pins = []
             if hasattr(component_obj, 'pin'):
-                from python.commands.connection_schematic import _iter_symbol_pins, _ensure_pin_metadata, _get_pin_type
+                from python.commands.kicad_schematics.connection_schematic import _iter_symbol_pins, _ensure_pin_metadata, _get_pin_type
 
                 for pin in _iter_symbol_pins(component_obj):
                     pin_number, pin_name = _ensure_pin_metadata(schematic, component_obj, pin)

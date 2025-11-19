@@ -26,9 +26,9 @@ except Exception:
 
 # Import project commands
 sys.path.insert(0, str(ROOT))
-from python.commands.schematic import SchematicManager  # type: ignore
-from python.commands.component_schematic import ComponentManager  # type: ignore
-from python.commands.connection_schematic import ConnectionManager  # type: ignore
+from python.commands.kicad_schematics.schematic import SchematicManager  # type: ignore
+from python.commands.kicad_schematics.component_schematic import ComponentManager  # type: ignore
+from python.commands.kicad_schematics.connection_schematic import ConnectionManager  # type: ignore
 
 
 def run_kicad_cli_export_svg(schematic_path: Path, svg_path: Path) -> tuple[bool, str]:

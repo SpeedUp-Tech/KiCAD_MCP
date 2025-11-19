@@ -3,7 +3,7 @@ Unit tests for grid alignment utilities.
 """
 
 import unittest
-from python.commands.grid_utils import (
+from python.commands.kicad_schematics.grid_utils import (
     snap_to_grid,
     snap_point_to_grid,
     snap_points_to_grid,

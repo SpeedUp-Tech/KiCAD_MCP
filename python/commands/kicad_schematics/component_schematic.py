@@ -21,7 +21,7 @@ from skip.sexp.util import loadTree
 
 from .grid_utils import snap_to_grid, snap_point_to_grid
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 LIBRARY_PATHS_CONFIG = PROJECT_ROOT / 'config' / 'library-paths.json'
 DEFAULT_SYMBOL_SEARCH_PATHS = [
     PROJECT_ROOT / 'symbol_lib' / 'symbols',

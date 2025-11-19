@@ -10,9 +10,9 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
 # Import our schematic modules
-from python.commands.schematic import SchematicManager
-from python.commands.component_schematic import ComponentManager
-from python.commands.connection_schematic import ConnectionManager
+from python.commands.kicad_schematics.schematic import SchematicManager
+from python.commands.kicad_schematics.component_schematic import ComponentManager
+from python.commands.kicad_schematics.connection_schematic import ConnectionManager
 
 def main():
     """Run a basic test of schematic functionality"""

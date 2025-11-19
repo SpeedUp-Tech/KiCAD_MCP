@@ -28,6 +28,7 @@ try:
     from .connection_schematic import _get_pin_location as _cs_get_pin_location
     from .connection_schematic import (
         format_anonymous_net_name as _cs_format_anonymous_net_name,
+        _derive_power_net_name as _cs_power_net_name,
     )
 except Exception:
     def _cs_iter_symbol_pins(symbol: Any) -> List[Any]:
@@ -63,6 +64,13 @@ except Exception:
         except (TypeError, ValueError):
             numeric_id = -1
         return f"Net {numeric_id}"
+
+    def _cs_power_net_name(lib_id: str, raw_value: Optional[str]) -> str:
+        value = (raw_value or '').strip()
+        if value:
+            return value
+        parts = (lib_id or '').split(':')
+        return parts[-1].strip() if parts else value
 
 logger = logging.getLogger('kicad_interface')
 
@@ -380,7 +388,9 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
                     label_name = reference or value or lib_id
                     direction = 'power_flag'
                 else:
-                    label_name = value or reference or lib_id
+                    label_name = _cs_power_net_name(lib_id or '', str(value) if value else '')
+                    if not label_name:
+                        label_name = reference or lib_id
                     direction = 'power'
 
                 if label_name:

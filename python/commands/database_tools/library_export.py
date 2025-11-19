@@ -17,7 +17,7 @@ from skip.sexp.util import writeTree
 
 LOGGER = logging.getLogger("library_export")
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 LIBRARY_PATHS_CONFIG = PROJECT_ROOT / "config" / "library-paths.json"
 DEFAULT_SYMBOL_VERSION = 20211014
 SYMBOL_GENERATOR = "KiCAD-MCP-ProjectLibs"

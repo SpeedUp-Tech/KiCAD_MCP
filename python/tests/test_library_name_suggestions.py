@@ -15,7 +15,7 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from commands.component_schematic import _find_similar_library_names, _resolve_library_path
+from commands.kicad_schematics.component_schematic import _find_similar_library_names, _resolve_library_path
 
 
 class LibraryNameSuggestionTests(unittest.TestCase):
@@ -123,8 +123,8 @@ class IntegrationTestWithComponentManager(unittest.TestCase):
 
     def test_add_component_with_wrong_library_case(self):
         """Test that add_component provides helpful error when library case is wrong."""
-        from commands.schematic import SchematicManager
-        from commands.component_schematic import ComponentManager
+        from commands.kicad_schematics.schematic import SchematicManager
+        from commands.kicad_schematics.component_schematic import ComponentManager
         
         # Create a temporary schematic
         schematic = SchematicManager.create_schematic('TestSchematic')

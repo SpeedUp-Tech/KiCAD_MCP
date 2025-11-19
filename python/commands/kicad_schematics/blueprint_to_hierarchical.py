@@ -29,8 +29,9 @@ from uuid import uuid4
 
 from sexpdata import Symbol
 from .grid_utils import snap_to_grid
-
 from .schematic import SchematicManager
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,15 @@ logger = logging.getLogger(__name__)
 def generate_hierarchical_schematic(blueprint_path: str, output_dir: str) -> Dict[str, Any]:
     """Generate a hierarchical KiCad project from a blueprint JSON file."""
 
-    with open(blueprint_path, "r", encoding="utf-8") as f:
+    blueprint_file = Path(blueprint_path)
+    if not blueprint_file.is_absolute():
+        blueprint_file = (PROJECT_ROOT / blueprint_file).resolve()
+    if not blueprint_file.exists():
+        fallback = (Path.cwd() / blueprint_path).resolve()
+        if fallback.exists():
+            blueprint_file = fallback
+
+    with open(blueprint_file, "r", encoding="utf-8") as f:
         blueprint = json.load(f)
 
     output_path = Path(output_dir)

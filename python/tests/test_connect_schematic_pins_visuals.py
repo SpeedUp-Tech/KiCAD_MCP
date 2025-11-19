@@ -7,10 +7,10 @@ from typing import Dict, List, Tuple
 
 from sexpdata import Symbol
 
-from python.commands.schematic import SchematicManager
-from python.commands.component_schematic import ComponentManager
-from python.commands.connection_schematic import ConnectionManager
-from python.commands.grid_utils import KICAD_SCHEMATIC_GRID_MM, snap_to_grid
+from python.commands.kicad_schematics.schematic import SchematicManager
+from python.commands.kicad_schematics.component_schematic import ComponentManager
+from python.commands.kicad_schematics.connection_schematic import ConnectionManager
+from python.commands.kicad_schematics.grid_utils import KICAD_SCHEMATIC_GRID_MM, snap_to_grid
 
 
 # Root export directory for visual artifacts

@@ -16,8 +16,8 @@ from uuid import uuid4
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-from python.commands.blueprint_to_hierarchical import generate_hierarchical_schematic
-from python.commands.schematic import SchematicManager
+from python.commands.kicad_schematics.blueprint_to_hierarchical import generate_hierarchical_schematic
+from python.commands.kicad_schematics.schematic import SchematicManager
 from sexpdata import loads, Symbol
 
 
@@ -32,8 +32,8 @@ class TestBlueprintToHierarchical(unittest.TestCase):
         
         cls.test_cases = [
             {
-                "name": "3A_Charger",
-                "blueprint": "test_cases/3A_Charger/blueprint.json",
+                "name": "case_3A_charger",
+                "blueprint": "test_cases/case_3A_charger/blueprint.json",
                 "expected_modules": 6,
             },
             {

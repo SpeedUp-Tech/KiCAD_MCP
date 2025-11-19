@@ -24,7 +24,7 @@ from .harness_utils import (
     save_harness_schematic,
 )
 from .schematic import SchematicManager
-from .library_export import export_project_libraries
+from commands.database_tools.library_export import export_project_libraries
 
 
 def prepare_module_erc_artifacts(module_path: str, output_dir: str) -> Dict[str, Any]:

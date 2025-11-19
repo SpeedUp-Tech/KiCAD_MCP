@@ -1,9 +1,9 @@
 import unittest
 from sexpdata import Symbol
 
-from python.commands.schematic import SchematicManager
-from python.commands.connection_schematic import ConnectionManager
-from python.commands.grid_utils import KICAD_SCHEMATIC_GRID_MM, snap_to_grid
+from python.commands.kicad_schematics.schematic import SchematicManager
+from python.commands.kicad_schematics.connection_schematic import ConnectionManager
+from python.commands.kicad_schematics.grid_utils import KICAD_SCHEMATIC_GRID_MM, snap_to_grid
 
 
 def add_hlabel(schematic, name: str, x: float, y: float):

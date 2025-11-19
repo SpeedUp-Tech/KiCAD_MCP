@@ -20,10 +20,10 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from python.commands.schematic import SchematicManager
-from python.commands.connection_schematic import ConnectionManager
-from python.commands.component_schematic import ComponentManager
-from python.commands.grid_utils import snap_to_grid
+from python.commands.kicad_schematics.schematic import SchematicManager
+from python.commands.kicad_schematics.connection_schematic import ConnectionManager
+from python.commands.kicad_schematics.component_schematic import ComponentManager
+from python.commands.kicad_schematics.grid_utils import snap_to_grid
 from sexpdata import Symbol
 
 

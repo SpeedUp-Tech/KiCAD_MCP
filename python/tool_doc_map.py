@@ -12,31 +12,31 @@ ToolPath = Tuple[str, ...]
 
 # Map of MCP tool name -> (relative python file, attribute path to docstring)
 TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
-    "create_schematic": ("python/commands/schematic.py", ("SchematicManager", "create_schematic")),
-    "load_schematic": ("python/commands/schematic.py", ("SchematicManager", "load_schematic")),
+    "create_schematic": ("python/commands/kicad_schematics/schematic.py", ("SchematicManager", "create_schematic")),
+    "load_schematic": ("python/commands/kicad_schematics/schematic.py", ("SchematicManager", "load_schematic")),
     "add_schematic_component": (
-        "python/commands/component_schematic.py",
+        "python/commands/kicad_schematics/component_schematic.py",
         ("ComponentManager", "add_component"),
     ),
     "update_schematic_component": (
-        "python/commands/component_schematic.py",
+        "python/commands/kicad_schematics/component_schematic.py",
         ("ComponentManager", "update_component"),
     ),
     "remove_schematic_component": (
-        "python/commands/component_schematic.py",
+        "python/commands/kicad_schematics/component_schematic.py",
         ("ComponentManager", "remove_component"),
     ),
-    "add_schematic_wire": ("python/commands/connection_schematic.py", ("ConnectionManager", "add_wire")),
+    "add_schematic_wire": ("python/commands/kicad_schematics/connection_schematic.py", ("ConnectionManager", "add_wire")),
     "remove_schematic_connection": (
-        "python/commands/connection_schematic.py",
+        "python/commands/kicad_schematics/connection_schematic.py",
         ("ConnectionManager", "remove_connection"),
     ),
     "connect_schematic_pins": (
-        "python/commands/connection_schematic.py",
+        "python/commands/kicad_schematics/connection_schematic.py",
         ("ConnectionManager", "connect_pins"),
     ),
     "compile_schematic": (
-        "python/commands/connection_schematic.py",
+        "python/commands/kicad_schematics/connection_schematic.py",
         ("SchematicCompiler", "compile"),
     ),
     "run_module_erc": (
@@ -48,11 +48,11 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         ("KiCADInterface", "_handle_run_skidl_erc"),
     ),
     "list_schematic_libraries": (
-        "python/commands/library_schematic.py",
+        "python/commands/database_tools/library_schematic.py",
         ("LibraryManager", "list_available_libraries"),
     ),
-    "export_schematic_pdf": ("python/commands/export.py", ("ExportCommands", "export_pdf")),
-    "export_schematic_svg": ("python/commands/export.py", ("ExportCommands", "export_svg")),
+    "export_schematic_pdf": ("python/commands/pcb/export.py", ("ExportCommands", "export_pdf")),
+    "export_schematic_svg": ("python/commands/pcb/export.py", ("ExportCommands", "export_svg")),
     "run_erc": ("python/kicad_interface.py", ("KiCADInterface", "_handle_run_erc")),
     "export_schematic_netlist": ("python/kicad_interface.py", ("KiCADInterface", "_handle_export_netlist")),
     "export_schematic_bom": ("python/kicad_interface.py", ("KiCADInterface", "_handle_export_schematic_bom")),
@@ -60,8 +60,8 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/kicad_interface.py",
         ("KiCADInterface", "_handle_generate_hierarchical_schematic"),
     ),
-    "get_schematic_state": ("python/commands/schematic_state.py", ("get_schematic_state",)),
-    "search_mpn_part": ("python/commands/component_search.py", ("ComponentSearchCommands", "search_mpn_part")),
+    "get_schematic_state": ("python/commands/kicad_schematics/schematic_state.py", ("get_schematic_state",)),
+    "search_mpn_part": ("python/commands/database_tools/component_search.py", ("ComponentSearchCommands", "search_mpn_part")),
 }
 
 

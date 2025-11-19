@@ -24,7 +24,7 @@ def main():
         
         # Import our SchematicManager
         print("Importing SchematicManager...")
-        from python.commands.schematic import SchematicManager
+        from python.commands.kicad_schematics.schematic import SchematicManager
         print("Successfully imported SchematicManager")
         
         # Create a new schematic

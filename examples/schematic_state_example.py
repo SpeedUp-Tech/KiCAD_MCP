@@ -16,11 +16,11 @@ import shutil
 # Add parent directory to path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'python'))
 
-from commands.schematic import SchematicManager
-from commands.component_schematic import ComponentManager
-from commands.connection_schematic import ConnectionManager
-from commands.schematic_state import get_schematic_state
-from commands.grid_utils import snap_to_grid
+from commands.kicad_schematics.schematic import SchematicManager
+from commands.kicad_schematics.component_schematic import ComponentManager
+from commands.kicad_schematics.connection_schematic import ConnectionManager
+from commands.kicad_schematics.schematic_state import get_schematic_state
+from commands.kicad_schematics.grid_utils import snap_to_grid
 from sexpdata import Symbol
 
 

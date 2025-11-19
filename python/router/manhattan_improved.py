@@ -5,7 +5,7 @@ import math
 from dataclasses import dataclass
 from typing import Any, Iterable, List, Optional, Sequence, Set, Tuple
 
-from python.commands.grid_utils import KICAD_SCHEMATIC_GRID_MM
+from python.commands.kicad_schematics.grid_utils import KICAD_SCHEMATIC_GRID_MM
 
 Point = Tuple[float, float]
 Rect = Tuple[float, float, float, float]

@@ -1,10 +1,10 @@
 import unittest
 from sexpdata import Symbol
 
-from python.commands.schematic import SchematicManager
-from python.commands.component_schematic import ComponentManager
-from python.commands.connection_schematic import ConnectionManager
-from python.commands.schematic_state import get_schematic_state
+from python.commands.kicad_schematics.schematic import SchematicManager
+from python.commands.kicad_schematics.component_schematic import ComponentManager
+from python.commands.kicad_schematics.connection_schematic import ConnectionManager
+from python.commands.kicad_schematics.schematic_state import get_schematic_state
 
 
 class SchematicStateJsonTests(unittest.TestCase):

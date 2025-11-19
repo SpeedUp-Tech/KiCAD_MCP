@@ -348,8 +348,8 @@ def _collect_net_context(schematic: Schematic) -> Dict[str, Any]:
                         continue
 
                     value_prop = getattr(getattr(symbol, 'property', None), 'Value', None)
-                    power_name = getattr(value_prop, 'value', '') if value_prop is not None else ''
-                    power_name = str(power_name).strip()
+                    raw_value = getattr(value_prop, 'value', '') if value_prop is not None else ''
+                    power_name = _derive_power_net_name(lib_id, raw_value)
                     if not power_name:
                         continue
 
@@ -520,6 +520,24 @@ def _coerce_unit_value(unit: Any) -> Optional[str]:
         return str(int(unit))
     except (TypeError, ValueError):
         return str(unit)
+
+
+def _derive_power_net_name(lib_id: str, raw_value: Optional[str]) -> str:
+    """
+    Determine the logical net name for a power symbol.
+
+    KiCad often stores \"Value\" as \"hide\" for power units, so we fall back to the
+    library symbol name (the lib_id suffix) when needed.
+    """
+    candidate = (raw_value or '').strip()
+    if candidate and candidate.lower() not in {'hide', '~'}:
+        return candidate
+    if lib_id:
+        parts = lib_id.split(':')
+        symbol_name = parts[-1].strip()
+        if symbol_name:
+            return symbol_name
+    return candidate
 
 
 def _find_symbol(
@@ -1007,18 +1025,23 @@ def _find_hierarchical_label(
         for symbol in getattr(schematic, 'symbol'):
             try:
                 lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '') or ''
-                if 'power' not in lib_id.lower():
+                lib_parts = lib_id.split(':')
+                symbol_name = lib_parts[-1] if lib_parts else ''
+                if 'power' not in lib_id.lower() and symbol_name.strip().upper() != target.upper():
                     continue
                 value = getattr(getattr(symbol, 'property', None), 'Value', None)
                 value_str = getattr(value, 'value', '') if value is not None else ''
-                if str(value_str).strip() != target:
+                net_name = _derive_power_net_name(lib_id, value_str)
+                if not net_name:
+                    continue
+                if net_name.strip().upper() != target.upper():
                     continue
                 # Position from the symbol's 'at' field
                 if hasattr(symbol, 'at') and getattr(symbol.at, 'value', None):
                     coords = list(symbol.at.value)
                     x = float(coords[0]) if len(coords) > 0 else 0.0
                     y = float(coords[1]) if len(coords) > 1 else 0.0
-                    return (target, (x, y))
+                    return (net_name, (x, y))
             except Exception:
                 continue
 

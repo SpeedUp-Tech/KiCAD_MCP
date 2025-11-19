@@ -22,7 +22,7 @@ def symbol_name_from_qualified(qualified: str) -> str:
     """Extract the symbol name from library-qualified identifier."""
     return qualified.split(':', 1)[1] if ':' in qualified else qualified
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SYMBOL_DB = PROJECT_ROOT / 'symbol_lib' / 'kicad_symbols.sqlite3'
 _PIN_SORT_PATTERN = re.compile(r'(-?\d+(?:\.\d+)?)')
 
