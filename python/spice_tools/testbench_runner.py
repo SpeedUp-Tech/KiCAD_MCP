@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import runpy
 import traceback
+import inspect
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
@@ -72,10 +73,16 @@ def _load_pyspice_module(module_path: Path):
     return runpy.run_path(str(module_path))
 
 
-def _build_dut(module_globals: Dict[str, Any]):
-    fn = module_globals.get("Battery_Protection_pyspice")
+def _build_dut(module_globals: Dict[str, Any], subckt_name: Optional[str] = None):
+    if subckt_name is None:
+        # default to any @SubCircuit ending with _pyspice
+        for key, value in module_globals.items():
+            if callable(value) and key.endswith("_pyspice"):
+                return value
+        raise RuntimeError("No *_pyspice subcircuit found in module.")
+    fn = module_globals.get(subckt_name)
     if fn is None:
-        raise RuntimeError("Battery_Protection_pyspice not found in module.")
+        raise RuntimeError(f"{subckt_name} not found in module.")
     return fn
 
 
@@ -326,21 +333,82 @@ def _parse_branch(branch_name: str) -> Tuple[str, str]:
     return parts[0], parts[1]
 
 
-def _create_circuit(subckt_fn, use_case, sim_end_ms, branch_sensors: Dict[str, str]):
+def _collect_nodes(interfaces: Dict[str, Any], use_case: Dict[str, Any], branch_sensors: Dict[str, str]) -> set[str]:
+    nodes: set[str] = set()
+    nodes.update(interfaces.get("inputs", []))
+    nodes.update(interfaces.get("outputs", []))
+
+    # Measurements may reference nodes/branches.
+    for meas in use_case.get("then", {}).get("measurements", []):
+        args = meas.get("args", {})
+        branch = args.get("branch")
+        if branch:
+            start, end = _parse_branch(branch)
+            nodes.update([start, end])
+        node = args.get("node")
+        if node:
+            nodes.add(node)
+        node_diff = args.get("node_diff") or []
+        nodes.update(node_diff)
+        if meas.get("fn") == "efficiency":
+            if args.get("input_node"):
+                nodes.add(args["input_node"])
+            if args.get("output_node"):
+                nodes.add(args["output_node"])
+
+    # Branch sensors already parsed
+    for branch in branch_sensors.keys():
+        start, end = _parse_branch(branch)
+        nodes.update([start, end])
+
+    # Allow load probe node if measurement refers to LOAD
+    return nodes
+
+
+def _resolve_ground(nodes: set[str]) -> str:
+    if "GND" in nodes:
+        return "GND"
+    if "0" in nodes:
+        return "0"
+    nodes.add("GND")
+    return "GND"
+
+
+def _call_subckt_with_nets(subckt_fn, nets: Dict[str, Net]):
+    sig = inspect.signature(subckt_fn)
+    kwargs = {}
+    for name in sig.parameters:
+        if name not in nets:
+            raise ValueError(f"Net '{name}' required by subcircuit but not provided.")
+        kwargs[name] = nets[name]
+    return subckt_fn(**kwargs)
+
+
+def _create_circuit(subckt_fn, interfaces: Dict[str, Any], use_case, sim_end_ms, branch_sensors: Dict[str, str]):
     circuit = Circuit()
     skidl.config.backup_lib = pyspice_sklib.pyspice_lib
     skidl.config.query_backup_lib = True
+
     with circuit:
-        gnd = Net("GND")
-        vchg = Net("VBAT_CHG")
-        vpack = Net("VBAT_PACK")
-        nets = {"GND": gnd, "VBAT_CHG": vchg, "VBAT_PACK": vpack}
+        nodes = _collect_nodes(interfaces, use_case, branch_sensors)
+        gnd_name = _resolve_ground(nodes)
+        nets: Dict[str, Net] = {name: Net(name) for name in nodes}
+        if gnd_name != "0" and "0" not in nets:
+            nets["0"] = nets[gnd_name]
 
         vin_cfg = use_case["given"]["VIN"]
-        _build_vin_source(vchg, gnd, vin_cfg, sim_end_ms)
-
         load_cfg = use_case["given"]["load"]
-        _build_load(vpack, gnd, load_cfg, use_case.get("when", {}) or {}, sim_end_ms, nets, branch_sensors)
+
+        if not interfaces.get("inputs"):
+            raise ValueError("Testbench interfaces.inputs is empty")
+        vin_pos = nets[interfaces["inputs"][0]]
+        gnd = nets[gnd_name]
+        _build_vin_source(vin_pos, gnd, vin_cfg, sim_end_ms)
+
+        if not interfaces.get("outputs"):
+            raise ValueError("Testbench interfaces.outputs is empty")
+        load_net = nets[interfaces["outputs"][0]]
+        _build_load(load_net, gnd, load_cfg, use_case.get("when", {}) or {}, sim_end_ms, nets, branch_sensors)
 
         for branch_name, probe_ref in branch_sensors.items():
             start_node, end_node = _parse_branch(branch_name)
@@ -352,7 +420,7 @@ def _create_circuit(subckt_fn, use_case, sim_end_ms, branch_sensors: Dict[str, s
             probe = V(ref=probe_ref, dc_value=0 @ u_V)
             _connect_two_terminal(probe, start_net, end_net)
 
-        subckt_fn(GND=gnd, VBAT_CHG=vchg, VBAT_PACK=vpack)
+        _call_subckt_with_nets(subckt_fn, nets)
 
     # Sanitize part values to numeric to avoid ngspice model parsing issues.
     for part in circuit.parts:
@@ -522,7 +590,9 @@ def _evaluate_measurements(analysis, use_case, branch_sensors: Dict[str, str]):
 def run_testbench(module_path: Path, testbench_path: Path) -> List[Dict[str, Any]]:
     data = json.loads(Path(testbench_path).read_text())
     module_globals = _load_pyspice_module(module_path)
-    subckt_fn = _build_dut(module_globals)
+    # Try to match module name from testbench; fallback to any *_pyspice function.
+    preferred = f"{data.get('module', '')}_pyspice" if data.get("module") else None
+    subckt_fn = _build_dut(module_globals, subckt_name=preferred)
 
     reports = []
     for use_case in data["use_cases"]:
@@ -532,7 +602,7 @@ def run_testbench(module_path: Path, testbench_path: Path) -> List[Dict[str, Any
                 continue  # silently skip complex modes for now
             sim_end_ms = _determine_sim_end_ms(use_case)
             branch_sensors = _extract_branch_sensors(use_case)
-            circuit = _create_circuit(subckt_fn, use_case, sim_end_ms, branch_sensors)
+            circuit = _create_circuit(subckt_fn, data.get("interfaces", {}), use_case, sim_end_ms, branch_sensors)
             spice_circuit = gen_netlist(circuit, title=use_case.get("name", ""))
             simulator = Simulator.factory()
             simulation = simulator.simulation(
