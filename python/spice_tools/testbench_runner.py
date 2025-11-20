@@ -268,44 +268,50 @@ def _parse_quantity(value: Any, quantity_kind: Optional[str] = None) -> float:
         return float(value)
     if not isinstance(value, str):
         raise ValueError(f"Unsupported quantity type: {type(value)}")
-    text = value.strip().lower()
+    text = value.strip()
     if not text:
         raise ValueError("Empty quantity string")
 
-    prefixes = {
-        "meg": 1e6,
-        "g": 1e9,
-        "k": 1e3,
-        "m": 1e-3,
-        "u": 1e-6,
-        "n": 1e-9,
-        "p": 1e-12,
-    }
     import re
 
-    match = re.match(r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)([a-z]*)$", text)
+    match = re.match(r"([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)([A-Za-z]*)$", text)
     if not match:
         raise ValueError(f"Cannot parse quantity '{value}'")
     number = float(match.group(1))
     suffix = match.group(2)
 
-    prefix = ""
+    factor = 1.0
     unit = ""
-    for key in sorted(prefixes.keys(), key=len, reverse=True):
+    prefix_table = [
+        ("meg", 1e6),
+        ("MEG", 1e6),
+        ("M", 1e6),
+        ("G", 1e9),
+        ("K", 1e3),
+        ("k", 1e3),
+        ("m", 1e-3),
+        ("U", 1e-6),
+        ("u", 1e-6),
+        ("N", 1e-9),
+        ("n", 1e-9),
+        ("P", 1e-12),
+        ("p", 1e-12),
+    ]
+    for key, val in prefix_table:
         if suffix.startswith(key):
-            prefix = key
+            factor = val
             unit = suffix[len(key) :]
             break
-    if prefix == "" and suffix:
+    else:
         unit = suffix
 
-    factor = prefixes.get(prefix, 1.0)
+    unit_lower = unit.lower()
 
-    if unit in ("", "v", "a", "ohm"):
+    if unit_lower in ("", "v", "a", "ohm", "r", "f", "h"):
         return number * factor
-    if unit == "s":
+    if unit_lower == "s":
         return number * factor
-    if unit == "ms":
+    if unit_lower == "ms":
         return number * 1e-3
     # Fall back to honoring prefix only if quantity kind expects time.
     if quantity_kind == "time":
@@ -353,7 +359,7 @@ def _create_circuit(subckt_fn, use_case, sim_end_ms, branch_sensors: Dict[str, s
         try:
             import re
             raw = str(part.value)
-            match = re.search(r"[+-]?(?:\\d+(?:\\.\\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?", raw)
+            match = re.search(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", raw)
             if match:
                 cleaned = match.group(0)
                 part.value = _parse_quantity(cleaned)
