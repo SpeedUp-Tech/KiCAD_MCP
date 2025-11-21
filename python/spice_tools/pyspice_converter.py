@@ -236,12 +236,13 @@ def convert_skidl_module(
         entry = search_spice_model(name=part.name, library=part.library, db_path=model_db)
         if entry is None:
             raise KeyError(f"No SPICE model found in database for {key}.")
-        subckt = _parse_subckt_name(entry["model_content"])
+        model_content = str(entry["model_content"])
+        subckt = _parse_subckt_name(model_content)
         if not subckt:
             raise ValueError(f"Unable to determine .SUBCKT name for model {key}.")
         db_models[key] = {
             "subckt": subckt,
-            "content": entry["model_content"].strip(),
+            "content": model_content.strip(),
         }
 
     model_lib_path = output_path.with_suffix(".spice.lib")
