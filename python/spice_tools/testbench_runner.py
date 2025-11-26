@@ -26,6 +26,8 @@ from typing import Any, Callable, Dict, List, Tuple, cast
 import numpy as np
 import importlib.util
 
+from python.spice_tools.utils import _determine_step_s, run_transient
+
 
 @dataclass
 class MeasurementResult:
@@ -148,8 +150,17 @@ def determine_end_ms(use_case: Dict[str, Any]) -> float:
     Heuristic to choose simulation end time in ms from a use_case spec.
 
     Uses any observe_window_ms / stabilize_ms / apply_load_at_ms / window_ms
-    hints it can find; intended to be reused by harness adapters.
+    hints it can find; can be overridden/clamped by optional use_case['sim'].
     """
+    sim_cfg = use_case.get("sim", {}) or {}
+    # Explicit override from sim block.
+    if isinstance(sim_cfg, dict) and "end_ms" in sim_cfg:
+        try:
+            end_ms = float(sim_cfg["end_ms"])
+            return end_ms
+        except (TypeError, ValueError):
+            pass
+
     when = use_case.get("when", {})
     then = use_case.get("then", {})
 
@@ -177,10 +188,20 @@ def determine_end_ms(use_case: Dict[str, Any]) -> float:
             candidates.append(float(win[1]))
 
     if not candidates:
-        return 10.0
+        base_end_ms = 10.0
+    else:
+        base_end_ms = max(candidates) * 1.2
 
-    end_ms = max(candidates)
-    return end_ms * 1.2
+    # Optional clamping via sim.{min_end_ms,max_end_ms}.
+    if isinstance(sim_cfg, dict):
+        min_end = sim_cfg.get("min_end_ms")
+        max_end = sim_cfg.get("max_end_ms")
+        if isinstance(min_end, (int, float)):
+            base_end_ms = max(base_end_ms, float(min_end))
+        if isinstance(max_end, (int, float)):
+            base_end_ms = min(base_end_ms, float(max_end))
+
+    return base_end_ms
 
 
 def _eval_measurement_on_signals(
@@ -352,6 +373,68 @@ def _eval_measurement_on_signals(
     )
 
 
+def _collect_signals_from_analysis(
+    analysis: Any,
+    observables: Dict[str, str],
+) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    times_s = np.array([float(x) for x in analysis.time])
+    signals: Dict[str, np.ndarray] = {}
+    for logical, key in observables.items():
+        if logical.startswith("node:"):
+            signals[key] = np.array([float(v) for v in analysis[key]])
+        elif logical.startswith("branch:"):
+            branch_id = logical.split(":", 1)[1]
+            signals[branch_id] = np.array([float(v) for v in analysis.branches[key]])
+    return times_s, signals
+
+
+def _determine_step_for_use_case(use_case: Dict[str, Any], end_ms: float) -> float:
+    """
+    Compute time step in seconds, honoring optional use_case['sim']
+    overrides / bounds on points and step size, falling back to
+    utils._determine_step_s heuristic when not specified.
+    """
+    given = use_case.get("given", {})
+    sim_cfg = use_case.get("sim", {}) or {}
+
+    # Base heuristic from VIN / end_ms.
+    step_s = _determine_step_s(given, end_ms)
+
+    if not isinstance(sim_cfg, dict):
+        return step_s
+
+    end_s = end_ms * 1e-3
+
+    # Explicit target_points overrides base heuristic.
+    target_points = sim_cfg.get("target_points")
+    if isinstance(target_points, (int, float)) and target_points > 0:
+        step_s = max(end_s / float(target_points), 1e-12)
+
+    # Enforce min/max step size if provided.
+    min_step = sim_cfg.get("min_step_s")
+    if isinstance(min_step, (int, float)) and min_step > 0:
+        step_s = max(step_s, float(min_step))
+
+    max_step = sim_cfg.get("max_step_s")
+    if isinstance(max_step, (int, float)) and max_step > 0:
+        step_s = min(step_s, float(max_step))
+
+    # Enforce min/max points if provided.
+    min_points = sim_cfg.get("min_points")
+    if isinstance(min_points, (int, float)) and min_points > 0:
+        # At least min_points → step <= end_s / min_points.
+        max_step_for_min_pts = end_s / float(min_points)
+        step_s = min(step_s, max_step_for_min_pts)
+
+    max_points = sim_cfg.get("max_points")
+    if isinstance(max_points, (int, float)) and max_points > 0:
+        # At most max_points → step >= end_s / max_points.
+        min_step_for_max_pts = end_s / float(max_points)
+        step_s = max(step_s, min_step_for_max_pts)
+
+    return step_s
+
+
 def run_testbench(
     testbench: Dict[str, Any],
     harness_runner: HarnessRunner,
@@ -430,4 +513,76 @@ def run_testbench_file(
     return run_testbench(data, cast(HarnessRunner, sim_harness), mode=mode)
 
 
-__all__ = ["MeasurementResult", "run_testbench_file"]
+def run_use_case(
+    schema_path: Path | str,
+    harness_path: Path | str,
+    use_case_name: str,
+) -> List[MeasurementResult]:
+    """
+    Load testbench JSON and execute a single named use-case via a harness file.
+    """
+    schema_path = Path(schema_path)
+    data = json.loads(schema_path.read_text())
+    use_cases = data.get("use_cases", [])
+    target = next((uc for uc in use_cases if uc.get("name") == use_case_name), None)
+    if target is None:
+        raise ValueError(f"use_case {use_case_name!r} not found in {schema_path}")
+
+    harness_path = Path(harness_path)
+    spec = importlib.util.spec_from_file_location(harness_path.stem, harness_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load harness module from {harness_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[arg-type]
+
+    sim_harness = getattr(module, "simulation_harness", None)
+    if sim_harness is None or not callable(sim_harness):
+        raise RuntimeError(
+            f"Harness module {harness_path} must define a callable "
+            "simulation_harness(use_case: dict) -> (times_s, signals) "
+            "or (circuit, observables)"
+        )
+
+    # Allow two contracts:
+    #   1) legacy: simulation_harness(use_case) -> (times_s, signals)
+    #   2) env-builder: simulation_harness(use_case) -> (circuit, observables)
+    ret = sim_harness(target)
+
+    if (
+        isinstance(ret, tuple)
+        and len(ret) == 2
+        and isinstance(ret[0], np.ndarray)
+        and isinstance(ret[1], dict)
+    ):
+        # Legacy contract: harness already ran the simulation.
+        times_s, signals = cast(Tuple[np.ndarray, Dict[str, np.ndarray]], ret)
+    else:
+        # New contract: harness only built the environment and observables.
+        circuit, observables = cast(Tuple[Any, Dict[str, str]], ret)
+        given = target.get("given", {})
+        temp_c = float(given.get("ambient", {}).get("temp_C", 25.0))
+        end_ms = determine_end_ms(target)
+        step_s = _determine_step_for_use_case(target, end_ms)
+        end_s = end_ms * 1e-3
+
+        analysis = run_transient(circuit=circuit, title=target.get("name", ""), step_s=step_s, end_s=end_s, temp_c=temp_c)
+        times_s, signals = _collect_signals_from_analysis(analysis, observables)
+
+    # Evaluate measurements for this single use-case.
+    end_ms = determine_end_ms(target)
+    results: List[MeasurementResult] = []
+    then = target.get("then", {})
+    for m in then.get("measurements", []):
+        res = _eval_measurement_on_signals(
+            target["name"],
+            m,
+            times_s,
+            signals,
+            end_ms,
+        )
+        results.append(res)
+
+    return results
+
+
+__all__ = ["MeasurementResult", "run_testbench_file", "run_use_case"]

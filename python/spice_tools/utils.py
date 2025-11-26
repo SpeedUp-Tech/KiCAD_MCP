@@ -1,0 +1,138 @@
+"""Shared helpers for PySpice/SKiDL harnesses."""
+
+from __future__ import annotations
+
+import re
+from typing import Any, Dict
+
+import skidl.part as skidl_part
+from InSpice.Spice.Simulator import Simulator
+from skidl.pyspice import Circuit
+from skidl.tools.skidl.libs import pyspice_sklib
+from skidl.tools.spice.spice import gen_netlist
+
+_ORIG_PART_INIT = skidl_part.Part.__init__
+
+
+def _patched_part_init(self, *args, **kwargs):
+    if kwargs.get("dest") == "INSTANCE":
+        kwargs["dest"] = skidl_part.NETLIST
+    if kwargs.get("lib") == "pyspice":
+        kwargs["lib"] = pyspice_sklib.pyspice_lib
+    return _ORIG_PART_INIT(self, *args, **kwargs)
+
+
+if getattr(skidl_part.Part.__init__, "__name__", "") != "_patched_part_init":
+    skidl_part.Part.__init__ = _patched_part_init
+
+
+def _coerce_spice_value(val):
+    s = str(val).strip()
+    if not s:
+        return val
+
+    token = s.split()[0].replace("Ω", "").replace("Ω", "")
+    m = re.match(r"^([+-]?(?:\d+(?:\.\d*)?|\\.\\d+)(?:[eE][+-]?\\d+)?)([a-zA-Z]*)$", token)
+    if not m:
+        return val
+
+    num = float(m.group(1))
+    suffix = m.group(2)
+    if not suffix:
+        return num
+
+    scale = suffix[0]
+    factors = {
+        "f": 1e-15,
+        "p": 1e-12,
+        "n": 1e-9,
+        "u": 1e-6,
+        "m": 1e-3,
+        "k": 1e3,
+        "K": 1e3,
+        "M": 1e6,
+        "g": 1e9,
+        "G": 1e9,
+        "t": 1e12,
+        "T": 1e12,
+    }
+    factor = factors.get(scale, 1.0)
+    return num * factor
+
+
+def _sanitize_values(circuit: Circuit) -> None:
+    for p in circuit.parts:
+        try:
+            p.value = _coerce_spice_value(p.value)
+        except Exception:
+            continue
+
+
+def run_transient(circuit: Circuit, title: str, step_s: float, end_s: float, temp_c: float):
+    _sanitize_values(circuit)
+    netlist = gen_netlist(circuit, title=title)
+    sim = Simulator.factory().simulation(netlist, temperature=temp_c)
+    return sim.transient(step_time=step_s, end_time=end_s)
+
+
+def _determine_step_s(given: Dict[str, Any], end_ms: float) -> float:
+    vin_cfg = given.get("VIN", {})
+    if "ac_freq_kHz" in vin_cfg:
+        freq_hz = float(vin_cfg["ac_freq_kHz"]) * 1e3
+        period_s = 1.0 / freq_hz
+        return period_s / 200.0
+    end_s = end_ms * 1e-3
+    target_points = 2000.0
+    step = end_s / target_points
+    return max(step, 1e-7)
+
+
+def _configure_vin(source, vin_cfg: Dict[str, Any]) -> None:
+    if "ramp" in vin_cfg:
+        r = vin_cfg["ramp"]
+        source.initial_value = float(r["start_V"])
+        source.pulsed_value = float(r["stop_V"])
+        source.delay_time = float(r.get("delay_ms", 0.0)) * 1e-3
+        source.rise_time = float(r["rise_ms"]) * 1e-3
+        source.fall_time = 1e-9
+        source.pulse_width = 1.0
+        source.period = 2.0
+        return
+
+    if "step" in vin_cfg:
+        s = vin_cfg["step"]
+        source.initial_value = float(s["from_V"])
+        source.pulsed_value = float(s["to_V"])
+        source.delay_time = float(s["at_ms"]) * 1e-3
+        source.rise_time = 1e-9
+        source.fall_time = 1e-9
+        source.pulse_width = 1.0
+        source.period = 2.0
+        return
+
+    if "dc_V" in vin_cfg and "ac_ripple_pp_V" in vin_cfg:
+        dc_v = float(vin_cfg["dc_V"])
+        pp_v = float(vin_cfg["ac_ripple_pp_V"])
+        freq_hz = float(vin_cfg["ac_freq_kHz"]) * 1e3
+        v1 = dc_v - pp_v / 2.0
+        v2 = dc_v + pp_v / 2.0
+        period = 1.0 / freq_hz
+        source.initial_value = v1
+        source.pulsed_value = v2
+        source.delay_time = 0.0
+        source.rise_time = period * 0.01
+        source.fall_time = period * 0.01
+        source.pulse_width = period / 2.0
+        source.period = period
+        return
+
+    if "dc_V" in vin_cfg:
+        dc_v = float(vin_cfg["dc_V"])
+        source.initial_value = dc_v
+        source.pulsed_value = dc_v
+        source.delay_time = 0.0
+        source.rise_time = 1e-9
+        source.fall_time = 1e-9
+        source.pulse_width = 1.0
+        source.period = 2.0
+        return
