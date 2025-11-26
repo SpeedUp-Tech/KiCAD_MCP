@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Tuple, cast
 
@@ -42,6 +43,50 @@ class MeasurementResult:
 # Type: given a single use_case spec, build+simulate the harness and
 # return time axis + named signals defined by the harness contract.
 HarnessRunner = Callable[[Dict[str, Any]], Tuple[np.ndarray, Dict[str, np.ndarray]]]
+
+
+def _module_name_to_basename(module_name: str) -> str:
+    """Normalize logical module name to filesystem-friendly basename."""
+    s = module_name.strip()
+    s = re.sub(r"[^0-9a-zA-Z]+", "_", s)
+    return s.strip("_").lower()
+
+
+def _load_dut_from_testbench(schema_path: Path, testbench: Dict[str, Any]):
+    """Load PySpice/SKiDL DUT function based on testbench metadata.
+
+    Convention for a testbench at:
+        test_cases/<case_name>/testbench/<name>.json
+    with:
+        "module": "Battery_Protection"
+
+    expects DUT at:
+        test_cases/<case_name>/spice/modules/battery_protection_pyspice.py
+    exporting:
+        Battery_Protection_pyspice
+    """
+    module_name = testbench.get("module")
+    if not isinstance(module_name, str) or not module_name:
+        raise RuntimeError(f"Testbench {schema_path} missing valid 'module' for DUT resolution")
+
+    base_dir = schema_path.parent.parent  # .../test_cases/<case_name>
+    basename = _module_name_to_basename(module_name)
+    dut_path = base_dir / "spice" / "modules" / f"{basename}_pyspice.py"
+
+    if not dut_path.exists():
+        raise RuntimeError(f"Cannot find DUT module file at {dut_path}")
+
+    spec = importlib.util.spec_from_file_location(f"{basename}_pyspice", dut_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load DUT module from {dut_path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)  # type: ignore[arg-type]
+
+    func_name = f"{module_name}_pyspice"
+    dut = getattr(module, func_name, None)
+    if dut is None or not callable(dut):
+        raise RuntimeError(f"DUT function {func_name!r} not found in {dut_path}")
+    return dut
 
 
 def _window_to_range_s(
@@ -375,16 +420,30 @@ def _eval_measurement_on_signals(
 
 def _collect_signals_from_analysis(
     analysis: Any,
-    observables: Dict[str, str],
+    observables: Dict[str, Dict[str, str]],
 ) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+    """
+    Generic helper to extract waveforms from a PySpice analysis using a
+    structured observables mapping:
+
+        {
+            "nodes": { logical_name: analysis_node_name, ... },
+            "branches": { logical_branch_id: analysis_branch_key, ... },
+        }
+    """
     times_s = np.array([float(x) for x in analysis.time])
     signals: Dict[str, np.ndarray] = {}
-    for logical, key in observables.items():
-        if logical.startswith("node:"):
-            signals[key] = np.array([float(v) for v in analysis[key]])
-        elif logical.startswith("branch:"):
-            branch_id = logical.split(":", 1)[1]
-            signals[branch_id] = np.array([float(v) for v in analysis.branches[key]])
+
+    node_map = observables.get("nodes", {}) or {}
+    for logical_name, node_name in node_map.items():
+        signals[logical_name] = np.array([float(v) for v in analysis[node_name]])
+
+    branch_map = observables.get("branches", {}) or {}
+    for branch_id, branch_key in branch_map.items():
+        key = str(branch_key).lower()
+        currents = analysis.branches[key]
+        signals[branch_id] = np.array([float(v) for v in currents])
+
     return times_s, signals
 
 
@@ -487,14 +546,18 @@ def run_testbench_file(
     The harness file must be a Python module that defines a callable:
 
         simulation_harness(use_case: dict) -> (times_s, signals)
+    or:
+        simulation_harness(use_case: dict, dut) -> (times_s, signals)
 
     where:
         - times_s is a 1D np.ndarray of time points in seconds.
         - signals is a dict[str, np.ndarray] mapping signal names
           (as used in the testbench schema) to waveforms.
+        - dut is a callable DUT factory resolved from the testbench metadata.
     """
     schema_path = Path(schema_path)
     data = json.loads(schema_path.read_text())
+    dut = _load_dut_from_testbench(schema_path, data)
 
     harness_path = Path(harness_path)
     spec = importlib.util.spec_from_file_location(harness_path.stem, harness_path)
@@ -510,16 +573,34 @@ def run_testbench_file(
             "simulation_harness(use_case: dict) -> (times_s, signals)"
         )
 
-    return run_testbench(data, cast(HarnessRunner, sim_harness), mode=mode)
+    sig = inspect.signature(sim_harness)
+    if len(sig.parameters) == 2:
+        def harness_runner(uc: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+            return cast(Callable[[Dict[str, Any], Any], Tuple[np.ndarray, Dict[str, np.ndarray]]])(sim_harness)(uc, dut)
+    elif len(sig.parameters) == 1:
+        harness_runner = cast(HarnessRunner, sim_harness)
+    else:
+        raise RuntimeError(
+            "simulation_harness must accept either (use_case) or (use_case, dut)"
+        )
+
+    return run_testbench(data, harness_runner, mode=mode)
 
 
 def run_use_case(
     schema_path: Path | str,
     harness_path: Path | str,
     use_case_name: str,
+    dut_path: Path | str,
+    dut_module_name: str,
 ) -> List[MeasurementResult]:
     """
     Load testbench JSON and execute a single named use-case via a harness file.
+
+    Unlike run_testbench_file(), the DUT is provided explicitly:
+
+        dut_path: filesystem path to the DUT Python module.
+        dut_module_name: callable name inside that module (e.g. Battery_Protection_pyspice).
     """
     schema_path = Path(schema_path)
     data = json.loads(schema_path.read_text())
@@ -527,6 +608,18 @@ def run_use_case(
     target = next((uc for uc in use_cases if uc.get("name") == use_case_name), None)
     if target is None:
         raise ValueError(f"use_case {use_case_name!r} not found in {schema_path}")
+    # Explicit DUT loading: caller chooses module path and subcircuit name.
+    dut_path = Path(dut_path)
+    spec = importlib.util.spec_from_file_location(dut_path.stem, dut_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"Cannot load DUT module from {dut_path}")
+    dut_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(dut_module)  # type: ignore[arg-type]
+    dut = getattr(dut_module, dut_module_name, None)
+    if dut is None or not callable(dut):
+        raise RuntimeError(
+            f"DUT callable {dut_module_name!r} not found or not callable in {dut_path}"
+        )
 
     harness_path = Path(harness_path)
     spec = importlib.util.spec_from_file_location(harness_path.stem, harness_path)
@@ -543,10 +636,21 @@ def run_use_case(
             "or (circuit, observables)"
         )
 
-    # Allow two contracts:
-    #   1) legacy: simulation_harness(use_case) -> (times_s, signals)
-    #   2) env-builder: simulation_harness(use_case) -> (circuit, observables)
-    ret = sim_harness(target)
+    sig = inspect.signature(sim_harness)
+    if len(sig.parameters) == 2:
+        # Newer contract: allow DUT injection.
+        ret = sim_harness(target, dut)
+    elif len(sig.parameters) == 1:
+        # Legacy contract without DUT injection.
+        ret = sim_harness(target)
+    else:
+        raise RuntimeError(
+            "simulation_harness must accept either (use_case) or (use_case, dut)"
+        )
+
+    # Allow two result contracts:
+    #   1) legacy: simulation_harness(...) -> (times_s, signals)
+    #   2) env-builder: simulation_harness(...) -> (circuit, observables)
 
     if (
         isinstance(ret, tuple)
