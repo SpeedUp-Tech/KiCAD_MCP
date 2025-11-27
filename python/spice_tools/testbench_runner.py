@@ -574,9 +574,11 @@ def run_testbench_file(
         )
 
     sig = inspect.signature(sim_harness)
+    harness_runner: HarnessRunner
     if len(sig.parameters) == 2:
-        def harness_runner(uc: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
-            return cast(Callable[[Dict[str, Any], Any], Tuple[np.ndarray, Dict[str, np.ndarray]]])(sim_harness)(uc, dut)
+        def _harness_with_dut(uc: Dict[str, Any]) -> Tuple[np.ndarray, Dict[str, np.ndarray]]:
+            return cast(Callable[[Dict[str, Any], Any], Tuple[np.ndarray, Dict[str, np.ndarray]]], sim_harness)(uc, dut)
+        harness_runner = _harness_with_dut
     elif len(sig.parameters) == 1:
         harness_runner = cast(HarnessRunner, sim_harness)
     else:
@@ -593,7 +595,7 @@ def run_use_case(
     use_case_name: str,
     dut_path: Path | str,
     dut_module_name: str,
-) -> List[MeasurementResult]:
+) -> Dict[str, Any]:
     """
     Load testbench JSON and execute a single named use-case via a harness file.
 
@@ -601,6 +603,23 @@ def run_use_case(
 
         dut_path: filesystem path to the DUT Python module.
         dut_module_name: callable name inside that module (e.g. Battery_Protection_pyspice).
+
+    Returns:
+        Dict with structure:
+        {
+            "<use_case_name>": {
+                "total_measurements": int,
+                "num_passed": int,
+                "all_passed": bool,
+                "measurements": {
+                    "<measurement_id>": {
+                        "assertion": {"value": float, "op": str, "limit": float},
+                        "passed": bool
+                    },
+                    ...
+                }
+            }
+        }
     """
     schema_path = Path(schema_path)
     data = json.loads(schema_path.read_text())
@@ -632,49 +651,22 @@ def run_use_case(
     if sim_harness is None or not callable(sim_harness):
         raise RuntimeError(
             f"Harness module {harness_path} must define a callable "
-            "simulation_harness(use_case: dict) -> (times_s, signals) "
-            "or (circuit, observables)"
+            "simulation_harness(use_case: dict, dut) -> (circuit, observables)"
         )
 
-    sig = inspect.signature(sim_harness)
-    if len(sig.parameters) == 2:
-        # Newer contract: allow DUT injection.
-        ret = sim_harness(target, dut)
-    elif len(sig.parameters) == 1:
-        # Legacy contract without DUT injection.
-        ret = sim_harness(target)
-    else:
-        raise RuntimeError(
-            "simulation_harness must accept either (use_case) or (use_case, dut)"
-        )
+    circuit, observables = cast(Tuple[Any, Any], sim_harness(target, dut))
+    given = target.get("given", {})
+    temp_c = float(given.get("ambient", {}).get("temp_C", 25.0))
+    end_ms = determine_end_ms(target)
+    step_s = _determine_step_for_use_case(target, end_ms)
+    end_s = end_ms * 1e-3
 
-    # Allow two result contracts:
-    #   1) legacy: simulation_harness(...) -> (times_s, signals)
-    #   2) env-builder: simulation_harness(...) -> (circuit, observables)
-
-    if (
-        isinstance(ret, tuple)
-        and len(ret) == 2
-        and isinstance(ret[0], np.ndarray)
-        and isinstance(ret[1], dict)
-    ):
-        # Legacy contract: harness already ran the simulation.
-        times_s, signals = cast(Tuple[np.ndarray, Dict[str, np.ndarray]], ret)
-    else:
-        # New contract: harness only built the environment and observables.
-        circuit, observables = cast(Tuple[Any, Dict[str, str]], ret)
-        given = target.get("given", {})
-        temp_c = float(given.get("ambient", {}).get("temp_C", 25.0))
-        end_ms = determine_end_ms(target)
-        step_s = _determine_step_for_use_case(target, end_ms)
-        end_s = end_ms * 1e-3
-
-        analysis = run_transient(circuit=circuit, title=target.get("name", ""), step_s=step_s, end_s=end_s, temp_c=temp_c)
-        times_s, signals = _collect_signals_from_analysis(analysis, observables)
+    analysis = run_transient(circuit=circuit, title=target.get("name", ""), step_s=step_s, end_s=end_s, temp_c=temp_c)
+    times_s, signals = _collect_signals_from_analysis(analysis, observables)
 
     # Evaluate measurements for this single use-case.
     end_ms = determine_end_ms(target)
-    results: List[MeasurementResult] = []
+    measurement_results: List[MeasurementResult] = []
     then = target.get("then", {})
     for m in then.get("measurements", []):
         res = _eval_measurement_on_signals(
@@ -684,9 +676,31 @@ def run_use_case(
             signals,
             end_ms,
         )
-        results.append(res)
+        measurement_results.append(res)
 
-    return results
+    # Build the new dict-based return format
+    measurements_dict: Dict[str, Dict[str, Any]] = {}
+    for res in measurement_results:
+        measurements_dict[res.measurement_id] = {
+            "assertion": {
+                "value": res.value,
+                "op": res.op,
+                "limit": res.limit,
+            },
+            "passed": res.passed,
+        }
+
+    num_passed = sum(1 for res in measurement_results if res.passed)
+    total_measurements = len(measurement_results)
+
+    return {
+        use_case_name: {
+            "total_measurements": total_measurements,
+            "num_passed": num_passed,
+            "all_passed": num_passed == total_measurements,
+            "measurements": measurements_dict,
+        }
+    }
 
 
 __all__ = ["MeasurementResult", "run_testbench_file", "run_use_case"]
