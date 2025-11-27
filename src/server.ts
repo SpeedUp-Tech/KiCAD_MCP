@@ -17,6 +17,7 @@ import { registerExportTools } from './tools/export.js';
 import { registerSchematicTools } from './tools/schematic.js';
 import { registerLibraryTools } from './tools/library.js';
 import { registerComponentSearchTools } from './tools/component-search.js';
+import { registerSpiceTools } from './tools/spice.js';
 
 // Prompt registrations
 import { registerComponentPrompts } from './prompts/component.js';
@@ -111,6 +112,7 @@ export class KiCADMcpServer {
     registerExportTools(this.server, callKicad);
     registerSchematicTools(this.server, callKicad);
     registerLibraryTools(this.server, callKicad);
+    registerSpiceTools(this.server, callKicad);
 
     registerComponentPrompts(this.server);
     registerRoutingPrompts(this.server);

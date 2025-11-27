@@ -62,6 +62,14 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
     ),
     "get_schematic_state": ("python/commands/kicad_schematics/schematic_state.py", ("get_schematic_state",)),
     "search_mpn_part": ("python/commands/database_tools/component_search.py", ("ComponentSearchCommands", "search_mpn_part")),
+    "run_spice_simulation_testcase": (
+        "python/spice_tools/testbench_runner.py",
+        ("run_use_case",),
+    ),
+    "run_spice_harness_sanity_check": (
+        "python/spice_tools/harness_sanity.py",
+        ("harness_sanity_check",),
+    ),
 }
 
 

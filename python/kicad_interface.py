@@ -133,6 +133,8 @@ try:
     from commands.database_tools.component_search import ComponentSearchCommands
     from commands.kicad_schematics.erc_utils import prepare_module_erc_artifacts
     from commands.database_tools.library_export import export_project_libraries
+    from python.spice_tools.testbench_runner import run_use_case
+    from python.spice_tools.harness_sanity import harness_sanity_check
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -283,7 +285,11 @@ class KiCADInterface:
             "export_schematic_netlist": self._handle_export_netlist,
             "export_schematic_bom": self._handle_export_schematic_bom,
             "generate_hierarchical_schematic": self._handle_generate_hierarchical_schematic,
-            "get_schematic_state": self._handle_get_schematic_state
+            "get_schematic_state": self._handle_get_schematic_state,
+
+            # SPICE commands
+            "run_spice_simulation_testcase": self._handle_run_spice_simulation_testcase,
+            "run_spice_harness_sanity_check": self._handle_run_spice_harness_sanity_check,
         }
 
         logger.info("KiCAD interface initialized")
@@ -1339,6 +1345,81 @@ class KiCADInterface:
             logger.error(f"Error getting schematic state: {str(e)}")
             logger.error(traceback.format_exc())
             return {"success": False, "message": str(e)}
+
+    def _handle_run_spice_simulation_testcase(self, params):
+        """Execute a SPICE harness use-case against a DUT."""
+        logger.info("Running SPICE simulation testcase")
+        try:
+            schema_path = params.get("schemaPath") or params.get("testbenchPath") or params.get("schema_path")
+            harness_path = params.get("harnessPath") or params.get("harness_path")
+            use_case_name = params.get("useCaseName") or params.get("use_case_name")
+            dut_path = params.get("dutPath") or params.get("dut_path")
+            dut_module_name = params.get("dutModuleName") or params.get("dut_module_name")
+
+            missing = [
+                name for name, value in (
+                    ("schemaPath", schema_path),
+                    ("harnessPath", harness_path),
+                    ("useCaseName", use_case_name),
+                    ("dutPath", dut_path),
+                    ("dutModuleName", dut_module_name),
+                ) if not value
+            ]
+            if missing:
+                return {"success": False, "message": f"Missing required parameter(s): {', '.join(missing)}"}
+
+            result = run_use_case(
+                schema_path=schema_path,
+                harness_path=harness_path,
+                use_case_name=use_case_name,
+                dut_path=dut_path,
+                dut_module_name=dut_module_name,
+            )
+            return {"success": True, "result": result}
+        except Exception as exc:
+            logger.error(f"Error running SPICE simulation testcase: {exc}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(exc)}
+
+    def _handle_run_spice_harness_sanity_check(self, params):
+        """Run a transient sanity check on a SPICE harness using a dummy DUT."""
+        logger.info("Running SPICE harness sanity check")
+        try:
+            harness_path = params.get("harnessPath") or params.get("harness_path")
+            if not harness_path:
+                return {"success": False, "message": "harnessPath is required"}
+
+            use_case_name = params.get("useCaseName") or params.get("use_case_name")
+            step_s_raw = params.get("stepS")
+            if step_s_raw is None:
+                step_s_raw = params.get("step_s")
+            end_s_raw = params.get("endS")
+            if end_s_raw is None:
+                end_s_raw = params.get("end_s")
+            temp_c_raw = params.get("tempC")
+            if temp_c_raw is None:
+                temp_c_raw = params.get("temp_c")
+            voltage_limit_raw = params.get("voltageLimit")
+            if voltage_limit_raw is None:
+                voltage_limit_raw = params.get("voltage_limit")
+            current_limit_raw = params.get("currentLimit")
+            if current_limit_raw is None:
+                current_limit_raw = params.get("current_limit")
+
+            result = harness_sanity_check(
+                harness_path=harness_path,
+                use_case_name=use_case_name,
+                step_s=float(step_s_raw) if step_s_raw is not None else 1e-5,
+                end_s=float(end_s_raw) if end_s_raw is not None else 5e-3,
+                temp_c=float(temp_c_raw) if temp_c_raw is not None else 25.0,
+                voltage_limit=float(voltage_limit_raw) if voltage_limit_raw is not None else 1e3,
+                current_limit=float(current_limit_raw) if current_limit_raw is not None else 1e3,
+            )
+            return {"success": True, "result": result}
+        except Exception as exc:
+            logger.error(f"Error running SPICE harness sanity check: {exc}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(exc)}
 
 def main():
     """Main entry point"""

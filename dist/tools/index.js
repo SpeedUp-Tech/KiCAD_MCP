@@ -12,4 +12,5 @@ export { registerExportTools } from './export.js';
 export { registerSchematicTools } from './schematic.js';
 export { registerLibraryTools } from './library.js';
 export { registerComponentSearchTools } from './component-search.js';
+export { registerSpiceTools } from './spice.js';
 //# sourceMappingURL=index.js.map

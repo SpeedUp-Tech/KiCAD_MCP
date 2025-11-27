@@ -13,11 +13,33 @@ class PythonSession {
             ...process.env,
             ...(options.extraEnv || {}),
         };
+        // Build PYTHONPATH: conda site-packages first, then existing PYTHONPATH, then extra pythonPath (e.g. for pcbnew)
+        // This prevents system numpy from shadowing conda numpy
+        const separator = process.platform === 'win32' ? ';' : ':';
+        const pathParts = [];
+        // Try to derive conda site-packages from pythonExecutable (e.g. /root/miniconda3/envs/kicad/bin/python)
+        const pythonExecPath = options.pythonExecutable;
+        if (pythonExecPath.includes('envs') && pythonExecPath.includes('bin')) {
+            // Extract env path: /root/miniconda3/envs/kicad/bin/python -> /root/miniconda3/envs/kicad
+            const binIndex = pythonExecPath.lastIndexOf('/bin/');
+            if (binIndex > 0) {
+                const envPath = pythonExecPath.substring(0, binIndex);
+                // Add site-packages for common Python versions
+                pathParts.push(`${envPath}/lib/python3.11/site-packages`);
+                pathParts.push(`${envPath}/lib/python3.10/site-packages`);
+                pathParts.push(`${envPath}/lib/python3.12/site-packages`);
+            }
+        }
+        // Add existing PYTHONPATH
+        if (env.PYTHONPATH) {
+            pathParts.push(env.PYTHONPATH);
+        }
+        // Add extra pythonPath (for pcbnew etc.) at the end
         if (options.pythonPath) {
-            const separator = process.platform === 'win32' ? ';' : ':';
-            env.PYTHONPATH = env.PYTHONPATH
-                ? `${options.pythonPath}${separator}${env.PYTHONPATH}`
-                : options.pythonPath;
+            pathParts.push(options.pythonPath);
+        }
+        if (pathParts.length > 0) {
+            env.PYTHONPATH = pathParts.join(separator);
         }
         const spawnOptions = {
             stdio: ['pipe', 'pipe', 'pipe'],
