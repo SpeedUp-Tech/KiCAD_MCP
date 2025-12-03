@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sqlite3
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from functools import lru_cache
 from pathlib import Path
@@ -591,6 +592,56 @@ def search_mpn_part(
         ),
         reverse=True,
     )
+
+    # Post-process libraries as requested:
+    # 1) For MPNs that appear multiple times in the search results, if some
+    #    entries have library == "" and others have a non-empty library,
+    #    drop the entries with an empty library.
+    # 2) For MPNs that appear exactly once and have library == "",
+    #    treat them as belonging to the "Uncategorized" library.
+    if results:
+        mpn_counts = Counter(item.mpn for item in results)
+
+        # Determine which MPNs have at least one non-empty library entry.
+        mpn_has_non_empty_library: Dict[Optional[str], bool] = {}
+        for item in results:
+            if not item.mpn:
+                continue
+            if mpn_counts[item.mpn] <= 1:
+                continue
+            lib = (item.library or "").strip()
+            if lib:
+                mpn_has_non_empty_library[item.mpn] = True
+
+        # First pass: remove empty-library entries when there is at least one
+        # non-empty entry for the same MPN and that MPN appears multiple times.
+        filtered_results: List[SearchMPNResult] = []
+        for item in results:
+            mpn = item.mpn
+            lib = (item.library or "").strip()
+            if (
+                mpn
+                and mpn_counts.get(mpn, 0) > 1
+                and mpn_has_non_empty_library.get(mpn, False)
+                and not lib
+            ):
+                continue
+            filtered_results.append(item)
+
+        # Second pass: for MPNs that now appear exactly once and still have an
+        # empty library, mark them as belonging to the "Uncategorized" library.
+        if filtered_results:
+            mpn_counts_after = Counter(item.mpn for item in filtered_results)
+            for item in filtered_results:
+                mpn = item.mpn
+                if not mpn:
+                    continue
+                if mpn_counts_after.get(mpn, 0) == 1:
+                    lib = (item.library or "").strip()
+                    if not lib:
+                        item.library = "Uncategorized"
+
+        results = filtered_results
 
     return {
         "success": True,

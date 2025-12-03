@@ -177,7 +177,8 @@ class DatabaseSchLib:
     def __init__(self, name: str, symbol_db: SymbolDatabase, tool: Optional[str]) -> None:
         self.name = name
         self._symbol_db = symbol_db
-        self._tool = tool or getattr(skidl, 'config').tool
+        # Always use kicad9 for parsing database sexp, regardless of global skidl.config.tool
+        self._tool = tool or 'kicad9'
         self._schlib = SchLib(tool=self._tool)
         self._parts: Dict[str, object] = {}
 
@@ -222,7 +223,8 @@ class DatabaseLibraryRegistry:
         self._libraries: Dict[Tuple[str, str], DatabaseSchLib] = {}
 
     def resolve(self, lib_name: str, symbol_name: str, tool: Optional[str]) -> Optional[DatabaseSchLib]:
-        tool_name = tool or getattr(skidl, 'config').tool
+        # Always use kicad9 for database symbols, regardless of global skidl.config.tool
+        tool_name = tool or 'kicad9'
         key = (lib_name, tool_name)
         db_lib = self._libraries.get(key)
         if db_lib is None:
@@ -262,6 +264,9 @@ def Part(*args, **kwargs):
                 args_list[0] = db_lib
             else:
                 kwargs["lib"] = db_lib
+            # Force kicad9 tool for database-backed parts to ensure correct pin parsing
+            if "tool" not in kwargs:
+                kwargs["tool"] = "kicad9"
     return _SkidlPart(*tuple(args_list), **kwargs)
 
 

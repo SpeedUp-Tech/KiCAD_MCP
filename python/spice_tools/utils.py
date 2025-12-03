@@ -63,7 +63,9 @@ def _coerce_spice_value(val):
 def _sanitize_values(circuit: Circuit) -> None:
     for p in circuit.parts:
         try:
-            p.value = _coerce_spice_value(p.value)
+            val = getattr(p, "value", None)
+            if val is not None:
+                setattr(p, "value", _coerce_spice_value(val))
         except Exception:
             continue
 
@@ -74,7 +76,7 @@ def run_transient(circuit: "Circuit", title: str, step_s: float, end_s: float, t
 
     _sanitize_values(circuit)
     netlist = gen_netlist(circuit, title=title)
-    sim = Simulator.factory().simulation(netlist, temperature=temp_c)
+    sim: Any = Simulator.factory().simulation(netlist, temperature=temp_c)
     return sim.transient(step_time=step_s, end_time=end_s)
 
 
