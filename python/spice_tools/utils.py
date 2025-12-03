@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import re
-from typing import Any, Dict
+from typing import Any, Dict, TYPE_CHECKING
 
 import skidl.part as skidl_part
-from InSpice.Spice.Simulator import Simulator
-from skidl.pyspice import Circuit
 from skidl.tools.skidl.libs import pyspice_sklib
-from skidl.tools.spice.spice import gen_netlist
+
+if TYPE_CHECKING:
+    from skidl.pyspice import Circuit
 
 _ORIG_PART_INIT = skidl_part.Part.__init__
 
@@ -68,7 +68,10 @@ def _sanitize_values(circuit: Circuit) -> None:
             continue
 
 
-def run_transient(circuit: Circuit, title: str, step_s: float, end_s: float, temp_c: float):
+def run_transient(circuit: "Circuit", title: str, step_s: float, end_s: float, temp_c: float):
+    from InSpice.Spice.Simulator import Simulator
+    from skidl.tools.spice.spice import gen_netlist
+
     _sanitize_values(circuit)
     netlist = gen_netlist(circuit, title=title)
     sim = Simulator.factory().simulation(netlist, temperature=temp_c)

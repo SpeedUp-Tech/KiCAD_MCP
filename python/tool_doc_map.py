@@ -66,6 +66,10 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/spice_tools/testbench_runner.py",
         ("run_use_case",),
     ),
+    "convert_skidl_module": (
+        "python/spice_tools/pyspice_converter.py",
+        ("convert_skidl_module",),
+    ),
     "run_spice_harness_sanity_check": (
         "python/spice_tools/harness_sanity.py",
         ("harness_sanity_check",),

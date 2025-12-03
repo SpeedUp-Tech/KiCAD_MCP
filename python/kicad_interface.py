@@ -135,6 +135,8 @@ try:
     from commands.database_tools.library_export import export_project_libraries
     from python.spice_tools.testbench_runner import run_use_case
     from python.spice_tools.harness_sanity import harness_sanity_check
+    from python.spice_tools.pyspice_converter import convert_skidl_module
+    from python.spice_tools.model_db import DEFAULT_MODEL_DB
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -290,6 +292,7 @@ class KiCADInterface:
             # SPICE commands
             "run_spice_simulation_testcase": self._handle_run_spice_simulation_testcase,
             "run_spice_harness_sanity_check": self._handle_run_spice_harness_sanity_check,
+            "convert_skidl_module": self._handle_convert_skidl_module,
         }
 
         logger.info("KiCAD interface initialized")
@@ -1418,6 +1421,67 @@ class KiCADInterface:
             return {"success": True, "result": result}
         except Exception as exc:
             logger.error(f"Error running SPICE harness sanity check: {exc}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(exc)}
+
+    def _handle_convert_skidl_module(self, params):
+        """Convert a SKiDL module/subcircuit into a PySpice-ready Python module."""
+        logger.info("Converting SKiDL module to PySpice")
+        try:
+            input_path_raw = params.get("inputPath") or params.get("input_path")
+            subckt_name = params.get("subcktName") or params.get("subckt_name")
+            output_path_raw = params.get("outputPath") or params.get("output_path")
+            subckt_output = params.get("subcktOutput") or params.get("subckt_output")
+            model_db_raw = params.get("modelDbPath") or params.get("model_db_path")
+
+            missing = [
+                name
+                for name, value in (
+                    ("inputPath", input_path_raw),
+                    ("subcktName", subckt_name),
+                    ("outputPath", output_path_raw),
+                )
+                if not value
+            ]
+            if missing:
+                return {"success": False, "message": f"Missing required parameter(s): {', '.join(missing)}"}
+
+            input_path = Path(os.path.expanduser(str(input_path_raw))).resolve()
+            output_path = Path(os.path.expanduser(str(output_path_raw))).resolve()
+            if not input_path.exists():
+                return {"success": False, "message": f"SKiDL module not found: {input_path}"}
+
+            model_db_path = (
+                Path(os.path.expanduser(str(model_db_raw))).resolve() if model_db_raw else None
+            )
+
+            generated_subckt = convert_skidl_module(
+                input_path=input_path,
+                subckt_name=str(subckt_name),
+                output_path=output_path,
+                subckt_output=str(subckt_output) if subckt_output else None,
+                model_db_path=model_db_path,
+            )
+
+            model_lib_path = output_path.with_suffix(".spice.lib")
+            model_lib = str(model_lib_path) if model_lib_path.exists() else None
+            resolved_model_db = str(model_db_path or DEFAULT_MODEL_DB)
+
+            message = (
+                f"Converted {input_path} -> {output_path} "
+                f"(exported subcircuit {generated_subckt})"
+            )
+
+            return {
+                "success": True,
+                "message": message,
+                "subcktName": generated_subckt,
+                "outputPath": str(output_path),
+                "modelLibraryPath": model_lib,
+                "modelDbPath": resolved_model_db,
+            }
+        except Exception as exc:
+            logger.error(f"Error converting SKiDL module: {exc}")
             logger.error(traceback.format_exc())
             return {"success": False, "message": str(exc)}
 

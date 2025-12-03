@@ -27,13 +27,15 @@ import importlib.util
 import inspect
 import re
 from pathlib import Path
-from typing import Any, Dict, Tuple, cast
+from typing import Any, Dict, Tuple, cast, TYPE_CHECKING
 
 import numpy as np
-from skidl.pyspice import C, R # type: ignore
 
 from python.spice_tools.testbench_runner import _collect_signals_from_analysis
 from python.spice_tools.utils import run_transient
+
+if TYPE_CHECKING:
+    from skidl.pyspice import C, R
 
 
 def make_dummy_dut(
@@ -57,6 +59,8 @@ def make_dummy_dut(
     """
 
     def _dummy_dut(**nodes):
+        from skidl.pyspice import C, R  # Lazy import to avoid polluting global state
+
         if not nodes:
             return
 

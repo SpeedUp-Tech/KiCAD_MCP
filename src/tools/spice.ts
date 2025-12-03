@@ -42,6 +42,28 @@ export function registerSpiceTools(
   );
 
   server.tool(
+    'convert_skidl_module',
+    toolDescription('convert_skidl_module'),
+    {
+      inputPath: z.string().describe('Path to the SKiDL Python file exporting the @SubCircuit'),
+      subcktName: z.string().describe('Subcircuit function name to instantiate'),
+      outputPath: z.string().describe('Destination path for the generated PySpice module'),
+      subcktOutput: z.string().optional().describe('Optional override for the generated subcircuit name'),
+      modelDbPath: z.string().optional().describe('Optional SPICE model database path to use instead of the default'),
+    },
+    async ({ inputPath, subcktName, outputPath, subcktOutput, modelDbPath }) => {
+      const result = await callKicadScript('convert_skidl_module', {
+        inputPath,
+        subcktName,
+        outputPath,
+        subcktOutput,
+        modelDbPath,
+      });
+      return formatToolResult(result);
+    }
+  );
+
+  server.tool(
     'run_spice_harness_sanity_check',
     toolDescription('run_spice_harness_sanity_check'),
     {
