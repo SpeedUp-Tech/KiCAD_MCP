@@ -12,27 +12,23 @@ from __future__ import annotations
 
 import json
 import logging
-import os
-import re
 import sqlite3
 from collections import Counter
-from dataclasses import asdict, dataclass, field
-from functools import lru_cache
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
+
+from .constants import FILTERED_FTS_TABLE
+from .db import _default_db_path, _get_connection
+from .normalize import (
+    NormalizedQueryTokens,
+    _normalize_query,
+    _normalize_text_for_match,
+    _numeric_token_variants,
+)
+from .search_utils import _compose_fts_query, _extract_key_attributes, _value_or_none
 
 logger = logging.getLogger("component_search")
-
-
-def _resolve_repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
-
-
-def _default_db_path() -> Path:
-    env_path = os.environ.get("JLCPCB_DB_PATH")
-    if env_path:
-        return Path(env_path).expanduser()
-    return _resolve_repo_root() / "part_lib" / "jlcpcb-components.sqlite3"
 
 
 @dataclass(slots=True)
@@ -78,340 +74,110 @@ class SearchMPNResult:
         }
 
 
-@dataclass(slots=True)
-class NormalizedQueryTokens:
-    """Tokens derived from the user query."""
+def _normalize_library_input(library: Optional[str]) -> Tuple[str, List[str]]:
+    """Normalize a library name and return possible match values."""
 
-    tokens: List[str]
-    primary_tokens: List[str]
-    numeric_tokens: List[str]
+    raw = (library or "").strip()
+    if not raw:
+        return ("", [""])
 
+    if raw.lower() == "uncategorized":
+        return ("Uncategorized", ["", "Uncategorized"])
 
-_REGEX_REPLACEMENTS: Tuple[Tuple[re.Pattern[str], str], ...] = (
-    (re.compile(r"pmosfet", re.IGNORECASE), "p channel mosfet"),
-    (re.compile(r"p[\s\-]*mos\b", re.IGNORECASE), "p channel mosfet"),
-    (re.compile(r"nmosfet", re.IGNORECASE), "n channel mosfet"),
-    (re.compile(r"n[\s\-]*mos\b", re.IGNORECASE), "n channel mosfet"),
-    (re.compile(r"rds[\s_\-]*on", re.IGNORECASE), "rds on"),
-    (re.compile(r"v[\s_\-]*dss", re.IGNORECASE), "vdss"),
-)
-
-_TOKEN_EXPANSIONS: Dict[str, Tuple[str, ...]] = {
-    "pmos": ("p-channel", "mosfet"),
-    "p": ("p-channel",),
-    "p-channel": ("mosfet",),
-    "nmos": ("n-channel", "mosfet"),
-    "n": ("n-channel",),
-    "n-channel": ("mosfet",),
-    "rds": ("resistance",),
-    "vdss": ("voltage",),
-    "id": ("current",),
-}
-
-_STOPWORD_TOKENS: frozenset[str] = frozenset(
-    [
-        "transistor",
-        "channel",
-        "type",
-        "resistance",
-        "voltage",
-        "current",
-        "continuous",
-        "drain",
-        "source",
-        "gate",
-        "and",
-        "or",
-        "the",
-        "of",
-        "for",
-    ]
-)
-
-_EXCLUDED_FAMILIES: Tuple[str, ...] = ("Resistors", "Capacitors")
-
-# Families that are inherently IC-based; they may not have vendor SPICE models but
-# remain useful if a schematic symbol exists.
-FILTERED_FTS_TABLE = "v_components_search_filtered_fts"
-
-_IC_FAMILIES: Tuple[str, ...] = (
-    "ADC/DAC/Data Conversion",
-    "Amplifiers",
-    "Amplifiers/Comparators",
-    "Clock and Timing",
-    "Clock/Timing",
-    "Communication Interface Chip",
-    "Communication Interface Chip/UART/485/232",
-    "Data Acquisition",
-    "Data Converters",
-    "Embedded Processors & Controllers",
-    "IoT/Communication Modules",
-    "Interface",
-    "Interface ICs",
-    "LED Drivers",
-    "Logic",
-    "Logic ICs",
-    "Memory",
-    "Motor Driver ICs",
-    "Nixie Tube Driver/LED Driver",
-    "Operational Amplifier/Comparator",
-    "Optocoupler",
-    "Optocoupler/LED/Digital Tube/Photoelectric Device",
-    "Optocouplers & LEDs & Infrared",
-    "Optocouplers/Photocouplers",
-    "Optoisolators",
-    "Photoelectric Devices",
-    "Power Management",
-    "Power Management (PMIC)",
-    "Power Management ICs",
-    "Power Modules",
-    "Power Supply Chip",
-    "Radio Frequency Chip/Antenna",
-    "RF & Radio",
-    "RF And Wireless",
-    "RTC/Clock Chip",
-    "Sensors",
-    "Signal Isolation Devices",
-    "Single Chip Microcomputer/Microcontroller",
-)
-
-_IMPORTANT_ATTRIBUTE_KEYS: Tuple[str, ...] = (
-    "Type",
-    "Drain Source Voltage (Vdss)",
-    "Drain Source On Resistance (RDS(on)@Vgs,Id)",
-    "Continuous Drain Current (Id)",
-    "Power Dissipation (Pd)",
-    "Gate Threshold Voltage (Vgs(th)@Id)",
-)
-
-_VALUE_UNIT_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)?)([a-z\u00b5\u03bc\u03a9]+)$", re.IGNORECASE)
+    return (raw, [raw])
 
 
-def _replace_symbols(text: str) -> str:
-    if not text:
-        return ""
-    return (
-        text.replace("μ", "u")
-        .replace("µ", "u")
-        .replace("Ω", "ohm")
-        .replace("ω", "ohm")
-        .replace("±", " ")
-    )
-
-
-def _normalize_text_for_match(text: str) -> str:
-    return _replace_symbols(text).lower()
-
-
-def _is_numeric_token(token: str) -> bool:
-    return any(ch.isdigit() for ch in token)
-
-
-def _numeric_token_variants(token: str) -> List[str]:
-    base = token.lower().strip()
-    variants = {base}
-    compact = base.replace(" ", "").replace("_", "")
-    variants.add(compact)
-    variants.add(compact.replace("-", ""))
-    variants.add(compact.replace(",", ""))
-
-    variants.add(re.sub(r"(?<=\d)([a-z\u00b5\u03bc\u03a9]+)", r" \1", compact))
-    variants.add(re.sub(r"[^0-9a-zA-Z]+", " ", compact))
-
-    variants.add(compact.replace("ω", "ohm").replace("Ω", "ohm"))
-
-    letters_only = re.sub(r"[^a-zA-Z]+", "", compact)
-    if letters_only:
-        variants.add(letters_only)
-
-    cleaned = {val.strip() for val in variants if val.strip()}
-    return list(cleaned)
-
-
-def _normalize_query_text(query: str) -> str:
-    text = query.strip()
-    for pattern, replacement in _REGEX_REPLACEMENTS:
-        text = pattern.sub(replacement, text)
-    text = _replace_symbols(text)
-    text = re.sub(r"[<>=,@:;\\/\|\[\]\{\}\(\)\?\!]", " ", text)
-    text = re.sub(r"\s+", " ", text)
-    return text.strip().lower()
-
-
-def _token_variants(token: str) -> Iterable[str]:
-    yield token
-    expansion = _TOKEN_EXPANSIONS.get(token)
-    if expansion:
-        for item in expansion:
-            yield item.lower()
-
-    match = _VALUE_UNIT_RE.match(token)
-    if match:
-        value, unit = match.groups()
-        yield value
-        yield unit.lower()
-
-    if "ohm" not in token and ("ω" in token or "Ω" in token):
-        yield token.replace("ω", "ohm").replace("Ω", "ohm")
-
-    if token.endswith(("v", "a", "w")) and len(token) > 1:
-        yield token[:-1]
-        yield token[-1]
-
-
-def _normalize_query(query: str) -> NormalizedQueryTokens:
-    normalized = _normalize_query_text(query)
-    if not normalized:
-        return NormalizedQueryTokens(tokens=[], primary_tokens=[], numeric_tokens=[])
-
-    base_tokens = [token for token in normalized.split(" ") if token]
-
-    tokens: List[str] = []
-    numeric_tokens: List[str] = []
-    primary_tokens: List[str] = []
-
-    seen_tokens: set[str] = set()
-    seen_primary: set[str] = set()
-
-    def add_token(value: str) -> None:
-        if not value:
-            return
-        if value not in seen_tokens:
-            tokens.append(value)
-            seen_tokens.add(value)
-
-    for base in base_tokens:
-        add_token(base)
-
-        if _is_numeric_token(base):
-            if base not in numeric_tokens:
-                numeric_tokens.append(base)
-        else:
-            if (
-                len(base) >= 3
-                and base not in _STOPWORD_TOKENS
-                and "_" not in base
-                and "-" not in base
-                and base.isalpha()
-            ):
-                if base not in seen_primary:
-                    primary_tokens.append(base)
-                    seen_primary.add(base)
-
-        for variant in _token_variants(base):
-            cleaned = variant.strip()
-            if not cleaned:
-                continue
-            add_token(cleaned)
-            if _is_numeric_token(cleaned):
-                if cleaned not in numeric_tokens:
-                    numeric_tokens.append(cleaned)
-            else:
-                if (
-                    len(cleaned) >= 3
-                    and cleaned not in _STOPWORD_TOKENS
-                    and "_" not in cleaned
-                    and "-" not in cleaned
-                    and cleaned.isalpha()
-                ):
-                    if cleaned not in seen_primary:
-                        primary_tokens.append(cleaned)
-                        seen_primary.add(cleaned)
-
-    numeric_variant_tokens: set[str] = set()
-    for numeric in numeric_tokens:
-        numeric_variant_tokens.update(
-            variant
-            for variant in _numeric_token_variants(numeric)
-            if variant and not _is_numeric_token(variant)
-        )
-
-    filtered_primary = [token for token in primary_tokens if token not in numeric_variant_tokens]
-
-    return NormalizedQueryTokens(
-        tokens=tokens,
-        primary_tokens=filtered_primary,
-        numeric_tokens=numeric_tokens,
-    )
-
-
-def _fts_token(term: str, *, prefix: bool = True) -> str:
-    cleaned = term.replace('"', "").strip()
-    if not cleaned:
-        return ""
-
-    if "-" in cleaned:
-        cleaned = cleaned.replace("-", " ")
-
-    normalized = re.sub(r"\s+", " ", cleaned)
-    if not normalized:
-        return ""
-
-    if " " in normalized:
-        return f'"{normalized}"'
-
-    contains_punctuation = bool(re.search(r"[^\w]", normalized))
-    if contains_punctuation:
-        quoted = f'"{normalized}"'
-        if prefix and len(normalized) >= 3 and not normalized.isdigit():
-            return f"{quoted}*"
-        return quoted
-
-    if prefix and len(normalized) >= 3 and not normalized.isdigit():
-        return f"{normalized}*"
-
-    return normalized
-
-
-def _compose_fts_query(primary: Sequence[str], optional: Sequence[str]) -> str:
-    tokens = [token for term in optional if (token := _fts_token(term, prefix=True))]
-    if not tokens:
-        return "*"
-    return " OR ".join(tokens)
-
-
-def _extract_key_attributes(
-    attributes: Dict[str, object], tokens: Sequence[str], limit: int = 8
+def search_datasheet(
+    mpn: str,
+    library: str,
+    *,
+    db_path: Optional[Union[Path, str]] = None,
+    config: Optional[ComponentSearchConfig] = None,
 ) -> Dict[str, object]:
-    if not attributes:
-        return {}
+    """Return the datasheet URL for an exact MPN/library pair with a KiCad symbol."""
 
-    selected: Dict[str, object] = {}
-    for key in _IMPORTANT_ATTRIBUTE_KEYS:
-        if key in attributes and attributes[key] not in (None, "", "null"):
-            selected[key] = attributes[key]
-            if len(selected) >= limit:
-                return selected
+    if not isinstance(mpn, str) or not mpn.strip():
+        return {
+            "success": False,
+            "message": "mpn parameter is required and must be a string",
+            "errorDetails": "No valid MPN was provided",
+        }
 
-    meaningful_tokens = [
-        item for item in tokens if len(item) >= 3 and item not in _STOPWORD_TOKENS
-    ]
-    for key, value in attributes.items():
-        if key in selected:
-            continue
-        key_l = key.lower()
-        value_text = str(value).lower()
-        if any(token in key_l or token in value_text for token in meaningful_tokens):
-            selected[key] = value
-            if len(selected) >= limit:
-                break
+    if not isinstance(library, str):
+        return {
+            "success": False,
+            "message": "library parameter is required and must be a string",
+            "errorDetails": "Library name was missing or invalid",
+        }
 
-    return selected
+    normalized_mpn = mpn.strip()
+    normalized_library, library_candidates = _normalize_library_input(library)
 
+    settings = config or ComponentSearchConfig()
+    resolved_db_path = Path(db_path).expanduser() if db_path else settings.db_path
 
-def _value_or_none(value: Optional[str]) -> Optional[str]:
-    if value is None:
-        return None
-    stripped = value.strip()
-    return stripped or None
+    if not resolved_db_path.exists():
+        message = f"Component database not found: {resolved_db_path}"
+        logger.error(message)
+        return {
+            "success": False,
+            "message": message,
+            "errorDetails": "Ensure the database has been generated with setup_component_search.py",
+        }
 
+    conn = _get_connection(resolved_db_path)
+    placeholders = ", ".join("?" for _ in library_candidates)
 
-@lru_cache(maxsize=4)
-def _get_connection(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = OFF")
-    return conn
+    sql = f"""
+        SELECT
+            datasheet,
+            mpn,
+            COALESCE(library, '') AS library
+        FROM v_components_search
+        WHERE symbol_lib = 1
+          AND lower(mpn) = lower(?)
+          AND COALESCE(library, '') IN ({placeholders})
+        ORDER BY lcsc ASC
+        LIMIT 1
+    """
+
+    try:
+        row = conn.execute(
+            sql,
+            (
+                normalized_mpn,
+                *library_candidates,
+            ),
+        ).fetchone()
+    except sqlite3.Error as err:
+        logger.error("SQLite error during datasheet lookup: %s", err)
+        return {
+            "success": False,
+            "message": "Datasheet lookup failed",
+            "errorDetails": str(err),
+        }
+
+    if not row:
+        return {
+            "success": False,
+            "message": "Component not found",
+            "errorDetails": (
+                "No component with a symbol matched the provided MPN and library"
+            ),
+            "mpn": normalized_mpn,
+            "library": normalized_library,
+        }
+
+    resolved_library = row["library"] or ""
+    datasheet = row["datasheet"] or None
+
+    return {
+        "success": True,
+        "mpn": row["mpn"] or normalized_mpn,
+        "library": resolved_library or "Uncategorized",
+        "datasheet": datasheet,
+        "dbPath": str(resolved_db_path),
+    }
 
 
 def search_mpn_part(

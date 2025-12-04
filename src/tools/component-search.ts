@@ -95,4 +95,76 @@ export function registerComponentSearchTools(
       };
     }
   );
+
+  server.tool(
+    'search_datasheet',
+    toolDescription('search_datasheet'),
+    {
+      mpn: z
+        .string()
+        .min(1)
+        .describe('Manufacturer part number to look up'),
+      library: z
+        .string()
+        .describe('Library name to match (use "Uncategorized" or empty string for unclassified entries)'),
+    },
+    async ({ mpn, library }) => {
+      const result = await callKicadScript('search_datasheet', {
+        mpn,
+        library,
+      });
+
+      if (!result || typeof result !== 'object') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Datasheet lookup returned an unexpected response.',
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const payload = result as Record<string, unknown>;
+      const success = payload.success === true;
+
+      if (!success) {
+        const message =
+          typeof payload.message === 'string'
+            ? payload.message
+            : JSON.stringify({ success: false, datasheet: null }, null, 2);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: message,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const datasheet =
+        typeof payload.datasheet === 'string' && payload.datasheet.trim()
+          ? payload.datasheet
+          : null;
+
+      const response = {
+        success: true,
+        mpn: payload.mpn ?? mpn,
+        library: payload.library ?? library,
+        datasheet,
+      };
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(response, null, 2),
+          },
+        ],
+      };
+    }
+  );
 }

@@ -7,7 +7,7 @@
   "kicadPath": "/usr/share/kicad",
   "logLevel": "warn",
   "logDir": "kicad_logs",
-  "responseTimeoutMs": 60000,
+  "responseTimeoutMs": 180000,
   "processManagement": {
     "mode": "auto",
     "maxProcesses": 100,

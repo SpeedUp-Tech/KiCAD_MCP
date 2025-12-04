@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
-from .service import FILTERED_FTS_TABLE, _EXCLUDED_FAMILIES, _IC_FAMILIES
+from .constants import FILTERED_FTS_TABLE, _EXCLUDED_FAMILIES, _IC_FAMILIES
 
 DatabasePath = Union[str, Path]
 

@@ -348,7 +348,7 @@ def _eval_measurement_on_signals(
         t_settle = _first_settling_time(times_s, vals, target, band_pct, win_s)
         # Return in seconds; assertions can use "ms" suffix which is
         # parsed into seconds by _parse_spice_number.
-        value = float(t_settle) if t_settle is not None else float("inf")
+        value = float(t_settle) if t_settle is not None else 1e308
 
     elif fn == "ripple_pp":
         win_s = window_from_args()
@@ -396,7 +396,7 @@ def _eval_measurement_on_signals(
                     frac = 0.0 if dv == 0 else (level - v0) / dv
                     t_cross = float(t0 + frac * (t1 - t0))
                     break
-        value = float(t_cross) if t_cross is not None else float("inf")
+        value = float(t_cross) if t_cross is not None else 1e308
 
     else:
         raise ValueError(f"Unsupported measurement fn: {fn}")

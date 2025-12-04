@@ -239,6 +239,7 @@ class KiCADInterface:
             "align_components": self.component_commands.align_components,
             "duplicate_component": self.component_commands.duplicate_component,
             "search_mpn_part": self.component_search_commands.search_mpn_part,
+            "search_datasheet": self.component_search_commands.search_datasheet,
 
             # Routing commands
             "add_net": self.routing_commands.add_net,

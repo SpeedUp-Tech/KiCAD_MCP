@@ -12,7 +12,11 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, Optional, Union, List
 
-from component_search import ComponentSearchConfig, search_mpn_part as execute_search
+from component_search import (
+    ComponentSearchConfig,
+    search_datasheet as lookup_datasheet,
+    search_mpn_part as execute_search,
+)
 
 logger = logging.getLogger("kicad_interface")
 
@@ -75,5 +79,41 @@ class ComponentSearchCommands:
             return {
                 "success": False,
                 "message": "Component search encountered an unexpected error",
+                "errorDetails": str(exc),
+            }
+
+    def search_datasheet(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Return the datasheet URL for an exact MPN/library match that has a KiCad symbol."""
+
+        mpn = params.get("mpn")
+        library = params.get("library")
+        db_path = params.get("dbPath")
+
+        if not isinstance(mpn, str) or not mpn.strip():
+            return {
+                "success": False,
+                "message": "mpn parameter is required and must be a string",
+                "errorDetails": "The 'mpn' parameter was missing or empty",
+            }
+
+        if not isinstance(library, str):
+            return {
+                "success": False,
+                "message": "library parameter is required and must be a string",
+                "errorDetails": "The 'library' parameter was missing or invalid",
+            }
+
+        try:
+            return lookup_datasheet(
+                mpn,
+                library,
+                db_path=self._resolve_db_path(db_path),
+                config=self._config,
+            )
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.error("Unhandled error during datasheet lookup: %s", exc, exc_info=True)
+            return {
+                "success": False,
+                "message": "Datasheet lookup encountered an unexpected error",
                 "errorDetails": str(exc),
             }
