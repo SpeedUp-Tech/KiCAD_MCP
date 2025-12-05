@@ -137,6 +137,7 @@ try:
     from python.spice_tools.harness_sanity import harness_sanity_check
     from python.spice_tools.pyspice_converter import convert_skidl_module
     from python.spice_tools.model_db import DEFAULT_MODEL_DB, save_part_model, search_spice_model
+    from python.spice_tools.utils import validate_spice_model
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -296,6 +297,7 @@ class KiCADInterface:
             "convert_skidl_module": self._handle_convert_skidl_module,
             "save_part_model": self._handle_save_part_model,
             "search_spice_model": self._handle_search_spice_model,
+            "validate_spice_model": self._handle_validate_spice_model,
         }
 
         logger.info("KiCAD interface initialized")
@@ -1552,6 +1554,45 @@ class KiCADInterface:
             }
         except Exception as exc:
             logger.error(f"Error saving SPICE model entry: {exc}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(exc)}
+
+    def _handle_validate_spice_model(self, params):
+        """Validate a SPICE model by parsing and instantiating its subcircuit."""
+        logger.info("Validating SPICE model file")
+        try:
+            model_path_raw = params.get("modelPath") or params.get("model_path") or params.get("path")
+            expected_subckt = params.get("expectedSubcktName") or params.get("expected_subckt_name")
+            expected_pinout = params.get("expectedPinout") or params.get("expected_pinout")
+
+            missing = [
+                label
+                for label, value in (
+                    ("modelPath", model_path_raw),
+                    ("expectedSubcktName", expected_subckt),
+                )
+                if not value
+            ]
+            if missing:
+                return {"success": False, "message": f"Missing required parameter(s): {', '.join(missing)}"}
+
+            model_path = Path(os.path.expanduser(str(model_path_raw))).resolve()
+            problems = validate_spice_model(
+                model_path=model_path,
+                expected_subckt_name=str(expected_subckt),
+                expected_pinout=expected_pinout,
+            )
+            success = len(problems) == 0
+
+            return {
+                "success": success,
+                "message": "SPICE model validated successfully" if success else "SPICE model validation failed",
+                "modelPath": str(model_path),
+                "expectedSubcktName": str(expected_subckt),
+                "problems": problems,
+            }
+        except Exception as exc:
+            logger.error(f"Error validating SPICE model: {exc}")
             logger.error(traceback.format_exc())
             return {"success": False, "message": str(exc)}
 

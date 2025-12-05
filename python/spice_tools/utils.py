@@ -201,6 +201,78 @@ def _extract_pin_selectors(part) -> List[str]:
     return selectors
 
 
+def disable_inspice_cache() -> None:
+    """
+    Turn off InSpice cache artifacts (db.pickle / *.yaml) to avoid bleed-over between runs.
+    """
+
+    try:
+        from InSpice.Spice.Library import SpiceLibrary as _RawSpiceLibrary
+        from InSpice.Spice.Library.SpiceInclude import SpiceInclude as _RawSpiceInclude
+
+        _RawSpiceLibrary.save = lambda self: None  # type: ignore[assignment]
+        _RawSpiceLibrary.load = lambda self: None  # type: ignore[assignment]
+        _RawSpiceInclude.write_yaml = lambda self: None  # type: ignore[assignment]
+    except Exception:
+        # Best-effort patching; ignore if InSpice isn't importable yet.
+        pass
+
+
+def disable_skidl_file_logging() -> None:
+    """
+    Stop SKiDL from emitting .log/.erc files (best-effort).
+    """
+
+    try:
+        from skidl.logger import stop_log_file_output
+
+        stop_log_file_output(True)
+    except Exception:
+        pass
+
+
+def _build_subckt_template(lib, subckt_name: str, lib_entry):
+    """
+    Build a SPICE subcircuit part template from a parsed library entry.
+
+    This mirrors the PySpice 1.6+ behavior where the parser returns pin metadata
+    instead of a full SKiDL Part with a copy() method.
+    """
+
+    from skidl import SPICE, Pin  # Imported lazily to avoid heavy module load at import time.
+    from skidl.tools.spice.spice import add_subcircuit_to_circuit
+
+    template = skidl_part.Part(part_defn="don't care", tool=SPICE, dest=skidl_part.LIBRARY)
+    template.fplist = []
+    template.aliases = []
+    template.num_units = 1
+    template.ref_prefix = "X"
+    template._ref = None
+    template.filename = ""
+    template.name = subckt_name
+    template.pins = []
+
+    nodes = getattr(lib_entry, "_nodes", None) or getattr(lib_entry, "nodes", None) or []
+    for idx, node in enumerate(nodes):
+        num = getattr(node, "internal_node", None) or getattr(node, "num", None)
+        name = getattr(node, "name", None)
+        if num is None:
+            num = idx + 1
+        pin_name = str(name or num)
+        template.pins.append(Pin(num=num, name=pin_name))
+
+    template.associate_pins()
+    lib_path = getattr(lib_entry, "path", None) or getattr(lib, "_path", None)
+    template.pyspice = {
+        "name": "X",
+        "add": add_subcircuit_to_circuit,
+        "lib": lib,
+        "lib_path": str(lib_path) if lib_path else "",
+        "lib_section": getattr(lib, "_section", None),
+    }
+    return template
+
+
 def validate_spice_model(
     model_path: str | Path,
     expected_subckt_name: str,
@@ -224,12 +296,21 @@ def validate_spice_model(
     if not path.exists():
         return [f"Model file not found: {path}"]
 
+    # Disable InSpice cache artifacts (db.pickle / *.yaml) that can bleed across runs.
+    disable_inspice_cache()
+    # Stop SKiDL from dropping .log/.erc files during imports.
+    disable_skidl_file_logging()
+
+    # Track cache artifacts so we can clean up after parsing.
+    db_path = (path.parent / "db.pickle") if path.is_file() else (path / "db.pickle")
+
     log_capture = io.StringIO()
     try:
         from skidl.pyspice import SpiceLibrary  # type: ignore
 
         with redirect_stdout(log_capture), redirect_stderr(log_capture):
-            lib = SpiceLibrary(str(path))
+            # Force a fresh parse to avoid picking up stale entries from a cached db.pickle.
+            lib = SpiceLibrary(str(path), scan=True)
     except Exception as exc:
         raw_log = log_capture.getvalue().replace("/root/workspace/KiCAD_MCP/", "")
         parser_lines = [line.strip() for line in raw_log.splitlines() if line.strip()]
@@ -259,12 +340,18 @@ def validate_spice_model(
         return problems
 
     try:
-        from skidl.pyspice import Circuit, Net, Part  # type: ignore
+        from skidl.pyspice import Circuit, Net  # type: ignore
         from skidl.tools.spice.spice import gen_netlist
 
         circuit = Circuit()
         with circuit:
-            part = Part(lib=lib, name=expected_subckt_name, ref="XVAL", dest="INSTANCE")
+            lib_entry = lib[expected_subckt_name]
+            if hasattr(lib_entry, "copy") and callable(getattr(lib_entry, "copy")):
+                template = lib_entry
+            else:
+                template = _build_subckt_template(lib, expected_subckt_name, lib_entry)
+
+            part = template.copy(dest=skidl_part.NETLIST, circuit=circuit, ref="XVAL")
             actual_pins = _extract_pin_selectors(part)
 
             if expected_pins:
@@ -290,5 +377,12 @@ def validate_spice_model(
         gen_netlist(circuit, title="validate_spice_model")
     except Exception as exc:
         problems.append(f"Smoke instantiation failed: {exc}")
+
+    # Remove cache artifact if it exists (avoid stale models bleeding across runs).
+    if db_path.exists():
+        try:
+            db_path.unlink()
+        except Exception:
+            pass
 
     return problems

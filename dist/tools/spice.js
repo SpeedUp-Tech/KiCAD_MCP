@@ -7,6 +7,11 @@ import { toolDescription } from '../utils/toolDocs.js';
 import { formatToolResult } from './shared.js';
 export function registerSpiceTools(server, callKicadScript) {
     logger.info('Registering SPICE tools');
+    const pinoutEntrySchema = z.object({
+        number: z.union([z.string(), z.number()]).describe('Pin number/selector from the SPICE subcircuit'),
+        name: z.string().describe('Pin name from the SPICE subcircuit'),
+        type: z.string().describe('Pin type/classification'),
+    });
     server.tool('run_spice_simulation_testcase', toolDescription('run_spice_simulation_testcase'), {
         schemaPath: z.string().describe('Path to the testbench JSON schema'),
         harnessPath: z.string().describe('Path to the harness Python module exposing simulation_harness'),
@@ -64,6 +69,21 @@ export function registerSpiceTools(server, callKicadScript) {
             name,
             library,
             modelDbPath,
+        });
+        return formatToolResult(result);
+    });
+    server.tool('validate_spice_model', toolDescription('validate_spice_model'), {
+        modelPath: z.string().describe('Path to the SPICE model (.lib/.spice) file'),
+        expectedSubcktName: z.string().describe('Name of the .SUBCKT expected in the model file'),
+        expectedPinout: z
+            .array(pinoutEntrySchema)
+            .optional()
+            .describe('Optional ordered pin list to verify pin count and ordering'),
+    }, async ({ modelPath, expectedSubcktName, expectedPinout }) => {
+        const result = await callKicadScript('validate_spice_model', {
+            modelPath,
+            expectedSubcktName,
+            expectedPinout,
         });
         return formatToolResult(result);
     });

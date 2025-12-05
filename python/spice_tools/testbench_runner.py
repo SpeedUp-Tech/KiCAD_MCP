@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, List, Tuple, cast
 import numpy as np
 import importlib.util
 
-from python.spice_tools.utils import _determine_step_s, run_transient
+from python.spice_tools.utils import _determine_step_s, run_transient, disable_inspice_cache, disable_skidl_file_logging
 
 
 @dataclass
@@ -555,6 +555,9 @@ def run_testbench_file(
           (as used in the testbench schema) to waveforms.
         - dut is a callable DUT factory resolved from the testbench metadata.
     """
+    disable_inspice_cache()
+    disable_skidl_file_logging()
+
     schema_path = Path(schema_path)
     data = json.loads(schema_path.read_text())
     dut = _load_dut_from_testbench(schema_path, data)
@@ -621,6 +624,9 @@ def run_use_case(
             }
         }
     """
+    disable_inspice_cache()
+    disable_skidl_file_logging()
+
     schema_path = Path(schema_path)
     data = json.loads(schema_path.read_text())
     use_cases = data.get("use_cases", [])

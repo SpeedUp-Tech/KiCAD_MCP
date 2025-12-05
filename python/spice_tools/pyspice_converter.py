@@ -19,6 +19,7 @@ import os
 from skidl import Circuit, Net
 
 from .model_db import search_spice_model, DEFAULT_MODEL_DB
+from .utils import disable_inspice_cache, disable_skidl_file_logging
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -218,6 +219,9 @@ def convert_skidl_module(
 
     Returns the name of the generated @SubCircuit.
     """
+
+    disable_inspice_cache()
+    disable_skidl_file_logging()
 
     module = _load_module(input_path.resolve())
     circuit, interface = _instantiate_subckt(module, subckt_name)

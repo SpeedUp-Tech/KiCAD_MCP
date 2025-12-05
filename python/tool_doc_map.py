@@ -75,6 +75,10 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/spice_tools/harness_sanity.py",
         ("harness_sanity_check",),
     ),
+    "validate_spice_model": (
+        "python/spice_tools/utils.py",
+        ("validate_spice_model",),
+    ),
     "search_spice_model": (
         "python/kicad_interface.py",
         ("KiCADInterface", "_handle_search_spice_model"),
