@@ -231,12 +231,14 @@ def validate_spice_model(
         with redirect_stdout(log_capture), redirect_stderr(log_capture):
             lib = SpiceLibrary(str(path))
     except Exception as exc:
-        parser_lines = [line.strip() for line in log_capture.getvalue().splitlines() if line.strip()]
+        raw_log = log_capture.getvalue().replace("/root/workspace/KiCAD_MCP/", "")
+        parser_lines = [line.strip() for line in raw_log.splitlines() if line.strip()]
         problems.append(f"Parse failed: {exc}")
         problems.extend(f"parser: {line}" for line in parser_lines)
         return problems
 
-    parser_lines = [line.strip() for line in log_capture.getvalue().splitlines() if line.strip()]
+    raw_log = log_capture.getvalue().replace("/root/workspace/KiCAD_MCP/", "")
+    parser_lines = [line.strip() for line in raw_log.splitlines() if line.strip()]
     subckts = list(getattr(lib, "subcircuits", []) or [])
     if not subckts:
         problems.append("Parse failed: library contained no subcircuits.")
