@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import io
 import re
-from typing import Any, Dict, TYPE_CHECKING
+from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from typing import Any, Dict, List, Sequence, TYPE_CHECKING
 
 import skidl.part as skidl_part
 from skidl.tools.skidl.libs import pyspice_sklib
@@ -141,3 +144,149 @@ def _configure_vin(source, vin_cfg: Dict[str, Any]) -> None:
         source.pulse_width = 1.0
         source.period = 2.0
         return
+
+
+def _normalize_expected_pinout(expected_pinout: Sequence[Dict[str, Any]] | None) -> tuple[List[str], List[str]]:
+    """
+    Normalize a strict pinout shape into an ordered list of selectors.
+
+    Required shape:
+        [{"number": "...", "name": "...", "type": "..."} , ...]
+
+    Returns:
+        (selectors, problems)
+    """
+
+    if expected_pinout is None:
+        return [], []
+
+    if not isinstance(expected_pinout, Sequence):
+        return [], [f"Pinout must be a sequence of pin dicts; got {type(expected_pinout).__name__}."]
+
+    normalized: List[str] = []
+    problems: List[str] = []
+
+    for idx, entry in enumerate(expected_pinout):
+        if not isinstance(entry, dict):
+            problems.append(f"Pinout entry {idx} must be a dict with number/name/type; got {type(entry).__name__}.")
+            continue
+
+        number = entry.get("number")
+        name = entry.get("name")
+        ptype = entry.get("type")
+
+        if number is None or name is None or ptype is None:
+            problems.append(
+                f"Pinout entry {idx} missing required fields; expected keys number/name/type."
+            )
+            continue
+
+        selector = str(number).strip()
+        if not selector:
+            problems.append(f"Pinout entry {idx} has empty number field.")
+            continue
+
+        normalized.append(selector)
+
+    return normalized, problems
+
+
+def _extract_pin_selectors(part) -> List[str]:
+    """Return a stable string selector for each pin on a SKiDL part."""
+
+    selectors: List[str] = []
+    for idx, pin in enumerate(getattr(part, "pins", [])):
+        selector = getattr(pin, "num", None) or getattr(pin, "name", None) or f"{idx+1}"
+        selectors.append(str(selector))
+    return selectors
+
+
+def validate_spice_model(
+    model_path: str | Path,
+    expected_subckt_name: str,
+    expected_pinout: Sequence[Dict[str, Any]] | None = None,
+) -> List[str]:
+    """
+    Validate a SPICE model file by parsing and smoke-instantiating its subcircuit.
+
+    Args:
+        model_path: Filesystem path to the .lib/.spice file containing the model.
+        expected_subckt_name: Name of the .SUBCKT expected in the library.
+        expected_pinout: Ordered pinout description used for comparison and wiring.
+
+    Returns:
+        List of human-readable problems. Empty list means validation passed.
+    """
+
+    problems: List[str] = []
+    path = Path(model_path)
+
+    if not path.exists():
+        return [f"Model file not found: {path}"]
+
+    log_capture = io.StringIO()
+    try:
+        from skidl.pyspice import SpiceLibrary  # type: ignore
+
+        with redirect_stdout(log_capture), redirect_stderr(log_capture):
+            lib = SpiceLibrary(str(path))
+    except Exception as exc:
+        parser_lines = [line.strip() for line in log_capture.getvalue().splitlines() if line.strip()]
+        problems.append(f"Parse failed: {exc}")
+        problems.extend(f"parser: {line}" for line in parser_lines)
+        return problems
+
+    parser_lines = [line.strip() for line in log_capture.getvalue().splitlines() if line.strip()]
+    subckts = list(getattr(lib, "subcircuits", []) or [])
+    if not subckts:
+        problems.append("Parse failed: library contained no subcircuits.")
+        problems.extend(f"parser: {line}" for line in parser_lines)
+        return problems
+
+    if expected_subckt_name not in subckts:
+        available = ", ".join(sorted(subckts)) if subckts else "none"
+        problems.append(
+            f"Expected subcircuit {expected_subckt_name!r} not found; available: {available}."
+        )
+        problems.extend(f"parser: {line}" for line in parser_lines)
+        return problems
+
+    expected_pins, pinout_problems = _normalize_expected_pinout(expected_pinout)
+    if pinout_problems:
+        problems.extend(pinout_problems)
+        return problems
+
+    try:
+        from skidl.pyspice import Circuit, Net, Part  # type: ignore
+        from skidl.tools.spice.spice import gen_netlist
+
+        circuit = Circuit()
+        with circuit:
+            part = Part(lib=lib, name=expected_subckt_name, ref="XVAL", dest="INSTANCE")
+            actual_pins = _extract_pin_selectors(part)
+
+            if expected_pins:
+                if len(expected_pins) != len(actual_pins):
+                    problems.append(
+                        f"Pin count mismatch for {expected_subckt_name}: expected {len(expected_pins)}, parsed {len(actual_pins)}."
+                    )
+                elif expected_pins != actual_pins:
+                    problems.append(
+                        f"Pin order/name mismatch for {expected_subckt_name}: expected {expected_pins}, parsed {actual_pins}."
+                    )
+
+            net_labels = (
+                expected_pins if expected_pins and len(expected_pins) == len(part.pins) else actual_pins
+            )
+            if not net_labels:
+                net_labels = [f"PIN{i+1}" for i in range(len(part.pins))]
+
+            for idx, (label, pin) in enumerate(zip(net_labels, part.pins)):
+                net = Net(str(label) or f"PIN{idx+1}")
+                net += pin
+
+        gen_netlist(circuit, title="validate_spice_model")
+    except Exception as exc:
+        problems.append(f"Smoke instantiation failed: {exc}")
+
+    return problems

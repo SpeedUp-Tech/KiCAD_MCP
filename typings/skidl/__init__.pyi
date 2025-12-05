@@ -33,6 +33,7 @@ class Pin:
 
 class Part:
     ref: str
+    pins: Sequence[Pin]
 
     def __init__(self, *args: Any, **kwargs: Any) -> None: ...
 
