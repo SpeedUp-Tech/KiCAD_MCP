@@ -201,7 +201,7 @@ class PythonSession {
         if (trimmed.includes('[ERROR]')) {
             logger.error(message);
         }
-        else if (trimmed.includes('[WARN]')) {
+        else if (trimmed.includes('[WARN]') || trimmed.includes('WARNING:')) {
             logger.warn(message);
         }
         else if (trimmed.includes('[INFO]')) {
@@ -211,7 +211,7 @@ class PythonSession {
             logger.debug(message);
         }
         else {
-            logger.error(message);
+            logger.warn(message);
         }
     }
 }

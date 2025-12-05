@@ -94,7 +94,7 @@ def search_datasheet(
     db_path: Optional[Union[Path, str]] = None,
     config: Optional[ComponentSearchConfig] = None,
 ) -> Dict[str, object]:
-    """Return the datasheet URL for an exact MPN/library pair with a KiCad symbol."""
+    """Return the datasheet URL and specs for an exact MPN/library pair with a KiCad symbol."""
 
     if not isinstance(mpn, str) or not mpn.strip():
         return {
@@ -131,6 +131,7 @@ def search_datasheet(
     sql = f"""
         SELECT
             datasheet,
+            specs,
             mpn,
             COALESCE(library, '') AS library
         FROM v_components_search
@@ -170,12 +171,14 @@ def search_datasheet(
 
     resolved_library = row["library"] or ""
     datasheet = row["datasheet"] or None
+    specs = row["specs"] or ""
 
     return {
         "success": True,
         "mpn": row["mpn"] or normalized_mpn,
         "library": resolved_library or "Uncategorized",
         "datasheet": datasheet,
+        "specs": specs,
         "dbPath": str(resolved_db_path),
     }
 

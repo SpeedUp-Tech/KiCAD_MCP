@@ -27,12 +27,27 @@ async function main() {
             logger.setLogDir(config.logDir);
         }
         // Create the server
+        // Build extraEnv with KiCad paths
+        const extraEnv = {};
+        if (config.kicadPath) {
+            extraEnv.KICAD_PATH = config.kicadPath;
+            // Auto-set symbol/footprint/3dmodel directories if they exist
+            const symbolDir = join(config.kicadPath, 'symbols');
+            const footprintDir = join(config.kicadPath, 'footprints');
+            const model3dDir = join(config.kicadPath, '3dmodels');
+            // Set for multiple KiCad versions (6, 7, 8, 9)
+            for (const ver of ['6', '7', '8', '9']) {
+                extraEnv[`KICAD${ver}_SYMBOL_DIR`] = symbolDir;
+                extraEnv[`KICAD${ver}_FOOTPRINT_DIR`] = footprintDir;
+                extraEnv[`KICAD${ver}_3DMODEL_DIR`] = model3dDir;
+            }
+        }
         const server = new KiCADMcpServer({
             kicadScriptPath,
             logLevel: config.logLevel,
             pythonPath: config.pythonPath || process.env.PYTHONPATH,
             pythonExecutable: config.pythonExecutable || process.env.KICAD_PYTHON || process.env.PYTHON_EXECUTABLE,
-            extraEnv: config.kicadPath ? { KICAD_PATH: config.kicadPath } : {},
+            extraEnv,
             responseTimeoutMs: config.responseTimeoutMs,
             processManagement: config.processManagement,
         });

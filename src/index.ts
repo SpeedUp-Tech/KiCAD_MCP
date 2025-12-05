@@ -21,38 +21,55 @@ async function main() {
     // Parse command line arguments
     const args = process.argv.slice(2);
     const options = parseCommandLineArgs(args);
-    
+
     // Load configuration
     const config = await loadConfig(options.configPath);
-    
+
     // Path to the Python script that interfaces with KiCAD
     const kicadScriptPath = join(dirname(__dirname), 'python', 'kicad_interface.py');
-    
+
     // Configure logger output directory if provided
     if (config.logDir) {
       logger.setLogDir(config.logDir);
     }
 
     // Create the server
+    // Build extraEnv with KiCad paths
+    const extraEnv: Record<string, string> = {};
+    if (config.kicadPath) {
+      extraEnv.KICAD_PATH = config.kicadPath;
+      // Auto-set symbol/footprint/3dmodel directories if they exist
+      const symbolDir = join(config.kicadPath, 'symbols');
+      const footprintDir = join(config.kicadPath, 'footprints');
+      const model3dDir = join(config.kicadPath, '3dmodels');
+
+      // Set for multiple KiCad versions (6, 7, 8, 9)
+      for (const ver of ['6', '7', '8', '9']) {
+        extraEnv[`KICAD${ver}_SYMBOL_DIR`] = symbolDir;
+        extraEnv[`KICAD${ver}_FOOTPRINT_DIR`] = footprintDir;
+        extraEnv[`KICAD${ver}_3DMODEL_DIR`] = model3dDir;
+      }
+    }
+
     const server = new KiCADMcpServer({
       kicadScriptPath,
       logLevel: config.logLevel,
       pythonPath: config.pythonPath || process.env.PYTHONPATH,
       pythonExecutable:
         config.pythonExecutable || process.env.KICAD_PYTHON || process.env.PYTHON_EXECUTABLE,
-      extraEnv: config.kicadPath ? { KICAD_PATH: config.kicadPath } : {},
+      extraEnv,
       responseTimeoutMs: config.responseTimeoutMs,
       processManagement: config.processManagement,
     });
-    
+
     // Start the server
     await server.start();
-    
+
     // Setup graceful shutdown
     setupGracefulShutdown(server);
-    
+
     logger.info('KiCAD MCP server started with STDIO transport');
-    
+
   } catch (error) {
     logger.error(`Failed to start KiCAD MCP server: ${error}`);
     process.exit(1);
@@ -64,14 +81,14 @@ async function main() {
  */
 function parseCommandLineArgs(args: string[]) {
   let configPath = undefined;
-  
+
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--config' && i + 1 < args.length) {
       configPath = args[i + 1];
       i++;
     }
   }
-  
+
   return { configPath };
 }
 
@@ -84,18 +101,18 @@ function setupGracefulShutdown(server: KiCADMcpServer) {
     logger.info('Received SIGINT signal. Shutting down...');
     await shutdownServer(server);
   });
-  
+
   process.on('SIGTERM', async () => {
     logger.info('Received SIGTERM signal. Shutting down...');
     await shutdownServer(server);
   });
-  
+
   // Handle uncaught exceptions
   process.on('uncaughtException', async (error) => {
     logger.error(`Uncaught exception: ${error}`);
     await shutdownServer(server);
   });
-  
+
   // Handle unhandled promise rejections
   process.on('unhandledRejection', async (reason) => {
     logger.error(`Unhandled promise rejection: ${reason}`);

@@ -261,14 +261,14 @@ class PythonSession {
 
     if (trimmed.includes('[ERROR]')) {
       logger.error(message);
-    } else if (trimmed.includes('[WARN]')) {
+    } else if (trimmed.includes('[WARN]') || trimmed.includes('WARNING:')) {
       logger.warn(message);
     } else if (trimmed.includes('[INFO]')) {
       logger.info(message);
     } else if (trimmed.includes('[DEBUG]')) {
       logger.debug(message);
     } else {
-      logger.error(message);
+      logger.warn(message);
     }
   }
 }

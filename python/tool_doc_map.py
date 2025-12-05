@@ -75,6 +75,14 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/spice_tools/harness_sanity.py",
         ("harness_sanity_check",),
     ),
+    "search_spice_model": (
+        "python/kicad_interface.py",
+        ("KiCADInterface", "_handle_search_spice_model"),
+    ),
+    "save_part_model": (
+        "python/kicad_interface.py",
+        ("KiCADInterface", "_handle_save_part_model"),
+    ),
 }
 
 

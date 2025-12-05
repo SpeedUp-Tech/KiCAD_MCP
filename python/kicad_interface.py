@@ -136,7 +136,7 @@ try:
     from python.spice_tools.testbench_runner import run_use_case
     from python.spice_tools.harness_sanity import harness_sanity_check
     from python.spice_tools.pyspice_converter import convert_skidl_module
-    from python.spice_tools.model_db import DEFAULT_MODEL_DB
+    from python.spice_tools.model_db import DEFAULT_MODEL_DB, save_part_model, search_spice_model
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -294,6 +294,8 @@ class KiCADInterface:
             "run_spice_simulation_testcase": self._handle_run_spice_simulation_testcase,
             "run_spice_harness_sanity_check": self._handle_run_spice_harness_sanity_check,
             "convert_skidl_module": self._handle_convert_skidl_module,
+            "save_part_model": self._handle_save_part_model,
+            "search_spice_model": self._handle_search_spice_model,
         }
 
         logger.info("KiCAD interface initialized")
@@ -1483,6 +1485,130 @@ class KiCADInterface:
             }
         except Exception as exc:
             logger.error(f"Error converting SKiDL module: {exc}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(exc)}
+
+    def _handle_save_part_model(self, params):
+        """Persist or update a SPICE model entry in the shared database."""
+        logger.info("Saving SPICE model entry")
+        try:
+            name_value = params.get("name")
+            library_value = params.get("library")
+            content_value = params.get("modelContent") or params.get("model_content")
+
+            missing = [
+                label
+                for label, value in (
+                    ("name", name_value),
+                    ("library", library_value),
+                    ("modelContent", content_value),
+                )
+                if not value
+            ]
+            if missing:
+                return {"success": False, "message": f"Missing required parameter(s): {', '.join(missing)}"}
+
+            db_path_raw = (
+                params.get("modelDbPath")
+                or params.get("dbPath")
+                or params.get("model_db_path")
+            )
+            model_db_path = (
+                Path(os.path.expanduser(str(db_path_raw))).resolve() if db_path_raw else None
+            )
+
+            if model_db_path and not model_db_path.exists():
+                return {
+                    "success": False,
+                    "message": f"Model database not found: {model_db_path}",
+                }
+
+            resolved_db_path = str(model_db_path) if model_db_path else str(DEFAULT_MODEL_DB)
+
+            vendor_raw = params.get("vendorProvided")
+            if vendor_raw is None:
+                vendor_raw = params.get("vendor_provided")
+            vendor_provided = False
+            if vendor_raw is not None:
+                if isinstance(vendor_raw, bool):
+                    vendor_provided = vendor_raw
+                elif isinstance(vendor_raw, (int, float)):
+                    vendor_provided = bool(vendor_raw)
+                else:
+                    vendor_provided = str(vendor_raw).strip().lower() in {"1", "true", "yes", "y"}
+
+            save_part_model(
+                name=str(name_value),
+                library=str(library_value),
+                model_content=str(content_value),
+                vendor_provided=vendor_provided,
+                db_path=model_db_path,
+            )
+
+            return {
+                "success": True,
+                "message": f"Saved SPICE model {name_value} into {resolved_db_path}",
+                "modelDbPath": resolved_db_path,
+            }
+        except Exception as exc:
+            logger.error(f"Error saving SPICE model entry: {exc}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(exc)}
+
+    def _handle_search_spice_model(self, params):
+        """Look up a stored SPICE model entry by library and name."""
+        logger.info("Searching SPICE model database")
+        try:
+            name_value = params.get("name")
+            library_value = params.get("library")
+
+            missing = [
+                label
+                for label, value in (
+                    ("name", name_value),
+                    ("library", library_value),
+                )
+                if not value
+            ]
+            if missing:
+                return {"success": False, "message": f"Missing required parameter(s): {', '.join(missing)}"}
+
+            db_path_raw = (
+                params.get("modelDbPath")
+                or params.get("dbPath")
+                or params.get("model_db_path")
+            )
+            model_db_path = (
+                Path(os.path.expanduser(str(db_path_raw))).resolve() if db_path_raw else None
+            )
+
+            if model_db_path and not model_db_path.exists():
+                return {
+                    "success": False,
+                    "message": f"Model database not found: {model_db_path}",
+                }
+
+            resolved_db_path = str(model_db_path) if model_db_path else str(DEFAULT_MODEL_DB)
+
+            entry = search_spice_model(
+                name=str(name_value),
+                library=str(library_value),
+                db_path=model_db_path,
+            )
+
+            if not entry:
+                return {
+                    "success": False,
+                    "message": f"SPICE model not found in {resolved_db_path}",
+                }
+
+            return {
+                "success": True,
+                "modelDbPath": resolved_db_path,
+                "entry": entry,
+            }
+        except Exception as exc:
+            logger.error(f"Error searching SPICE model database: {exc}")
             logger.error(traceback.format_exc())
             return {"success": False, "message": str(exc)}
 

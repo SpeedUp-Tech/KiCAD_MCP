@@ -150,11 +150,17 @@ export function registerComponentSearchTools(
           ? payload.datasheet
           : null;
 
+      const specs =
+        typeof payload.specs === 'string' && payload.specs.trim()
+          ? payload.specs
+          : null;
+
       const response = {
         success: true,
         mpn: payload.mpn ?? mpn,
         library: payload.library ?? library,
         datasheet,
+        specs,
       };
 
       return {

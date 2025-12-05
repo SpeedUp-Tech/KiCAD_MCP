@@ -116,11 +116,15 @@ export function registerComponentSearchTools(server, callKicadScript) {
         const datasheet = typeof payload.datasheet === 'string' && payload.datasheet.trim()
             ? payload.datasheet
             : null;
+        const specs = typeof payload.specs === 'string' && payload.specs.trim()
+            ? payload.specs
+            : null;
         const response = {
             success: true,
             mpn: payload.mpn ?? mpn,
             library: payload.library ?? library,
             datasheet,
+            specs,
         };
         return {
             content: [

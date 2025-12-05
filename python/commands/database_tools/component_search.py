@@ -83,7 +83,7 @@ class ComponentSearchCommands:
             }
 
     def search_datasheet(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        """Return the datasheet URL for an exact MPN/library match that has a KiCad symbol."""
+        """Return datasheet URL and specs for an exact MPN/library match that has a KiCad symbol."""
 
         mpn = params.get("mpn")
         library = params.get("library")
