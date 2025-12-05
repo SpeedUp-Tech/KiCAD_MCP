@@ -35,6 +35,10 @@ async function main() {
             const symbolDir = join(config.kicadPath, 'symbols');
             const footprintDir = join(config.kicadPath, 'footprints');
             const model3dDir = join(config.kicadPath, '3dmodels');
+            // Set unversioned vars for legacy consumers expecting KICAD_SYMBOL_DIR, etc.
+            extraEnv.KICAD_SYMBOL_DIR = symbolDir;
+            extraEnv.KICAD_FOOTPRINT_DIR = footprintDir;
+            extraEnv.KICAD_3DMODEL_DIR = model3dDir;
             // Set for multiple KiCad versions (6, 7, 8, 9)
             for (const ver of ['6', '7', '8', '9']) {
                 extraEnv[`KICAD${ver}_SYMBOL_DIR`] = symbolDir;
