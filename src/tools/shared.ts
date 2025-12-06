@@ -33,9 +33,26 @@ export function formatToolResult(result: unknown): any {
         };
       }
 
-      const message = typeof typed.message === 'string'
-        ? typed.message
-        : JSON.stringify(result, null, 2);
+      // For failed operations, prefer returning a detailed, human-readable message.
+      // If the payload includes a `problems` array (as used by many validation tools),
+      // surface those lines directly so clients see the concrete issues instead of
+      // only a generic "validation failed" string.
+      let message: string;
+      const problems = Array.isArray((typed as any).problems) ? (typed as any).problems : undefined;
+
+      if (problems && problems.length > 0) {
+        const baseMessage =
+          typeof typed.message === 'string' && typed.message.trim().length > 0
+            ? typed.message
+            : 'Tool reported problems';
+        const problemsText = problems.join('\n');
+        message = `${baseMessage}:\n${problemsText}`;
+      } else {
+        message =
+          typeof typed.message === 'string'
+            ? typed.message
+            : JSON.stringify(result, null, 2);
+      }
 
       return {
         content: [
