@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import io
 import re
-from contextlib import redirect_stderr, redirect_stdout
+import logging
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, TYPE_CHECKING
 
@@ -239,7 +240,7 @@ def _build_subckt_template(lib, subckt_name: str, lib_entry):
     instead of a full SKiDL Part with a copy() method.
     """
 
-    from skidl import SPICE, Pin  # Imported lazily to avoid heavy module load at import time.
+    from skidl import SPICE, Pin  # type: ignore # Imported lazily to avoid heavy module load at import time.
     from skidl.tools.spice.spice import add_subcircuit_to_circuit
 
     template = skidl_part.Part(part_defn="don't care", tool=SPICE, dest=skidl_part.LIBRARY)
@@ -304,19 +305,40 @@ def validate_spice_model(
     # Track cache artifacts so we can clean up after parsing.
     db_path = (path.parent / "db.pickle") if path.is_file() else (path / "db.pickle")
 
+    # Capture detailed InSpice parser logs via the logging subsystem.
+    inspice_logger = logging.getLogger("InSpice")
     log_capture = io.StringIO()
+    current_thread_id = threading.get_ident()
+
+    class _InSpiceLogHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            # Only capture logs for this thread and InSpice-related loggers.
+            if record.thread != current_thread_id:
+                return
+            if not record.name.startswith("InSpice"):
+                return
+            msg = self.format(record)
+            log_capture.write(msg + "\n")
+
+    log_handler: logging.Handler | None = _InSpiceLogHandler()
+    log_handler.setLevel(logging.INFO)
+    log_handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    inspice_logger.addHandler(log_handler)
+
     try:
         from skidl.pyspice import SpiceLibrary  # type: ignore
 
-        with redirect_stdout(log_capture), redirect_stderr(log_capture):
-            # Force a fresh parse to avoid picking up stale entries from a cached db.pickle.
-            lib = SpiceLibrary(str(path), scan=True)
+        # Force a fresh parse to avoid picking up stale entries from a cached db.pickle.
+        lib = SpiceLibrary(str(path), scan=True)
     except Exception as exc:
         raw_log = log_capture.getvalue().replace("/root/workspace/KiCAD_MCP/", "")
         parser_lines = [line.strip() for line in raw_log.splitlines() if line.strip()]
         problems.append(f"Parse failed: {exc}")
         problems.extend(f"parser: {line}" for line in parser_lines)
         return problems
+    finally:
+        if log_handler is not None:
+            inspice_logger.removeHandler(log_handler)
 
     raw_log = log_capture.getvalue().replace("/root/workspace/KiCAD_MCP/", "")
     parser_lines = [line.strip() for line in raw_log.splitlines() if line.strip()]
@@ -346,10 +368,7 @@ def validate_spice_model(
         circuit = Circuit()
         with circuit:
             lib_entry = lib[expected_subckt_name]
-            if hasattr(lib_entry, "copy") and callable(getattr(lib_entry, "copy")):
-                template = lib_entry
-            else:
-                template = _build_subckt_template(lib, expected_subckt_name, lib_entry)
+            template = _build_subckt_template(lib, expected_subckt_name, lib_entry)
 
             part = template.copy(dest=skidl_part.NETLIST, circuit=circuit, ref="XVAL")
             actual_pins = _extract_pin_selectors(part)

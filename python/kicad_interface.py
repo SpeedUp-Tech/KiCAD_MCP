@@ -1582,13 +1582,11 @@ class KiCADInterface:
                 expected_subckt_name=str(expected_subckt),
                 expected_pinout=expected_pinout,
             )
-            success = len(problems) == 0
+            passed = len(problems) == 0
 
             return {
-                "success": success,
-                "message": "SPICE model validated successfully" if success else "SPICE model validation failed",
-                "modelPath": str(model_path),
-                "expectedSubcktName": str(expected_subckt),
+                "success": True,
+                "message": "SPICE model passed validation" if passed else "SPICE model did not pass validation",
                 "problems": problems,
             }
         except Exception as exc:
