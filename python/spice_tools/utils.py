@@ -202,6 +202,9 @@ def _extract_pin_selectors(part) -> List[str]:
     return selectors
 
 
+
+
+
 def disable_inspice_cache() -> None:
     """
     Turn off InSpice cache artifacts (db.pickle / *.yaml) to avoid bleed-over between runs.
@@ -373,15 +376,13 @@ def validate_spice_model(
             part = template.copy(dest=skidl_part.NETLIST, circuit=circuit, ref="XVAL")
             actual_pins = _extract_pin_selectors(part)
 
-            if expected_pins:
-                if len(expected_pins) != len(actual_pins):
-                    problems.append(
-                        f"Pin count mismatch for {expected_subckt_name}: expected {len(expected_pins)}, parsed {len(actual_pins)}."
-                    )
-                elif expected_pins != actual_pins:
-                    problems.append(
-                        f"Pin order/name mismatch for {expected_subckt_name}: expected {expected_pins}, parsed {actual_pins}."
-                    )
+            # Only check pin count; pin names are not reliable from InSpice/SKiDL
+            # (it returns positional indices like 1,2,3 instead of actual names).
+            # SPICE connects by position, so matching count is sufficient.
+            if expected_pins and len(expected_pins) != len(actual_pins):
+                problems.append(
+                    f"Pin count mismatch for {expected_subckt_name}: expected {len(expected_pins)}, parsed {len(actual_pins)}."
+                )
 
             net_labels = (
                 expected_pins if expected_pins and len(expected_pins) == len(part.pins) else actual_pins
