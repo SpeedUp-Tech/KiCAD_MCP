@@ -21,6 +21,42 @@ OFFSET_X = 148.5  # A4 Center X (297/2)
 OFFSET_Y = 105.0  # A4 Center Y (210/2)
 
 
+def _collect_component_nodes(
+    children: List[Dict[str, Any]], 
+    parent_x: float = 0, 
+    parent_y: float = 0
+) -> List[Tuple[Dict[str, Any], float, float]]:
+    """
+    Recursively collect component nodes from a hierarchical ELK graph.
+    
+    Cluster nodes (like input_stage, output_stage) are containers - they have
+    children but no 'lib' or 'symbol' properties. We extract their children
+    and apply the parent's offset.
+    
+    Returns:
+        List of (node, absolute_x, absolute_y) tuples
+    """
+    result = []
+    
+    for node in children:
+        node_x = node.get("x", 0) + parent_x
+        node_y = node.get("y", 0) + parent_y
+        
+        # Check if this is a component (has lib/symbol) or a cluster (has children to recurse into)
+        meta = node.get("properties", {})
+        
+        if "lib" in meta and "symbol" in meta:
+            # This is a component - collect it with its absolute position
+            result.append((node, node_x, node_y))
+        
+        # Recurse into children (for clusters or any other container nodes)
+        children_nodes = node.get("children", [])
+        if children_nodes:
+            result.extend(_collect_component_nodes(children_nodes, node_x, node_y))
+    
+    return result
+
+
 def run_conversion(
     elk_input: Union[Path, str, Dict[str, Any]], 
     output_sch: Union[Path, str]
@@ -60,14 +96,15 @@ def run_conversion(
     # Key: port_id (e.g., "U1.1"), Value: (absolute_x, absolute_y) in KiCad coordinates
     pin_positions: Dict[str, Tuple[float, float]] = {}
 
+    # Collect all component nodes recursively (handles clusters)
+    component_nodes = _collect_component_nodes(graph.get("children", []))
+
     # Add Components and build pin position map
-    for node in graph.get("children", []):
+    for node, node_x, node_y in component_nodes:
         meta = node.get("properties", {})
         ref = node["id"]
         
-        # Geometry: Scale and Offset
-        x_raw = node["x"]
-        y_raw = node["y"]
+        # Node dimensions
         w_raw = node.get("width", 0)
         h_raw = node.get("height", 0)
         
@@ -77,9 +114,10 @@ def run_conversion(
         origin_off_y = meta.get("origin_offset_y", h_raw / 2)
         
         # Calculate symbol origin in KiCad coordinates
+        # node_x and node_y are absolute positions (already include parent cluster offsets)
         # IMPORTANT: Snap to grid since ComponentManager will snap the symbol position
-        pos_x = snap_to_grid((x_raw + origin_off_x) * SCALE_FACTOR + shift_x)
-        pos_y = snap_to_grid((y_raw + origin_off_y) * SCALE_FACTOR + shift_y)
+        pos_x = snap_to_grid((node_x + origin_off_x) * SCALE_FACTOR + shift_x)
+        pos_y = snap_to_grid((node_y + origin_off_y) * SCALE_FACTOR + shift_y)
         
         # Build pin positions from port properties
         # Pin positions must also be snapped to grid for wire connections
@@ -114,6 +152,11 @@ def run_conversion(
     # Since we now use FIXED_POS, ELK's port positions match KiCad pin positions
     for edge in graph.get("edges", []):
         edge_id = edge.get("id", "unknown")
+        
+        # Skip phantom flow edges - they're for layout guidance only
+        if edge_id.startswith("flow_"):
+            continue
+            
         sections = edge.get("sections", [])
         
         if not sections:

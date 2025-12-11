@@ -138,18 +138,32 @@ class ElkGraphBuilder:
         self.circuit = circuit
         self.logic = logic_data
         self.fetcher = geometry_fetcher
+        
+        # Validate required logic hints
+        elk_fields = self.logic.get("elk_support_fields", {})
+        if not elk_fields:
+            raise ValueError("Missing required 'elk_support_fields' in logic hints")
+        
         self.graph = {
             "id": "root",
-            "properties": {
+            "layoutOptions": {
                 "elk.algorithm": "layered",
                 "elk.direction": "RIGHT",
                 "elk.spacing.nodeNode": "10.0",
                 "elk.spacing.edgeEdge": "2.5",
-                "elk.layered.spacing.edgeNodeBetweenLayers": "10.0"
+                "elk.layered.spacing.edgeNodeBetweenLayers": "10.0",
+                "elk.hierarchyHandling": "INCLUDE_CHILDREN"
+            },
+            "properties": {
+                # Store power symbol mappings for elk_to_kicad.py
+                "power_symbols": {}
             },
             "children": [],
             "edges": []
         }
+        
+        # Component nodes by reference (for cluster building)
+        self._component_nodes = {}
 
     def _determine_library(self, part) -> str:
         """Determine the library name for a part."""
@@ -177,6 +191,167 @@ class ElkGraphBuilder:
             
         return lib_name
 
+    def _get_elk_support_fields(self) -> Dict[str, Any]:
+        """Get the elk_support_fields section, raise if missing."""
+        elk_fields = self.logic.get("elk_support_fields", {})
+        if not elk_fields:
+            raise ValueError("Missing required 'elk_support_fields' in logic hints")
+        return elk_fields
+
+    def _build_hierarchy(self) -> None:
+        """
+        Organize component nodes into clusters based on logical_grouping hints.
+        
+        Reads logical_grouping.clusters from logic hints and:
+        1. Creates parent cluster nodes
+        2. Moves member component nodes as children of their cluster
+        3. Non-clustered components remain at root level
+        """
+        elk_fields = self._get_elk_support_fields()
+        grouping = elk_fields.get("logical_grouping", {})
+        clusters = grouping.get("clusters", [])
+        
+        if not clusters:
+            # No clusters defined - all components stay at root
+            for ref, node in self._component_nodes.items():
+                self.graph["children"].append(node)
+            return
+        
+        # Track which components are in clusters
+        clustered_refs = set()
+        
+        for cluster in clusters:
+            cluster_id = cluster.get("id")
+            members = cluster.get("members", [])
+            cluster_type = cluster.get("type", "proximity_group")
+            
+            if not cluster_id or not members:
+                raise ValueError(f"Cluster missing 'id' or 'members': {cluster}")
+            
+            # Create cluster node
+            cluster_node = {
+                "id": cluster_id,
+                "layoutOptions": {
+                    "elk.padding": "[top=5,left=5,bottom=5,right=5]"
+                },
+                "properties": {
+                    "cluster_type": cluster_type
+                },
+                "children": [],
+                "ports": []  # Clusters need ports for edges
+            }
+            
+            # Move member nodes into cluster
+            for ref in members:
+                if ref not in self._component_nodes:
+                    raise ValueError(f"Cluster '{cluster_id}' references unknown component '{ref}'")
+                cluster_node["children"].append(self._component_nodes[ref])
+                clustered_refs.add(ref)
+            
+            # Add cluster to root
+            self.graph["children"].append(cluster_node)
+        
+        # Add non-clustered components to root
+        for ref, node in self._component_nodes.items():
+            if ref not in clustered_refs:
+                self.graph["children"].append(node)
+
+    def _add_flow_constraints(self) -> None:
+        """
+        Add phantom edges based on flow_hints to guide layer ordering.
+        
+        For each chain in flow_hints.chains, creates edges between adjacent items.
+        Items can be:
+        - port:NET_NAME - boundary port (deferred, skipped for now)
+        - cluster:CLUSTER_ID - cluster node
+        - ref:COMPONENT_REF - component node
+        """
+        elk_fields = self._get_elk_support_fields()
+        flow_hints = elk_fields.get("flow_hints", {})
+        chains = flow_hints.get("chains", [])
+        
+        if not chains:
+            return
+        
+        for chain in chains:
+            sequence = chain.get("sequence", [])
+            weight = chain.get("weight", 1)
+            
+            if len(sequence) < 2:
+                continue
+            
+            # Create edges between adjacent items
+            for i in range(len(sequence) - 1):
+                source_spec = sequence[i]
+                target_spec = sequence[i + 1]
+                
+                # Resolve specs to node IDs
+                source_id = self._resolve_flow_spec(source_spec)
+                target_id = self._resolve_flow_spec(target_spec)
+                
+                if source_id and target_id:
+                    # Create phantom edge for layer ordering
+                    phantom_edge = {
+                        "id": f"flow_{source_id}_{target_id}",
+                        "sources": [source_id],
+                        "targets": [target_id],
+                        "layoutOptions": {
+                            "elk.layered.priority.direction": str(weight)
+                        }
+                    }
+                    self.graph["edges"].append(phantom_edge)
+
+    def _resolve_flow_spec(self, spec: str) -> Optional[str]:
+        """
+        Resolve a flow specification to a node ID.
+        
+        Args:
+            spec: Flow spec like "port:VBUS_5V", "cluster:input_stage", or "ref:U1"
+            
+        Returns:
+            Node ID for ELK graph, or None if not resolvable
+        """
+        if ":" not in spec:
+            return None
+        
+        type_prefix, name = spec.split(":", 1)
+        
+        if type_prefix == "port":
+            # Boundary ports - deferred, skip for now
+            return None
+        elif type_prefix == "cluster":
+            return name  # Cluster ID is the node ID
+        elif type_prefix == "ref":
+            return name  # Component ref is the node ID
+        
+        return None
+
+    def _get_net_presentation_rules(self) -> Dict[str, Dict[str, Any]]:
+        """
+        Parse net_presentation rules into a lookup by net name.
+        
+        Returns:
+            Dict mapping net name to its presentation rule
+        """
+        elk_fields = self._get_elk_support_fields()
+        net_pres = elk_fields.get("net_presentation", {})
+        rules = net_pres.get("rules", [])
+        
+        result = {}
+        for rule in rules:
+            strategy = rule.get("strategy", "direct_route")
+            symbol_ref = rule.get("symbol_library_ref", "")
+            priority = rule.get("priority", "normal")
+            
+            for net_name in rule.get("nets", []):
+                result[net_name] = {
+                    "strategy": strategy,
+                    "symbol_library_ref": symbol_ref,
+                    "priority": priority
+                }
+        
+        return result
+
     def build_graph(self) -> Dict[str, Any]:
         """
         Build the ELK graph from the circuit.
@@ -187,7 +362,7 @@ class ElkGraphBuilder:
         MARGIN_X = 2.54  # mm (100 mil)
         MARGIN_Y = 2.54 
         
-        # 1. Build Nodes (Parts)
+        # 1. Build Nodes (Parts) into _component_nodes
         for part in self.circuit.parts:
             lib_name = self._determine_library(part)
             symbol_name = str(part.name)
@@ -256,35 +431,12 @@ class ElkGraphBuilder:
                     }
                     
                     # Calculate port position within ELK node
-                    # 
-                    # The goal: ELK wire endpoint must match KiCad pin position
-                    # 
-                    # KiCad pin position (in absolute coordinates):
-                    #   pin_x = symbol_x + kicad_offset_x
-                    #   pin_y = symbol_y - kicad_offset_y  (Y inverted)
-                    # 
-                    # Symbol is placed at:
-                    #   symbol_x = (node_x + origin_offset_x) + shift_x  (then grid snapped)
-                    #   symbol_y = (node_y + origin_offset_y) + shift_y  (then grid snapped)
-                    # 
-                    # ELK wire endpoint (from port):
-                    #   wire_x = (node_x + port_x) + shift_x  (then grid snapped)
-                    #   wire_y = (node_y + port_y) + shift_y  (then grid snapped)
-                    # 
-                    # For wire to match pin:
-                    #   port_x = origin_offset_x + kicad_offset_x
-                    #   port_y = origin_offset_y - kicad_offset_y
-                    
                     elk_port_x = origin_offset_x + p_geo["x"]
                     elk_port_y = origin_offset_y - p_geo["y"]
                     
                     # Set exact port position for ELK
                     port["x"] = elk_port_x
                     port["y"] = elk_port_y
-                    
-                    # NOTE: Do NOT set elk.port.side when using FIXED_POS!
-                    # Setting port.side forces ports to node edges, overriding x/y positions.
-                    # With FIXED_POS, ELK should respect x/y exactly.
                 else:
                     # Fallback for hidden/power pins - place at bottom center
                     port["x"] = width / 2
@@ -292,17 +444,36 @@ class ElkGraphBuilder:
 
                 node["ports"].append(port)
             
-            self.graph["children"].append(node)
+            # Store node by reference (for hierarchy building)
+            self._component_nodes[part.ref] = node
 
-        # 2. Build Edges (Nets)
-        hidden_nets = []
-        if "net_presentation" in self.logic.get("elk_support_fields", {}):
-            for rule in self.logic["elk_support_fields"]["net_presentation"].get("rules", []):
-                if rule.get("strategy") == "disconnect_with_symbol":
-                    hidden_nets.extend(rule.get("nets", []))
-
+        # 2. Build hierarchy from logical_grouping hints
+        self._build_hierarchy()
+        
+        # 3. Add flow constraint edges
+        self._add_flow_constraints()
+        
+        # 4. Build Edges (Nets) with net_presentation rules
+        net_rules = self._get_net_presentation_rules()
+        
+        # Collect pins for power symbol injection
+        power_symbol_pins = {}  # net_name -> [(ref, pin_num, symbol_ref), ...]
+        
         for net in self.circuit.nets:
-            if net.name in hidden_nets:
+            rule = net_rules.get(net.name, {})
+            strategy = rule.get("strategy", "direct_route")
+            symbol_ref = rule.get("symbol_library_ref", "")
+            
+            if strategy == "disconnect_with_symbol":
+                # Skip wire generation, record pins for power symbol injection
+                pin_list = []
+                for pin in net.pins:
+                    pin_list.append({
+                        "ref": pin.ref,
+                        "num": pin.num,
+                        "symbol_library_ref": symbol_ref
+                    })
+                power_symbol_pins[net.name] = pin_list
                 continue
                 
             pins = [p for p in net.pins]
@@ -316,6 +487,17 @@ class ElkGraphBuilder:
                     "sources": [f"{source.ref}.{source.num}"],
                     "targets": [f"{target.ref}.{target.num}"]
                 }
+                
+                # Apply priority for high-priority nets
+                if rule.get("priority") == "high":
+                    edge["layoutOptions"] = {
+                        "elk.layered.priority.direction": "10"
+                    }
+                
                 self.graph["edges"].append(edge)
+        
+        # Store power symbol info in graph properties for elk_to_kicad.py
+        self.graph["properties"]["power_symbols"] = power_symbol_pins
 
         return self.graph
+
