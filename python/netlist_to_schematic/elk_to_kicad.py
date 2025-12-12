@@ -153,8 +153,8 @@ def run_conversion(
     for edge in graph.get("edges", []):
         edge_id = edge.get("id", "unknown")
         
-        # Skip phantom flow edges - they're for layout guidance only
-        if edge_id.startswith("flow_"):
+        # Skip phantom edges - they're for layout guidance only, not real wires
+        if edge_id.startswith(("flow_", "align_", "adjacent_", "halign_")):
             continue
             
         sections = edge.get("sections", [])
