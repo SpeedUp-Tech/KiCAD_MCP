@@ -154,7 +154,7 @@ class ElkGraphBuilder:
                 "elk.spacing.edgeEdge": "1.27",
                 "elk.spacing.edgeNode": "2.54",
                 "elk.layered.spacing.baseValue": "2.54",
-                "elk.layered.spacing.edgeNodeBetweenLayers": "2.54",
+                "elk.layered.spacing.edgeNodeBetweenLayers": "5.08",
                 "elk.layered.spacing.nodeNodeBetweenLayers": "7.62",
                 "elk.padding": "[top=0,left=0,bottom=0,right=0]",
                 "elk.hierarchyHandling": "INCLUDE_CHILDREN",
@@ -551,7 +551,10 @@ class ElkGraphBuilder:
             if net.name == "GND":
                 continue
             
-            pins = [p for p in net.pins]
+            # Sort pins by (ref, num) for deterministic edge ordering
+            # SKiDL's net.pins uses set() internally, which has non-deterministic
+            # iteration order due to Python's hash randomization
+            pins = sorted(net.pins, key=lambda p: (p.ref, p.num))
             if len(pins) < 2:
                 continue
             
