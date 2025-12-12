@@ -28,7 +28,8 @@ def _add_net_label(
     name: str,
     x: float,
     y: float,
-    label_type: str = "bidirectional",
+    label_type: str = "hierarchical",
+    label_shape: str = "bidirectional",
     label_role: str = "both"
 ) -> None:
     """
@@ -39,16 +40,17 @@ def _add_net_label(
         name: The net name to display
         x: X coordinate in mm
         y: Y coordinate in mm
-        label_type: One of 'input', 'output', 'bidirectional' - determines shape
+        label_type: One of 'hierarchical', 'local' - determines label type
+        label_shape: One of 'input', 'output', 'bidirectional' - determines arrow direction (hierarchical only)
         label_role: One of 'source', 'target', 'both' - determines rotation
     """
     snapped_x = snap_to_grid(x)
     snapped_y = snap_to_grid(y)
     
-    # Determine label shape based on type
-    if label_type == "input":
+    # Determine label shape based on type (only used for hierarchical labels)
+    if label_shape == "input":
         shape = "input"
-    elif label_type == "output":
+    elif label_shape == "output":
         shape = "output"
     else:
         shape = "bidirectional"
@@ -63,23 +65,33 @@ def _add_net_label(
         rotation = 0
         justify = "left"
     
-    # Create hierarchical label for interface labels
-    # (local labels don't have direction arrows)
     effects_node = [
         SSymbol('effects'),
         [SSymbol('font'), [SSymbol('size'), 1.27, 1.27]],
         [SSymbol('justify'), SSymbol(justify)],
     ]
     
-    label_node = [
-        SSymbol('hierarchical_label'),
-        name,
-        [SSymbol('shape'), SSymbol(shape)],
-        [SSymbol('at'), snapped_x, snapped_y, rotation],
-        [SSymbol('fields_autoplaced')],
-        effects_node,
-        [SSymbol('uuid'), str(uuid.uuid4())],
-    ]
+    if label_type == "local":
+        # Local label - simple net name without direction arrows
+        label_node = [
+            SSymbol('label'),
+            name,
+            [SSymbol('at'), snapped_x, snapped_y, rotation],
+            [SSymbol('fields_autoplaced')],
+            effects_node,
+            [SSymbol('uuid'), str(uuid.uuid4())],
+        ]
+    else:
+        # Hierarchical label - has direction shape for sheet connections
+        label_node = [
+            SSymbol('hierarchical_label'),
+            name,
+            [SSymbol('shape'), SSymbol(shape)],
+            [SSymbol('at'), snapped_x, snapped_y, rotation],
+            [SSymbol('fields_autoplaced')],
+            effects_node,
+            [SSymbol('uuid'), str(uuid.uuid4())],
+        ]
     
     schematic.tree.append(label_node)
 
@@ -232,7 +244,8 @@ def run_conversion(
         meta = node.get("properties", {})
         label_id = node["id"]
         net_name = meta.get("net_name", label_id)
-        label_type = meta.get("label_type", "bidirectional")
+        label_type = meta.get("label_type", "hierarchical")  # hierarchical/local
+        label_shape = meta.get("label_shape", "bidirectional")  # input/output/bidirectional
         label_role = meta.get("label_role", "both")
         
         # Get the port position - this is where wires will connect
@@ -256,8 +269,8 @@ def run_conversion(
             pin_positions[port_id] = (port_pos_x, port_pos_y)
         
         try:
-            print(f"Adding Net Label '{net_name}' ({label_type}, {label_role}) at ({label_x:.2f}, {label_y:.2f})")
-            _add_net_label(schematic, net_name, label_x, label_y, label_type, label_role)
+            print(f"Adding Net Label '{net_name}' ({label_type}, {label_shape}, {label_role}) at ({label_x:.2f}, {label_y:.2f})")
+            _add_net_label(schematic, net_name, label_x, label_y, label_type, label_shape, label_role)
         except Exception as e:
             print(f"Failed to add net label {label_id}: {e}")
 

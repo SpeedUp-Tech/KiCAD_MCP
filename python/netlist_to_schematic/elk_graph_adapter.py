@@ -359,7 +359,8 @@ class ElkGraphBuilder:
             
             # net_name defaults to id if not specified
             net_name = nl.get("net_name", nl_id)
-            label_type = nl.get("type", "bidirectional")  # input/output/bidirectional
+            label_type = nl.get("type", "hierarchical")  # hierarchical/local
+            label_shape = nl.get("shape", "bidirectional")  # input/output/bidirectional
             
             # Calculate label width based on text length
             # KiCad labels have connection point at one end, text extends from there
@@ -405,7 +406,8 @@ class ElkGraphBuilder:
                 "properties": {
                     "node_type": "net_label",
                     "net_name": net_name,
-                    "label_type": label_type,
+                    "label_type": label_type,  # hierarchical/local
+                    "label_shape": label_shape,  # input/output/bidirectional
                     "label_role": role,  # source/target/both - used for KiCad label rotation
                     "origin_offset_x": label_width / 2,
                     "origin_offset_y": LABEL_HEIGHT / 2
