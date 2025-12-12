@@ -172,6 +172,9 @@ class ElkGraphBuilder:
         
         # Component nodes by reference (for cluster building)
         self._component_nodes = {}
+        
+        # Track pins connected via labels (for insurance logic)
+        self._covered_pins = set()
 
     def _determine_library(self, part) -> str:
         """Determine the library name for a part."""
@@ -488,6 +491,7 @@ class ElkGraphBuilder:
                                     "targets": [f"{comp_id}.{comp_pin}"]
                                 }
                                 self.graph["edges"].append(edge)
+                                self._covered_pins.add(f"{comp_id}.{comp_pin}")
                         else:
                             # Component -> Label: find pin on component for this net
                             comp_id = source_id
@@ -501,6 +505,7 @@ class ElkGraphBuilder:
                                     "targets": [f"{label_id}.1"]
                                 }
                                 self.graph["edges"].append(edge)
+                                self._covered_pins.add(f"{comp_id}.{comp_pin}")
                     else:
                         # Create phantom edge for layout ordering only
                         phantom_edge = {
@@ -744,12 +749,53 @@ class ElkGraphBuilder:
             
             source = pins[0]
             for target in pins[1:]:
+                source_pin_id = f"{source.ref}.{source.num}"
+                target_pin_id = f"{target.ref}.{target.num}"
+                
+                # Skip if BOTH pins are already connected via labels (no direct wire needed)
+                if source_pin_id in self._covered_pins and target_pin_id in self._covered_pins:
+                    continue
+                
                 edge = {
                     "id": f"e_{net.name}_{source.ref}_{target.ref}",
-                    "sources": [f"{source.ref}.{source.num}"],
-                    "targets": [f"{target.ref}.{target.num}"]
+                    "sources": [source_pin_id],
+                    "targets": [target_pin_id]
                 }
                 self.graph["edges"].append(edge)
+
+        # 6. Insurance: for labeled nets, connect orphan pins to labels
+        # Collect all pins that have at least one edge
+        connected_pins = set()
+        for edge in self.graph["edges"]:
+            for src in edge.get("sources", []):
+                connected_pins.add(src)
+            for tgt in edge.get("targets", []):
+                connected_pins.add(tgt)
+        
+        # Get labeled nets
+        elk_fields = self._get_elk_support_fields()
+        net_labels = elk_fields.get("net_labels", [])
+        net_name_to_label_id = {}
+        for nl in net_labels:
+            net_name = nl.get("net_name", nl.get("id"))
+            if net_name and net_name not in net_name_to_label_id:
+                net_name_to_label_id[net_name] = nl.get("id")
+        
+        # For each labeled net, find orphan pins and connect to label
+        for net in self.circuit.nets:
+            if net.name not in net_name_to_label_id:
+                continue
+            label_id = net_name_to_label_id[net.name]
+            for pin in net.pins:
+                pin_id = f"{pin.ref}.{pin.num}"
+                if pin_id not in connected_pins:
+                    edge = {
+                        "id": f"insurance_{pin.ref}_{pin.num}_to_{label_id}",
+                        "sources": [pin_id],
+                        "targets": [f"{label_id}.1"]
+                    }
+                    self.graph["edges"].append(edge)
+                    print(f"[Insurance] Auto-connected orphan {pin_id} to label {label_id}")
 
         return self.graph
 
