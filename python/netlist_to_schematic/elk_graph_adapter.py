@@ -292,22 +292,153 @@ class ElkGraphBuilder:
             self._component_nodes[ps_id] = node
             self.graph["children"].append(node)
 
+    def _build_net_label_nodes(self) -> None:
+        """
+        Build ELK nodes for net labels declared in net_labels array.
+        
+        Net labels are first-class nodes that participate in ELK layout,
+        positioned via signal_flows just like regular components and power symbols.
+        
+        Port position is determined dynamically by scanning signal_flows:
+        - If label is FIRST in a path (source): port on RIGHT edge (wire goes right)
+        - If label is LAST in a path (target): port on LEFT edge (wire comes from left)
+        - If label appears in both positions or neither: use center
+        
+        Each label has:
+        - id: Unique node ID for ELK graph
+        - net_name: The net name to display (optional, defaults to id)
+        - type: input/output/bidirectional (determines KiCad label shape)
+        """
+        # Label dimensions based on KiCad default font (1.27mm)
+        CHAR_WIDTH = 1.27    # mm per character (KiCad default font)
+        MIN_WIDTH = 5.08     # minimum width (~2 grid units)
+        LABEL_HEIGHT = 2.54  # ~1 grid unit
+        
+        elk_fields = self._get_elk_support_fields()
+        net_labels = elk_fields.get("net_labels", [])
+        signal_flows = elk_fields.get("signal_flows", [])
+        
+        # Build a set of label IDs for quick lookup
+        label_ids = {nl.get("id") for nl in net_labels if nl.get("id")}
+        
+        # Scan signal flows to determine each label's role
+        # A label can be: "source" (first in path), "target" (last in path), or "both"
+        label_roles: dict[str, str] = {}  # label_id -> "source" | "target" | "both"
+        
+        for flow in signal_flows:
+            path = flow.get("path", [])
+            if len(path) < 2:
+                continue
+            
+            first_item = path[0]
+            last_item = path[-1]
+            
+            # Check if first item is a label
+            if first_item in label_ids:
+                if first_item in label_roles:
+                    if label_roles[first_item] == "target":
+                        label_roles[first_item] = "both"
+                else:
+                    label_roles[first_item] = "source"
+            
+            # Check if last item is a label
+            if last_item in label_ids:
+                if last_item in label_roles:
+                    if label_roles[last_item] == "source":
+                        label_roles[last_item] = "both"
+                else:
+                    label_roles[last_item] = "target"
+        
+        for nl in net_labels:
+            nl_id = nl.get("id")
+            if not nl_id:
+                continue
+            
+            # net_name defaults to id if not specified
+            net_name = nl.get("net_name", nl_id)
+            label_type = nl.get("type", "bidirectional")  # input/output/bidirectional
+            
+            # Calculate label width based on text length
+            # KiCad labels have connection point at one end, text extends from there
+            label_width = max(MIN_WIDTH, len(net_name) * CHAR_WIDTH + 2.0)
+            
+            # Determine port position based on role in signal flows
+            # This makes path order directly control layout position
+            role = label_roles.get(nl_id, "both")
+            
+            if role == "source":
+                # Label is first in path, wire goes RIGHT to next node
+                port_x = label_width  # Right edge
+            elif role == "target":
+                # Label is last in path, wire comes from LEFT
+                port_x = 0  # Left edge
+            else:
+                # Label is both source and target, or not in any flow
+                port_x = label_width / 2  # Center
+            
+            port_y = LABEL_HEIGHT / 2  # Vertically centered
+            
+            node = {
+                "id": nl_id,
+                "width": label_width,
+                "height": LABEL_HEIGHT,
+                "labels": [{"text": net_name}],
+                "ports": [
+                    {
+                        "id": f"{nl_id}.1",
+                        "width": 0,
+                        "height": 0,
+                        "x": port_x,
+                        "y": port_y,
+                        "properties": {
+                            "kicad_offset_x": 0,
+                            "kicad_offset_y": 0
+                        }
+                    }
+                ],
+                "layoutOptions": {
+                    "elk.portConstraints": "FIXED_POS"
+                },
+                "properties": {
+                    "node_type": "net_label",
+                    "net_name": net_name,
+                    "label_type": label_type,
+                    "label_role": role,  # source/target/both - used for KiCad label rotation
+                    "origin_offset_x": label_width / 2,
+                    "origin_offset_y": LABEL_HEIGHT / 2
+                }
+            }
+            
+            # Store in component nodes and add to graph
+            self._component_nodes[nl_id] = node
+            self.graph["children"].append(node)
+
     def _process_signal_flows(self) -> None:
         """
         Process signal_flows to create phantom edges for layout ordering.
         
-        For GND flows (component -> GND_xxx), also creates real wire edges
+        For GND flows (component -> GND_xxx), creates real wire edges
         from the component's GND pin to the GND symbol.
+        
+        For net label flows (component -> label or label -> component),
+        creates real wire edges to/from the label node.
         """
         elk_fields = self._get_elk_support_fields()
         signal_flows = elk_fields.get("signal_flows", [])
         power_symbol_ids = set()
+        net_label_ids = {}  # id -> net_name mapping
         
         # Collect power symbol IDs
         for ps in elk_fields.get("power_symbols", []):
             ps_id = ps.get("id")
             if ps_id:
                 power_symbol_ids.add(ps_id)
+        
+        # Collect net label IDs and their net names
+        for nl in elk_fields.get("net_labels", []):
+            nl_id = nl.get("id")
+            if nl_id:
+                net_label_ids[nl_id] = nl.get("net_name", nl_id)
         
         for flow in signal_flows:
             flow_id = flow.get("id", "unnamed")
@@ -327,6 +458,9 @@ class ElkGraphBuilder:
                 if source_id and target_id:
                     # Check if this is a GND flow (target is a power symbol)
                     is_gnd_flow = target_id in power_symbol_ids
+                    # Check if source or target is a net label
+                    is_label_source = source_id in net_label_ids
+                    is_label_target = target_id in net_label_ids
                     
                     if is_gnd_flow:
                         # Create REAL edge from component's GND pin to power symbol
@@ -338,6 +472,35 @@ class ElkGraphBuilder:
                                 "targets": [f"{target_id}.1"]  # Power symbols have pin 1
                             }
                             self.graph["edges"].append(edge)
+                    elif is_label_source or is_label_target:
+                        # Create REAL edge for net label connection
+                        # Find the appropriate pin on the component
+                        if is_label_source:
+                            # Label -> Component: find pin on component for this net
+                            label_id = source_id
+                            comp_id = target_id
+                            net_name = net_label_ids[label_id]
+                            comp_pin = self._find_pin_for_net(comp_id, net_name)
+                            if comp_pin:
+                                edge = {
+                                    "id": f"label_{label_id}_to_{comp_id}",
+                                    "sources": [f"{label_id}.1"],
+                                    "targets": [f"{comp_id}.{comp_pin}"]
+                                }
+                                self.graph["edges"].append(edge)
+                        else:
+                            # Component -> Label: find pin on component for this net
+                            comp_id = source_id
+                            label_id = target_id
+                            net_name = net_label_ids[label_id]
+                            comp_pin = self._find_pin_for_net(comp_id, net_name)
+                            if comp_pin:
+                                edge = {
+                                    "id": f"{comp_id}_to_label_{label_id}",
+                                    "sources": [f"{comp_id}.{comp_pin}"],
+                                    "targets": [f"{label_id}.1"]
+                                }
+                                self.graph["edges"].append(edge)
                     else:
                         # Create phantom edge for layout ordering only
                         phantom_edge = {
@@ -354,6 +517,23 @@ class ElkGraphBuilder:
         """Find the GND pin number for a component from the netlist."""
         for net in self.circuit.nets:
             if net.name == "GND":
+                for pin in net.pins:
+                    if pin.ref == ref:
+                        return pin.num
+        return None
+
+    def _find_pin_for_net(self, ref: str, net_name: str):
+        """Find which pin of a component is connected to a specific net.
+        
+        Args:
+            ref: Component reference (e.g., "C1", "U1")
+            net_name: Net name to search for (e.g., "VBUS_5V", "BATT_1S")
+            
+        Returns:
+            Pin number if found, None otherwise
+        """
+        for net in self.circuit.nets:
+            if net.name == net_name:
                 for pin in net.pins:
                     if pin.ref == ref:
                         return pin.num
@@ -539,11 +719,15 @@ class ElkGraphBuilder:
         # 2. Build power symbol nodes from power_symbols array
         self._build_power_symbol_nodes()
         
-        # 3. Process signal flows - creates phantom edges AND real GND edges
+        # 3. Build net label nodes from net_labels array
+        self._build_net_label_nodes()
+        
+        # 4. Process signal flows - creates phantom edges AND real GND edges
         self._process_signal_flows()
         
-        # 4. Process constraints (alignment, adjacency) - phantom edges only
+        # 5. Process constraints (alignment, adjacency) - phantom edges only
         self._process_constraints()
+
         
         # 5. Build Edges (Nets) - skip GND (handled by signal flows)
         for net in self.circuit.nets:

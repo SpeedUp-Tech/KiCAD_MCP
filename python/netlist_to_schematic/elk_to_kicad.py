@@ -6,19 +6,82 @@ KiCad schematic file with correctly positioned components and wires.
 """
 
 import json
+import uuid
 from pathlib import Path
 from typing import Union, Dict, Any, Tuple, List
 
-from python.commands.kicad_schematics.schematic import SchematicManager
+from python.commands.kicad_schematics.schematic import SchematicManager, Schematic
 from python.commands.kicad_schematics.component_schematic import ComponentManager
 from python.commands.kicad_schematics.connection_schematic import ConnectionManager
 from python.commands.kicad_schematics.grid_utils import snap_to_grid, KICAD_SCHEMATIC_GRID_MM
+from sexpdata import Symbol as SSymbol
 
 
 # KiCad 6+ uses millimeters. ELK adapter outputs millimeters.
 SCALE_FACTOR = 1.0 
 OFFSET_X = 148.5  # A4 Center X (297/2)
 OFFSET_Y = 105.0  # A4 Center Y (210/2)
+
+
+def _add_net_label(
+    schematic: Schematic,
+    name: str,
+    x: float,
+    y: float,
+    label_type: str = "bidirectional",
+    label_role: str = "both"
+) -> None:
+    """
+    Add a net label (local label or hierarchical label) to the schematic.
+    
+    Args:
+        schematic: The schematic object
+        name: The net name to display
+        x: X coordinate in mm
+        y: Y coordinate in mm
+        label_type: One of 'input', 'output', 'bidirectional' - determines shape
+        label_role: One of 'source', 'target', 'both' - determines rotation
+    """
+    snapped_x = snap_to_grid(x)
+    snapped_y = snap_to_grid(y)
+    
+    # Determine label shape based on type
+    if label_type == "input":
+        shape = "input"
+    elif label_type == "output":
+        shape = "output"
+    else:
+        shape = "bidirectional"
+    
+    # Determine rotation based on role
+    # Source labels: text should extend LEFT (rotation=180)
+    # Target labels: text should extend RIGHT (rotation=0)
+    if label_role == "source":
+        rotation = 180
+        justify = "right"
+    else:
+        rotation = 0
+        justify = "left"
+    
+    # Create hierarchical label for interface labels
+    # (local labels don't have direction arrows)
+    effects_node = [
+        SSymbol('effects'),
+        [SSymbol('font'), [SSymbol('size'), 1.27, 1.27]],
+        [SSymbol('justify'), SSymbol(justify)],
+    ]
+    
+    label_node = [
+        SSymbol('hierarchical_label'),
+        name,
+        [SSymbol('shape'), SSymbol(shape)],
+        [SSymbol('at'), snapped_x, snapped_y, rotation],
+        [SSymbol('fields_autoplaced')],
+        effects_node,
+        [SSymbol('uuid'), str(uuid.uuid4())],
+    ]
+    
+    schematic.tree.append(label_node)
 
 
 def _collect_component_nodes(
@@ -33,6 +96,8 @@ def _collect_component_nodes(
     children but no 'lib' or 'symbol' properties. We extract their children
     and apply the parent's offset.
     
+    Also collects net_label nodes which are identified by their node_type property.
+    
     Returns:
         List of (node, absolute_x, absolute_y) tuples
     """
@@ -42,11 +107,14 @@ def _collect_component_nodes(
         node_x = node.get("x", 0) + parent_x
         node_y = node.get("y", 0) + parent_y
         
-        # Check if this is a component (has lib/symbol) or a cluster (has children to recurse into)
+        # Check if this is a component (has lib/symbol), net_label, or a cluster
         meta = node.get("properties", {})
         
         if "lib" in meta and "symbol" in meta:
             # This is a component - collect it with its absolute position
+            result.append((node, node_x, node_y))
+        elif meta.get("node_type") == "net_label":
+            # This is a net label node - collect it
             result.append((node, node_x, node_y))
         
         # Recurse into children (for clusters or any other container nodes)
@@ -97,7 +165,18 @@ def run_conversion(
     pin_positions: Dict[str, Tuple[float, float]] = {}
 
     # Collect all component nodes recursively (handles clusters)
-    component_nodes = _collect_component_nodes(graph.get("children", []))
+    all_nodes = _collect_component_nodes(graph.get("children", []))
+    
+    # Separate net label nodes from component/power symbol nodes
+    component_nodes = []
+    net_label_nodes = []
+    
+    for node, node_x, node_y in all_nodes:
+        meta = node.get("properties", {})
+        if meta.get("node_type") == "net_label":
+            net_label_nodes.append((node, node_x, node_y))
+        else:
+            component_nodes.append((node, node_x, node_y))
 
     # Add Components and build pin position map
     for node, node_x, node_y in component_nodes:
@@ -147,6 +226,40 @@ def run_conversion(
             ComponentManager.add_component(schematic, comp_def)
         except Exception as e:
             print(f"Failed to add component {ref}: {e}")
+
+    # Add Net Labels
+    for node, node_x, node_y in net_label_nodes:
+        meta = node.get("properties", {})
+        label_id = node["id"]
+        net_name = meta.get("net_name", label_id)
+        label_type = meta.get("label_type", "bidirectional")
+        label_role = meta.get("label_role", "both")
+        
+        # Get the port position - this is where wires will connect
+        # In KiCad, the label's "at" position IS its connection point
+        # So we must place the label at the port position, not node center
+        port = node.get("ports", [{}])[0]  # Labels have one port
+        port_x = port.get("x", 0)
+        port_y = port.get("y", 0)
+        
+        # Calculate label position at the port (connection point)
+        label_x = snap_to_grid((node_x + port_x) * SCALE_FACTOR + shift_x)
+        label_y = snap_to_grid((node_y + port_y) * SCALE_FACTOR + shift_y)
+        
+        # Store port position for wire connections (same as label position)
+        for p in node.get("ports", []):
+            port_id = p["id"]
+            p_x = p.get("x", 0)
+            p_y = p.get("y", 0)
+            port_pos_x = snap_to_grid((node_x + p_x) * SCALE_FACTOR + shift_x)
+            port_pos_y = snap_to_grid((node_y + p_y) * SCALE_FACTOR + shift_y)
+            pin_positions[port_id] = (port_pos_x, port_pos_y)
+        
+        try:
+            print(f"Adding Net Label '{net_name}' ({label_type}, {label_role}) at ({label_x:.2f}, {label_y:.2f})")
+            _add_net_label(schematic, net_name, label_x, label_y, label_type, label_role)
+        except Exception as e:
+            print(f"Failed to add net label {label_id}: {e}")
 
     # Add Wires using ELK's routed sections directly
     # Since we now use FIXED_POS, ELK's port positions match KiCad pin positions
