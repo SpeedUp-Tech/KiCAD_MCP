@@ -178,6 +178,10 @@ class ElkGraphBuilder:
 
     def _determine_library(self, part) -> str:
         """Determine the library name for a part."""
+        # First check for DB-backed library name (set by skidl_db_wrapper)
+        if hasattr(part, "_db_library_name") and part._db_library_name:
+            return part._db_library_name
+        
         lib_name = "Power_Management_ICs"  # Default
         
         if hasattr(part, "lib") and part.lib:

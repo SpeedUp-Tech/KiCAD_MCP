@@ -205,8 +205,12 @@ class DatabaseSchLib:
             filename=str(self.name),
             name=symbol_name,
         )
+        # Store the library name on the part for later retrieval by elk_graph_adapter
+        part._db_library_name = self.name
         self._schlib.add_parts(part)
         self._parts[symbol_name] = self._schlib[symbol_name]
+        # Also store library name on the cached part
+        self._parts[symbol_name]._db_library_name = self.name
         return True
 
     def __getitem__(self, symbol_name: str):
