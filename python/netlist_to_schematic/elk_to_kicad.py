@@ -220,9 +220,13 @@ def run_conversion(
                 # Pin position = symbol origin + pin offset
                 # Pin offsets are defined on 2.54mm grid in KiCad symbols
                 # Note: KiCad Y-axis is inverted (positive Y goes down)
+                # The kicad_offset values are already rotated in elk_graph_adapter
                 pin_x = snap_to_grid(pos_x + port_props["kicad_offset_x"])
                 pin_y = snap_to_grid(pos_y - port_props["kicad_offset_y"])
                 pin_positions[port_id] = (pin_x, pin_y)
+        
+        # Get rotation from node properties (set by rotation optimizer)
+        rotation = meta.get("rotation", 0)
         
         comp_def = {
             "reference": ref,
@@ -230,7 +234,7 @@ def run_conversion(
             "libId": f"{meta.get('lib', 'Lib')}:{meta.get('symbol', 'Sym')}",
             "x": pos_x,
             "y": pos_y,
-            "rotation": 0
+            "rotation": rotation
         }
         
         try:

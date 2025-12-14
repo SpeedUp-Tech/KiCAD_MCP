@@ -9,11 +9,22 @@ Classes:
     ElkGraphBuilder: Builds ELK graph from SKiDL circuit + logic hints
 """
 
+import math
 import re
 from pathlib import Path
 from typing import Dict, Any, Optional
 
 from python.skidl_db_wrapper import SymbolDatabase
+
+
+def _rotate_point(x: float, y: float, angle_deg: int) -> tuple[float, float]:
+    """Rotate a point around origin by angle_deg degrees."""
+    if angle_deg == 0:
+        return (x, y)
+    angle_rad = math.radians(angle_deg)
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+    return (x * cos_a - y * sin_a, x * sin_a + y * cos_a)
 
 
 class SymbolGeometryFetcher:
@@ -126,7 +137,7 @@ class ElkGraphBuilder:
     with geometry data for proper schematic layout.
     """
     
-    def __init__(self, circuit, logic_data: Dict[str, Any], geometry_fetcher: SymbolGeometryFetcher):
+    def __init__(self, circuit, logic_data: Dict[str, Any], geometry_fetcher: SymbolGeometryFetcher, rotation_map: Dict[str, int] | None = None):
         """
         Initialize the graph builder.
         
@@ -134,10 +145,12 @@ class ElkGraphBuilder:
             circuit: SKiDL Circuit object
             logic_data: Design logic hints (e.g., nets to hide, grouping rules)
             geometry_fetcher: SymbolGeometryFetcher for pin/bbox lookup
+            rotation_map: Optional dict of {ref: rotation_degrees} for components
         """
         self.circuit = circuit
         self.logic = logic_data
         self.fetcher = geometry_fetcher
+        self.rotation_map = rotation_map or {}
         
         # Validate required logic hints
         elk_fields = self.logic.get("elk_support_fields", {})
@@ -653,6 +666,37 @@ class ElkGraphBuilder:
                 "min_y": -2.54, "max_y": 2.54
             })
             
+            # Apply rotation if specified
+            rotation = self.rotation_map.get(part.ref, 0)
+            if rotation != 0:
+                # Rotate pin positions
+                rotated_pins = {}
+                for pnum, pgeo in pins.items():
+                    rx, ry = _rotate_point(pgeo["x"], pgeo["y"], rotation)
+                    rcx, rcy = _rotate_point(pgeo["conn_x"], pgeo["conn_y"], rotation)
+                    rotated_pins[pnum] = {
+                        "x": rx, "y": ry,
+                        "rot": (pgeo.get("rot", 0) + rotation) % 360,
+                        "length": pgeo.get("length", 2.54),
+                        "conn_x": rcx, "conn_y": rcy
+                    }
+                pins = rotated_pins
+                
+                # Rotate bounding box corners and recalculate
+                corners = [
+                    (bbox["min_x"], bbox["min_y"]),
+                    (bbox["max_x"], bbox["min_y"]),
+                    (bbox["max_x"], bbox["max_y"]),
+                    (bbox["min_x"], bbox["max_y"]),
+                ]
+                rotated_corners = [_rotate_point(x, y, rotation) for x, y in corners]
+                xs = [c[0] for c in rotated_corners]
+                ys = [c[1] for c in rotated_corners]
+                bbox = {
+                    "min_x": min(xs), "max_x": max(xs),
+                    "min_y": min(ys), "max_y": max(ys)
+                }
+            
             # ELK Node Dimensions
             width = (bbox["max_x"] - bbox["min_x"]) + (2 * MARGIN_X)
             height = (bbox["max_y"] - bbox["min_y"]) + (2 * MARGIN_Y)
@@ -685,7 +729,8 @@ class ElkGraphBuilder:
                     "symbol": symbol_name,
                     "value": str(part.value),
                     "origin_offset_x": origin_offset_x,
-                    "origin_offset_y": origin_offset_y
+                    "origin_offset_y": origin_offset_y,
+                    "rotation": rotation
                 }
             }
             
@@ -700,15 +745,21 @@ class ElkGraphBuilder:
                     "height": 0
                 }
                 
+                # Get original (non-rotated) pin geometry for KiCad offset
+                original_pins = geom_data.get("pins", {})
+                
                 if pin.num in pins:
-                    p_geo = pins[pin.num]
-                    # Store KiCad pin offset for wire endpoint calculation
+                    p_geo = pins[pin.num]  # Rotated pin for ELK layout
+                    original_p_geo = original_pins.get(pin.num, p_geo)  # Original for KiCad
+                    
+                    # Store ORIGINAL KiCad pin offset for wire endpoint calculation
+                    # KiCad will apply the symbol rotation to these offsets
                     port["properties"] = {
-                        "kicad_offset_x": p_geo["x"],
-                        "kicad_offset_y": p_geo["y"]
+                        "kicad_offset_x": original_p_geo["x"],
+                        "kicad_offset_y": original_p_geo["y"]
                     }
                     
-                    # Calculate port position within ELK node
+                    # Calculate port position within ELK node using ROTATED positions
                     elk_port_x = origin_offset_x + p_geo["x"]
                     elk_port_y = origin_offset_y - p_geo["y"]
                     

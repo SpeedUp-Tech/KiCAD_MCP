@@ -16,6 +16,7 @@ from pathlib import Path
 # Import pipeline components
 from python.netlist_to_schematic.elk_graph_adapter import ElkGraphBuilder, SymbolGeometryFetcher
 from python.netlist_to_schematic.elk_to_kicad import run_conversion
+from python.netlist_to_schematic.rotation_optimizer import optimize_rotations
 
 
 def generate_schematic(
@@ -23,7 +24,8 @@ def generate_schematic(
     output_path: str,
     logic_hints_path: str | None = None,
     keep_intermediate: bool = False,
-    verbose: bool = True
+    verbose: bool = True,
+    optimize_rotation: bool = False
 ) -> str:
     """
     Generate a KiCad schematic from a SKiDL circuit.
@@ -34,6 +36,7 @@ def generate_schematic(
         logic_hints_path: Optional path to logic hints JSON file
         keep_intermediate: If True, keep elk_input.json and elk_output.json
         verbose: If True, print progress messages
+        optimize_rotation: If True, find optimal rotations for non-primitive components
         
     Returns:
         Path to the generated schematic file
@@ -69,34 +72,48 @@ def generate_schematic(
         print("Stage 1: Generating ELK graph...")
     
     fetcher = SymbolGeometryFetcher()
-    builder = ElkGraphBuilder(circuit, logic_hints, fetcher)
-    elk_graph = builder.build_graph()
     
-    with open(elk_input_path, "w") as f:
-        json.dump(elk_graph, f, indent=2)
-    
-    node_count = len(elk_graph.get("children", []))
-    edge_count = len(elk_graph.get("edges", []))
-    if verbose:
-        print(f"  Created {node_count} nodes, {edge_count} edges")
-    
-    # Stage 2: Run ELK layout
-    if verbose:
-        print("Stage 2: Running ELK layout engine...")
-    
-    elk_runner = Path(__file__).parent / "netlist_to_schematic" / "elk" / "elk_layout_runner.cjs"
-    
-    result = subprocess.run(
-        ["node", str(elk_runner), str(elk_input_path), str(elk_output_path)],
-        capture_output=True,
-        text=True
-    )
-    
-    if result.returncode != 0:
-        raise RuntimeError(f"ELK layout failed: {result.stderr}")
-    
-    if verbose:
-        print("  Layout complete")
+    # Stage 2: Run ELK layout (with optional rotation optimization)
+    if optimize_rotation:
+        if verbose:
+            print("Stage 2: Optimizing rotations and running ELK layout...")
+        elk_output, rotation_map = optimize_rotations(
+            circuit, logic_hints, fetcher, ElkGraphBuilder, work_dir, verbose
+        )
+        # Save the ELK output for Stage 3
+        with open(elk_output_path, "w") as f:
+            json.dump(elk_output, f, indent=2)
+        if rotation_map and verbose:
+            print(f"  Rotations applied: {rotation_map}")
+    else:
+        # Standard single-run ELK layout
+        builder = ElkGraphBuilder(circuit, logic_hints, fetcher, {})
+        elk_graph = builder.build_graph()
+        
+        with open(elk_input_path, "w") as f:
+            json.dump(elk_graph, f, indent=2)
+        
+        node_count = len(elk_graph.get("children", []))
+        edge_count = len(elk_graph.get("edges", []))
+        if verbose:
+            print(f"  Created {node_count} nodes, {edge_count} edges")
+        
+        if verbose:
+            print("Stage 2: Running ELK layout engine...")
+        
+        elk_runner = Path(__file__).parent / "netlist_to_schematic" / "elk" / "elk_layout_runner.cjs"
+        
+        result = subprocess.run(
+            ["node", str(elk_runner), str(elk_input_path), str(elk_output_path)],
+            capture_output=True,
+            text=True
+        )
+        
+        if result.returncode != 0:
+            raise RuntimeError(f"ELK layout failed: {result.stderr}")
+        
+        if verbose:
+            print("  Layout complete")
     
     # Stage 3: Convert to KiCad schematic
     if verbose:
@@ -123,7 +140,8 @@ def generate_schematic_svg(
     output_path: str,
     logic_hints_path: str | None = None,
     keep_intermediate: bool = False,
-    verbose: bool = True
+    verbose: bool = True,
+    optimize_rotation: bool = False
 ) -> tuple[str, str]:
     """
     Generate both KiCad schematic and SVG export.
@@ -134,13 +152,15 @@ def generate_schematic_svg(
         logic_hints_path: Optional path to logic hints JSON
         keep_intermediate: If True, keep elk_input.json and elk_output.json
         verbose: Print progress messages
+        optimize_rotation: If True, find optimal rotations for non-primitive components
         
     Returns:
         Tuple of (schematic_path, svg_path)
     """
     sch_path = generate_schematic(
         circuit, output_path, logic_hints_path, 
-        keep_intermediate=keep_intermediate, verbose=verbose
+        keep_intermediate=keep_intermediate, verbose=verbose,
+        optimize_rotation=optimize_rotation
     )
     
     svg_dir = Path(sch_path).parent / f"{Path(sch_path).stem}_svg"
@@ -214,6 +234,11 @@ Examples:
         action="store_true",
         help="Keep intermediate elk_input.json and elk_output.json files"
     )
+    parser.add_argument(
+        "--optimize-rotation",
+        action="store_true",
+        help="Find optimal rotations for non-primitive components (ICs, etc.)"
+    )
     
     args = parser.parse_args()
     
@@ -255,14 +280,16 @@ Examples:
     if args.svg:
         sch_path, svg_path = generate_schematic_svg(
             circuit, args.output, args.logic_hints,
-            keep_intermediate=args.keep_intermediate
+            keep_intermediate=args.keep_intermediate,
+            optimize_rotation=args.optimize_rotation
         )
         print(f"\nOutput schematic: {sch_path}")
         print(f"Output SVG: {svg_path}")
     else:
         sch_path = generate_schematic(
             circuit, args.output, args.logic_hints,
-            keep_intermediate=args.keep_intermediate
+            keep_intermediate=args.keep_intermediate,
+            optimize_rotation=args.optimize_rotation
         )
         print(f"\nOutput schematic: {sch_path}")
 
