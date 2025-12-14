@@ -239,6 +239,11 @@ Examples:
         action="store_true",
         help="Find optimal rotations for non-primitive components (ICs, etc.)"
     )
+    parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Verify schematic by comparing netlists with original SKiDL circuit"
+    )
     
     args = parser.parse_args()
     
@@ -292,4 +297,13 @@ Examples:
             optimize_rotation=args.optimize_rotation
         )
         print(f"\nOutput schematic: {sch_path}")
+    
+    # Verify schematic if requested
+    if args.verify:
+        from python.netlist_to_schematic.netlist_comparator import verify_schematic
+        print("\n--- Verification ---")
+        passed = verify_schematic(circuit, sch_path)
+        if not passed:
+            print("\nWARNING: Schematic verification failed!")
+            exit(1)
 
