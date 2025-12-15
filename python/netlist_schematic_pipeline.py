@@ -210,7 +210,7 @@ def generate_schematic_from_skidl_module(
             Must be a function decorated with @SubCircuit in the SKiDL module.
         output_path: Path for the output .kicad_sch file.
         logic_hints_path: Optional path to a JSON file containing layout hints.
-            The hints can include signal_flows, cluster_hierarchy, power_symbols, etc.
+            The hints can include layout_chains, cluster_hierarchy, power_symbols, etc.
         export_svg: If True, also export the schematic to SVG format.
         verify: If True, verify the generated schematic against the original netlist.
         optimize_rotation: If True, optimize component rotations for minimal wire bends.

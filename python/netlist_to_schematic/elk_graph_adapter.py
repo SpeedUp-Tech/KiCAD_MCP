@@ -231,7 +231,7 @@ class ElkGraphBuilder:
         Build ELK nodes for power symbols declared in power_symbols array.
         
         Power symbols are first-class nodes that participate in ELK layout,
-        positioned via signal_flows just like regular components.
+        positioned via layout_chains just like regular components.
         """
         MARGIN_X = 2.54
         MARGIN_Y = 2.54
@@ -317,9 +317,9 @@ class ElkGraphBuilder:
         Build ELK nodes for net labels declared in net_labels array.
         
         Net labels are first-class nodes that participate in ELK layout,
-        positioned via signal_flows just like regular components and power symbols.
+        positioned via layout_chains just like regular components and power symbols.
         
-        Port position is determined dynamically by scanning signal_flows:
+        Port position is determined dynamically by scanning layout_chains:
         - If label is FIRST in a path (source): port on RIGHT edge (wire goes right)
         - If label is LAST in a path (target): port on LEFT edge (wire comes from left)
         - If label appears in both positions or neither: use center
@@ -336,17 +336,17 @@ class ElkGraphBuilder:
         
         elk_fields = self._get_elk_support_fields()
         net_labels = elk_fields.get("net_labels", [])
-        signal_flows = elk_fields.get("signal_flows", [])
+        layout_chains = elk_fields.get("layout_chains", [])
         
         # Build a set of label IDs for quick lookup
         label_ids = {nl.get("id") for nl in net_labels if nl.get("id")}
         
-        # Scan signal flows to determine each label's role
+        # Scan layout chains to determine each label's role
         # A label can be: "source" (first in path), "target" (last in path), or "both"
         label_roles: dict[str, str] = {}  # label_id -> "source" | "target" | "both"
         
-        for flow in signal_flows:
-            path = flow.get("path", [])
+        for chain in layout_chains:
+            path = chain.get("path", [])
             if len(path) < 2:
                 continue
             
@@ -383,7 +383,7 @@ class ElkGraphBuilder:
             # KiCad labels have connection point at one end, text extends from there
             label_width = max(MIN_WIDTH, len(net_name) * CHAR_WIDTH + 2.0)
             
-            # Determine port position based on role in signal flows
+            # Determine port position based on role in layout chains
             # This makes path order directly control layout position
             role = label_roles.get(nl_id, "both")
             
@@ -435,9 +435,9 @@ class ElkGraphBuilder:
             self._component_nodes[nl_id] = node
             self.graph["children"].append(node)
 
-    def _process_signal_flows(self) -> None:
+    def _process_layout_chains(self) -> None:
         """
-        Process signal_flows to create phantom edges for layout ordering.
+        Process layout_chains to create phantom edges for layout ordering.
         
         For GND flows (component -> GND_xxx), creates real wire edges
         from the component's GND pin to the GND symbol.
@@ -446,7 +446,7 @@ class ElkGraphBuilder:
         creates real wire edges to/from the label node.
         """
         elk_fields = self._get_elk_support_fields()
-        signal_flows = elk_fields.get("signal_flows", [])
+        layout_chains = elk_fields.get("layout_chains", [])
         power_symbol_ids = set()
         net_label_ids = {}  # id -> net_name mapping
         
@@ -462,9 +462,9 @@ class ElkGraphBuilder:
             if nl_id:
                 net_label_ids[nl_id] = nl.get("net_name", nl_id)
         
-        for flow in signal_flows:
-            flow_id = flow.get("id", "unnamed")
-            path = flow.get("path", [])
+        for chain in layout_chains:
+            chain_id = chain.get("id", "unnamed")
+            path = chain.get("path", [])
             
             if len(path) < 2:
                 continue
@@ -528,7 +528,7 @@ class ElkGraphBuilder:
                     else:
                         # Create phantom edge for layout ordering only
                         phantom_edge = {
-                            "id": f"flow_{flow_id}_{i}",
+                            "id": f"chain_{chain_id}_{i}",
                             "sources": [source_id],
                             "targets": [target_id],
                             "layoutOptions": {
@@ -784,8 +784,8 @@ class ElkGraphBuilder:
         # 3. Build net label nodes from net_labels array
         self._build_net_label_nodes()
         
-        # 4. Process signal flows - creates phantom edges AND real GND edges
-        self._process_signal_flows()
+        # 4. Process layout chains - creates phantom edges AND real GND edges
+        self._process_layout_chains()
         
         # 5. Process constraints (alignment, adjacency) - phantom edges only
         self._process_constraints()
@@ -837,7 +837,7 @@ class ElkGraphBuilder:
         elk_fields = self._get_elk_support_fields()
         net_labels = elk_fields.get("net_labels", [])
         power_symbols = elk_fields.get("power_symbols", [])
-        signal_flows = elk_fields.get("signal_flows", [])
+        layout_chains = elk_fields.get("layout_chains", [])
         
         # Build mapping: net_name -> label_id (for nets with explicit labels)
         net_name_to_label: dict[str, str] = {}
@@ -859,11 +859,11 @@ class ElkGraphBuilder:
                     net_name = ps_type.split(":")[1]  # Extract "GND" from "power:GND"
                     power_symbol_to_net[ps_id] = net_name
         
-        # Build mapping: (component, net_name) -> power_symbol_id (from signal flows)
+        # Build mapping: (component, net_name) -> power_symbol_id (from layout chains)
         # This tells us which power symbol a component uses for a given net
         component_net_to_power_symbol: dict[tuple[str, str], str] = {}
-        for flow in signal_flows:
-            path = flow.get("path", [])
+        for chain in layout_chains:
+            path = chain.get("path", [])
             if len(path) >= 2:
                 source = path[0]
                 target = path[-1]
