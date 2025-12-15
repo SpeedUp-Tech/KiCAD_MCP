@@ -330,6 +330,28 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
+    server.tool('generate_schematic_from_netlist', toolDescription('generate_schematic_from_netlist'), {
+        skidlModulePath: z.string().describe('Path to the Python file containing SKiDL subcircuit definitions'),
+        subcircuitName: z.string().describe('Name of the SubCircuit function to instantiate (e.g., "IP2312_CHARGER")'),
+        outputPath: z.string().describe('Path for the output .kicad_sch file'),
+        logicHintsPath: z.string().optional().describe('Optional path to a JSON file containing layout hints for signal flows, clusters, and power symbols'),
+        exportSvg: z.boolean().optional().default(false).describe('If true, also export the schematic to SVG format'),
+        verify: z.boolean().optional().default(true).describe('If true, verify the generated schematic matches the original netlist connectivity'),
+        optimizeRotation: z.boolean().optional().default(false).describe('If true, optimize component rotations for minimal wire bends'),
+        keepIntermediate: z.boolean().optional().default(false).describe('If true, keep intermediate elk_input.json and elk_output.json files'),
+    }, async ({ skidlModulePath, subcircuitName, outputPath, logicHintsPath, exportSvg, verify, optimizeRotation, keepIntermediate }) => {
+        const result = await callKicadScript('generate_schematic_from_netlist', {
+            skidlModulePath,
+            subcircuitName,
+            outputPath,
+            logicHintsPath,
+            exportSvg,
+            verify,
+            optimizeRotation,
+            keepIntermediate,
+        });
+        return formatToolResult(result);
+    });
     logger.info('Schematic tools registered');
 }
 //# sourceMappingURL=schematic.js.map

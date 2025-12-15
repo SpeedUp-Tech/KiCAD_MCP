@@ -186,6 +186,143 @@ def generate_schematic_svg(
     return sch_path, str(svg_path)
 
 
+def generate_schematic_from_skidl_module(
+    skidl_module_path: str,
+    subcircuit_name: str,
+    output_path: str,
+    logic_hints_path: str | None = None,
+    export_svg: bool = False,
+    verify: bool = True,
+    optimize_rotation: bool = False,
+    keep_intermediate: bool = False,
+) -> dict:
+    """
+    Generate a KiCad schematic from a SKiDL module file.
+    
+    This is the MCP-compatible entry point for the netlist-to-schematic pipeline.
+    It loads a SKiDL module, instantiates the specified subcircuit, and generates
+    a complete KiCad schematic with automatic layout using ELK.
+    
+    Args:
+        skidl_module_path: Path to the Python file containing SKiDL subcircuit definitions.
+            The file should define one or more @SubCircuit-decorated functions.
+        subcircuit_name: Name of the SubCircuit function to instantiate (e.g., "IP2312_CHARGER").
+            Must be a function decorated with @SubCircuit in the SKiDL module.
+        output_path: Path for the output .kicad_sch file.
+        logic_hints_path: Optional path to a JSON file containing layout hints.
+            The hints can include signal_flows, cluster_hierarchy, power_symbols, etc.
+        export_svg: If True, also export the schematic to SVG format.
+        verify: If True, verify the generated schematic against the original netlist.
+        optimize_rotation: If True, optimize component rotations for minimal wire bends.
+        keep_intermediate: If True, keep intermediate elk_input.json and elk_output.json files.
+    
+    Returns:
+        A dict with keys:
+            - success: bool indicating if generation succeeded
+            - schematic_path: path to the generated .kicad_sch file
+            - svg_path: path to SVG (if export_svg=True)
+            - parts_count: number of parts in the circuit
+            - nets_count: number of nets in the circuit
+            - verification_passed: bool (if verify=True)
+            - message: error message if success=False
+    
+    Example:
+        result = generate_schematic_from_skidl_module(
+            skidl_module_path="modules/charger.py",
+            subcircuit_name="USB_CHARGER",
+            output_path="output/charger.kicad_sch",
+            logic_hints_path="modules/charger_logic.json",
+            export_svg=True,
+            verify=True
+        )
+    """
+    import importlib.util
+    import inspect
+    from skidl import Circuit, Net
+    
+    try:
+        # Load the SKiDL module
+        spec = importlib.util.spec_from_file_location("skidl_module", skidl_module_path)
+        if spec is None or spec.loader is None:
+            return {
+                "success": False,
+                "message": f"Could not load module from {skidl_module_path}"
+            }
+        
+        skidl_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(skidl_module)
+        
+        # Get the subcircuit function
+        if not hasattr(skidl_module, subcircuit_name):
+            available = [n for n in dir(skidl_module) if not n.startswith("_")]
+            return {
+                "success": False,
+                "message": f"Module does not have subcircuit '{subcircuit_name}'. Available: {available}"
+            }
+        
+        subcircuit_func = getattr(skidl_module, subcircuit_name)
+        
+        # Create circuit and instantiate subcircuit
+        circuit = Circuit()
+        circuit.no_files = True
+        
+        # Introspect subcircuit to find required nets
+        sig = inspect.signature(subcircuit_func)
+        param_names = [p for p in sig.parameters if p != "tag"]
+        
+        with circuit:
+            net_args = {name: Net(name) for name in param_names}
+            subcircuit_func(**net_args, tag=subcircuit_name)
+        
+        parts_count = len(circuit.parts)
+        nets_count = len(circuit.nets)
+        
+        # Generate schematic
+        svg_path = None
+        if export_svg:
+            sch_path, svg_path = generate_schematic_svg(
+                circuit, output_path, logic_hints_path,
+                keep_intermediate=keep_intermediate,
+                verbose=False,
+                optimize_rotation=optimize_rotation
+            )
+        else:
+            sch_path = generate_schematic(
+                circuit, output_path, logic_hints_path,
+                keep_intermediate=keep_intermediate,
+                verbose=False,
+                optimize_rotation=optimize_rotation
+            )
+        
+        result: dict = {
+            "success": True,
+            "schematic_path": sch_path,
+            "parts_count": parts_count,
+            "nets_count": nets_count,
+        }
+        
+        if svg_path:
+            result["svg_path"] = svg_path
+        
+        # Verify if requested
+        if verify:
+            from python.netlist_to_schematic.netlist_comparator import verify_schematic
+            verification_passed = verify_schematic(circuit, sch_path, verbose=False)
+            result["verification_passed"] = verification_passed
+            if not verification_passed:
+                result["verification_warning"] = "Schematic connectivity does not fully match SKiDL netlist"
+        
+        return result
+        
+    except Exception as e:
+        import traceback
+        return {
+            "success": False,
+            "message": str(e),
+            "traceback": traceback.format_exc()
+        }
+
+
 if __name__ == "__main__":
     import argparse
     import importlib.util

@@ -87,6 +87,10 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/kicad_interface.py",
         ("KiCADInterface", "_handle_save_part_model"),
     ),
+    "generate_schematic_from_netlist": (
+        "python/netlist_schematic_pipeline.py",
+        ("generate_schematic_from_skidl_module",),
+    ),
 }
 
 

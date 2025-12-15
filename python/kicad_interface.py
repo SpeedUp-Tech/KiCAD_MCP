@@ -138,6 +138,7 @@ try:
     from python.spice_tools.pyspice_converter import convert_skidl_module
     from python.spice_tools.model_db import DEFAULT_MODEL_DB, save_part_model, search_spice_model
     from python.spice_tools.utils import validate_spice_model
+    from python.netlist_schematic_pipeline import generate_schematic_from_skidl_module
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -298,6 +299,9 @@ class KiCADInterface:
             "save_part_model": self._handle_save_part_model,
             "search_spice_model": self._handle_search_spice_model,
             "validate_spice_model": self._handle_validate_spice_model,
+
+            # Netlist to schematic pipeline
+            "generate_schematic_from_netlist": self._handle_generate_schematic_from_netlist,
         }
 
         logger.info("KiCAD interface initialized")
@@ -1648,6 +1652,63 @@ class KiCADInterface:
             }
         except Exception as exc:
             logger.error(f"Error searching SPICE model database: {exc}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(exc)}
+
+    def _handle_generate_schematic_from_netlist(self, params):
+        """
+        Generate a KiCad schematic from a SKiDL module with automatic layout.
+        
+        This tool converts a SKiDL netlist into a visually organized KiCad schematic
+        using the ELK automatic layout engine. It handles component placement, wire
+        routing, power symbols, and hierarchical labels.
+        
+        Args (via params dict):
+            skidlModulePath: Path to the Python file containing SKiDL subcircuit definitions
+            subcircuitName: Name of the SubCircuit function to instantiate (e.g., "IP2312_CHARGER")
+            outputPath: Path for the output .kicad_sch file
+            logicHintsPath: Optional path to a JSON file containing layout hints
+            exportSvg: If True, also export the schematic to SVG format
+            verify: If True, verify the generated schematic matches the original netlist
+            optimizeRotation: If True, optimize component rotations for minimal wire bends
+            keepIntermediate: If True, keep intermediate elk_input.json and elk_output.json files
+            
+        Returns:
+            Dict with success status, file paths, part/net counts, and verification result
+        """
+        logger.info("Generating schematic from SKiDL netlist")
+        try:
+            skidl_module_path = params.get("skidlModulePath") or params.get("skidl_module_path")
+            subcircuit_name = params.get("subcircuitName") or params.get("subcircuit_name")
+            output_path = params.get("outputPath") or params.get("output_path")
+            logic_hints_path = params.get("logicHintsPath") or params.get("logic_hints_path")
+            export_svg = params.get("exportSvg", False) or params.get("export_svg", False)
+            verify = params.get("verify", True)
+            optimize_rotation = params.get("optimizeRotation", False) or params.get("optimize_rotation", False)
+            keep_intermediate = params.get("keepIntermediate", False) or params.get("keep_intermediate", False)
+
+            if not skidl_module_path:
+                return {"success": False, "message": "skidlModulePath is required"}
+            if not subcircuit_name:
+                return {"success": False, "message": "subcircuitName is required"}
+            if not output_path:
+                return {"success": False, "message": "outputPath is required"}
+
+            result = generate_schematic_from_skidl_module(
+                skidl_module_path=skidl_module_path,
+                subcircuit_name=subcircuit_name,
+                output_path=output_path,
+                logic_hints_path=logic_hints_path,
+                export_svg=export_svg,
+                verify=verify,
+                optimize_rotation=optimize_rotation,
+                keep_intermediate=keep_intermediate,
+            )
+            
+            return result
+
+        except Exception as exc:
+            logger.error(f"Error generating schematic from netlist: {exc}")
             logger.error(traceback.format_exc())
             return {"success": False, "message": str(exc)}
 
