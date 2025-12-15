@@ -795,8 +795,11 @@ class ComponentManager:
 
         (ref_dx, ref_dy), (val_dx, val_dy) = _label_offsets_for_value(rotation, component_value, value_hidden)
 
+        # Hide reference for power:GND symbols (e.g., #GND_1 should not be displayed)
+        hide_reference = (lib_id == "power:GND")
+
         properties: List[Any] = [
-            _make_property('Reference', reference, x + ref_dx, y + ref_dy, rotation),
+            _make_property('Reference', reference, x + ref_dx, y + ref_dy, rotation, hide=hide_reference),
             _make_property('Value', component_value, x + val_dx, y + val_dy, rotation, hide=value_hidden),
             _make_property('Footprint', str(footprint), x, y, rotation, hide=True),
             _make_property('Datasheet', str(datasheet), x, y, rotation, hide=True),

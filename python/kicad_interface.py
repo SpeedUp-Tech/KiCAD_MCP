@@ -282,6 +282,7 @@ class KiCADInterface:
             "connect_schematic_pins": self._handle_connect_schematic_pins,
             "run_module_erc": self._handle_run_module_erc,
             "run_skidl_erc": self._handle_run_skidl_erc,
+            "execute_skidl_netlist": self._handle_execute_skidl_netlist,
             "compile_schematic": self._handle_compile_schematic,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
@@ -1013,6 +1014,202 @@ class KiCADInterface:
         except Exception as exc:
             logger.error("Error running SKiDL ERC: %s", exc)
             return {"success": False, "message": str(exc)}
+
+    def _handle_execute_skidl_netlist(self, params):
+        """
+        Execute a SKiDL module file and return the generated netlist as text.
+        
+        This function dynamically loads a SKiDL module, instantiates the specified
+        subcircuit (or auto-detects it), runs ERC, and generates the netlist.
+        
+        Args:
+            skidlPath: Path to the SKiDL Python file
+            subcircuitName: Optional name of the @SubCircuit function to instantiate.
+                           If not provided, auto-detects from the module.
+        
+        Returns:
+            {
+                "success": bool,
+                "netlist": str - the netlist text content,
+                "subcircuitName": str - name of the instantiated subcircuit,
+                "partsCount": int - number of parts in the circuit,
+                "netsCount": int - number of nets in the circuit,
+                "ercWarnings": list - any ERC warnings generated
+            }
+        """
+        logger.info("Executing SKiDL module for netlist generation")
+        try:
+            skidl_path = params.get("skidlPath")
+            subcircuit_name = params.get("subcircuitName")
+            
+            if not skidl_path:
+                return {"success": False, "message": "skidlPath is required"}
+            
+            skidl_path = os.path.abspath(os.path.expanduser(skidl_path))
+            if not os.path.exists(skidl_path):
+                return {"success": False, "message": f"SKiDL file not found: {skidl_path}"}
+            
+            # Import SKiDL with proper initialization
+            import importlib.util
+            from io import StringIO
+            
+            # Disable SKiDL's default file output and configure for programmatic use
+            try:
+                from skidl import set_default_tool, KICAD8
+                set_default_tool(KICAD8)
+            except ImportError:
+                pass  # Handle older SKiDL versions without KICAD8
+            
+            # Set up environment for the SKiDL module
+            skidl_dir = os.path.dirname(skidl_path)
+            original_cwd = os.getcwd()
+            original_path = sys.path.copy()
+            
+            try:
+                # Add module directory and project root to path
+                if skidl_dir not in sys.path:
+                    sys.path.insert(0, skidl_dir)
+                project_root = str(PROJECT_ROOT)
+                if project_root not in sys.path:
+                    sys.path.insert(0, project_root)
+                
+                os.chdir(skidl_dir)
+                
+                # Load the module dynamically
+                module_name = Path(skidl_path).stem
+                spec = importlib.util.spec_from_file_location(module_name, skidl_path)
+                if spec is None or spec.loader is None:
+                    return {"success": False, "message": f"Cannot load module from: {skidl_path}"}
+                
+                module = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = module
+                spec.loader.exec_module(module)
+                
+                # Import SKiDL types for circuit creation
+                from skidl import Circuit, Net, ERC, SubCircuit
+                
+                # Find the subcircuit function to call
+                subckt_func = None
+                subckt_func_name = subcircuit_name
+                
+                if subcircuit_name:
+                    # Look for the specified subcircuit
+                    subckt_func = getattr(module, subcircuit_name, None)
+                    if subckt_func is None:
+                        return {"success": False, "message": f"Subcircuit '{subcircuit_name}' not found in module"}
+                else:
+                    # Auto-detect: look for functions decorated with @SubCircuit
+                    for name in dir(module):
+                        obj = getattr(module, name)
+                        # Check if it's a subcircuit (typically uppercase, callable, and has subcircuit marker)
+                        if callable(obj) and name.isupper() and not name.startswith('_'):
+                            # Check if it looks like a subcircuit function
+                            if hasattr(obj, '__wrapped__') or name.endswith('_PROTECTION') or name.endswith('_CHARGER'):
+                                subckt_func = obj
+                                subckt_func_name = name
+                                break
+                    
+                    # Fallback: try common naming patterns
+                    if subckt_func is None:
+                        for name in dir(module):
+                            obj = getattr(module, name)
+                            if callable(obj) and name.isupper():
+                                subckt_func = obj
+                                subckt_func_name = name
+                                break
+                    
+                    if subckt_func is None:
+                        return {
+                            "success": False, 
+                            "message": "No subcircuit function found. Please specify subcircuitName parameter."
+                        }
+                
+                # Introspect the subcircuit function to get interface parameter names
+                import inspect
+                sig = inspect.signature(subckt_func)
+                interface_params = list(sig.parameters.keys())
+                
+                # Create a circuit context and instantiate the subcircuit
+                circuit = Circuit()
+                circuit.no_files = True  # Prevent file generation
+                
+                with circuit:
+                    # Create Net instances for each interface parameter
+                    interface_nets = {}
+                    for param_name in interface_params:
+                        if param_name.lower() not in ('tag', 'ref', 'kwargs'):
+                            interface_nets[param_name] = Net(param_name)
+                    
+                    # Call the subcircuit with interface nets
+                    try:
+                        subckt_func(**interface_nets, tag=subckt_func_name)
+                    except TypeError:
+                        # Try without tag parameter
+                        subckt_func(**interface_nets)
+                    
+                    # Run ERC and capture warnings
+                    erc_warnings = []
+                    old_stderr = sys.stderr
+                    sys.stderr = StringIO()
+                    try:
+                        ERC()
+                    except Exception as erc_exc:
+                        erc_warnings.append(str(erc_exc))
+                    finally:
+                        erc_output = sys.stderr.getvalue()
+                        sys.stderr = old_stderr
+                        if erc_output.strip():
+                            erc_warnings.extend(erc_output.strip().split('\n'))
+                    
+                    # Disable tag checking if present
+                    if hasattr(circuit, 'check_tags'):
+                        circuit.check_tags = lambda *args, **kwargs: None
+                    
+                    # Generate the netlist
+                    netlist_text = circuit.generate_netlist(do_backup=False)
+                    
+                    # If netlist_text is None, generate a text representation manually
+                    if netlist_text is None:
+                        netlist_parts = []
+                        netlist_parts.append(f"# SKiDL Netlist for {subckt_func_name}")
+                        netlist_parts.append(f"# Parts: {len(circuit.parts)}, Nets: {len(circuit.nets)}")
+                        netlist_parts.append("")
+                        netlist_parts.append("## Parts")
+                        for part in circuit.parts:
+                            ref = getattr(part, 'ref', 'Unknown')
+                            value = getattr(part, 'value', '')
+                            footprint = getattr(part, 'footprint', '')
+                            netlist_parts.append(f"  {ref}: {part.name} ({value}) [{footprint}]")
+                        
+                        netlist_parts.append("")
+                        netlist_parts.append("## Nets")
+                        for net in circuit.nets:
+                            if net.name and not net.name.startswith('N$'):
+                                pins = [f"{p.part.ref}.{p.num}" for p in net.pins]
+                                if pins:
+                                    netlist_parts.append(f"  {net.name}: {', '.join(pins)}")
+                        
+                        netlist_text = '\n'.join(netlist_parts)
+                
+                return {
+                    "success": True,
+                    "netlist": str(netlist_text) if netlist_text else "",
+                    "subcircuitName": subckt_func_name,
+                    "partsCount": len(circuit.parts),
+                    "netsCount": len(circuit.nets),
+                    "interfaceNets": list(interface_nets.keys()),
+                    "ercWarnings": erc_warnings,
+                }
+                
+            finally:
+                # Restore original state
+                os.chdir(original_cwd)
+                sys.path = original_path
+                
+        except Exception as exc:
+            logger.error("Error executing SKiDL netlist: %s", exc)
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(exc), "traceback": traceback.format_exc()}
 
     def _handle_list_schematic_libraries(self, params):
         """List available symbol libraries"""
