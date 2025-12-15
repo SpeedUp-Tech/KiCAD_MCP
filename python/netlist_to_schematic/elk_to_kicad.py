@@ -12,7 +12,7 @@ from typing import Union, Dict, Any, Tuple, List
 
 from python.commands.kicad_schematics.schematic import SchematicManager, Schematic
 from python.commands.kicad_schematics.component_schematic import ComponentManager
-from python.commands.kicad_schematics.connection_schematic import ConnectionManager
+from python.commands.kicad_schematics.connection_schematic import ConnectionManager, SchematicCompiler
 from python.commands.kicad_schematics.grid_utils import snap_to_grid, KICAD_SCHEMATIC_GRID_MM
 from sexpdata import Symbol as SSymbol
 
@@ -278,6 +278,16 @@ def run_conversion(
         except Exception as e:
             print(f"Failed to add net label {label_id}: {e}")
 
+    # Track which nets already have labels (from explicit net_labels in graph)
+    labeled_nets: set[str] = set()
+    for node, node_x, node_y in net_label_nodes:
+        meta = node.get("properties", {})
+        net_name = meta.get("net_name", node["id"])
+        labeled_nets.add(net_name)
+    
+    # Also track net -> first wire endpoint (for adding labels to unlabeled nets)
+    net_first_endpoint: dict[str, tuple[float, float]] = {}
+
     # Add Wires using ELK's routed sections directly
     # Since we now use FIXED_POS, ELK's port positions match KiCad pin positions
     for edge in graph.get("edges", []):
@@ -292,6 +302,10 @@ def run_conversion(
         if not sections:
             print(f"Skipping edge {edge_id}: no routing sections")
             continue
+        
+        # Get net_name from edge properties if available
+        edge_props = edge.get("properties", {})
+        net_name = edge_props.get("net_name")
         
         for section in sections:
             points: List[List[float]] = []
@@ -314,6 +328,10 @@ def run_conversion(
             end_y = snap_to_grid(end.get("y", 0) * SCALE_FACTOR + shift_y)
             points.append([end_x, end_y])
             
+            # Track first endpoint for nets that need labels
+            if net_name and net_name not in labeled_nets and net_name not in net_first_endpoint:
+                net_first_endpoint[net_name] = (start_x, start_y)
+            
             try:
                 bend_count = len(section.get("bendPoints", []))
                 print(f"Adding wire {edge_id}: ({start_x:.2f}, {start_y:.2f}) -> ({end_x:.2f}, {end_y:.2f}) [{bend_count} bends]")
@@ -325,6 +343,19 @@ def run_conversion(
                 )
             except Exception as e:
                 print(f"Failed to add wire {edge_id}: {e}")
+    
+    # Add local labels for unlabeled nets using their SKiDL net names
+    for net_name, (label_x, label_y) in net_first_endpoint.items():
+        try:
+            print(f"Adding auto net label '{net_name}' at ({label_x:.2f}, {label_y:.2f})")
+            _add_net_label(schematic, net_name, label_x, label_y, label_type="local")
+        except Exception as e:
+            print(f"Failed to add net label {net_name}: {e}")
+    
+    # Compile: add labels to any remaining unlabeled nets (e.g., GND connections to power symbols)
+    compile_result = SchematicCompiler.compile(schematic)
+    if compile_result.get("generatedLabelCount", 0) > 0:
+        print(f"Added {compile_result['generatedLabelCount']} auto-generated net labels")
 
     # Save
     SchematicManager.save_schematic(schematic, str(output_sch))

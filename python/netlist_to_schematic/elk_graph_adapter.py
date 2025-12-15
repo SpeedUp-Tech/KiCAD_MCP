@@ -816,43 +816,98 @@ class ElkGraphBuilder:
                 edge = {
                     "id": f"e_{net.name}_{source.ref}_{target.ref}",
                     "sources": [source_pin_id],
-                    "targets": [target_pin_id]
+                    "targets": [target_pin_id],
+                    "properties": {
+                        "net_name": net.name
+                    }
                 }
                 self.graph["edges"].append(edge)
 
-        # 6. Insurance: for labeled nets, connect orphan pins to labels
-        # Collect all pins that have at least one edge
-        connected_pins = set()
+        # 6. Insurance: connect orphan pins to their designated targets
+        # This handles both net labels and power symbols in a unified way
+        
+        # Collect all pins that already have edges
+        connected_pins: set[str] = set()
         for edge in self.graph["edges"]:
             for src in edge.get("sources", []):
                 connected_pins.add(src)
             for tgt in edge.get("targets", []):
                 connected_pins.add(tgt)
         
-        # Get labeled nets
         elk_fields = self._get_elk_support_fields()
         net_labels = elk_fields.get("net_labels", [])
-        net_name_to_label_id = {}
+        power_symbols = elk_fields.get("power_symbols", [])
+        signal_flows = elk_fields.get("signal_flows", [])
+        
+        # Build mapping: net_name -> label_id (for nets with explicit labels)
+        net_name_to_label: dict[str, str] = {}
         for nl in net_labels:
             net_name = nl.get("net_name", nl.get("id"))
-            if net_name and net_name not in net_name_to_label_id:
-                net_name_to_label_id[net_name] = nl.get("id")
+            if net_name and net_name not in net_name_to_label:
+                net_name_to_label[net_name] = nl.get("id")
         
-        # For each labeled net, find orphan pins and connect to label
+        # Build mapping: power_symbol_id -> net_name (from power symbol type)
+        # e.g., {"GND_C1": "GND", "VCC_U1": "VCC"}
+        power_symbol_to_net: dict[str, str] = {}
+        power_symbol_ids: set[str] = set()
+        for ps in power_symbols:
+            ps_id = ps.get("id")
+            ps_type = ps.get("type", "")  # e.g., "power:GND"
+            if ps_id:
+                power_symbol_ids.add(ps_id)
+                if ":" in ps_type:
+                    net_name = ps_type.split(":")[1]  # Extract "GND" from "power:GND"
+                    power_symbol_to_net[ps_id] = net_name
+        
+        # Build mapping: (component, net_name) -> power_symbol_id (from signal flows)
+        # This tells us which power symbol a component uses for a given net
+        component_net_to_power_symbol: dict[tuple[str, str], str] = {}
+        for flow in signal_flows:
+            path = flow.get("path", [])
+            if len(path) >= 2:
+                source = path[0]
+                target = path[-1]
+                # Check if target is a power symbol
+                if target in power_symbol_ids and source in self._component_nodes:
+                    net_name = power_symbol_to_net.get(target)
+                    if net_name:
+                        component_net_to_power_symbol[(source, net_name)] = target
+        
+        # Connect orphan pins to their targets
         for net in self.circuit.nets:
-            if net.name not in net_name_to_label_id:
+            net_name = net.name
+            if not net_name:
                 continue
-            label_id = net_name_to_label_id[net.name]
+            
             for pin in net.pins:
                 pin_id = f"{pin.ref}.{pin.num}"
-                if pin_id not in connected_pins:
+                if pin_id in connected_pins:
+                    continue
+                
+                # Priority 1: Connect to net label if one exists
+                if net_name in net_name_to_label:
+                    label_id = net_name_to_label[net_name]
                     edge = {
                         "id": f"insurance_{pin.ref}_{pin.num}_to_{label_id}",
                         "sources": [pin_id],
                         "targets": [f"{label_id}.1"]
                     }
                     self.graph["edges"].append(edge)
+                    connected_pins.add(pin_id)
                     print(f"[Insurance] Auto-connected orphan {pin_id} to label {label_id}")
+                    continue
+                
+                # Priority 2: Connect to power symbol if component has one for this net
+                power_symbol = component_net_to_power_symbol.get((pin.ref, net_name))
+                if power_symbol:
+                    edge = {
+                        "id": f"insurance_{pin.ref}_{pin.num}_to_{power_symbol}",
+                        "sources": [pin_id],
+                        "targets": [f"{power_symbol}.1"]
+                    }
+                    self.graph["edges"].append(edge)
+                    connected_pins.add(pin_id)
+                    print(f"[Insurance] Auto-connected orphan {pin_id} to power symbol {power_symbol}")
 
         return self.graph
 
