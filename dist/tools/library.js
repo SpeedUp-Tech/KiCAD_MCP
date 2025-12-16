@@ -123,6 +123,19 @@ export function registerLibraryTools(server, callKicadScript) {
         const result = await callKicadScript('build_symbol_from_template', parsed);
         return formatToolResult(result);
     });
+    server.tool('search_footprint', {
+        query: z
+            .string()
+            .describe('Search term for footprint (e.g., "QFN-32 5x5", "SOT-23", "SOIC-8 3.9mm"). Supports partial matching.'),
+        maxResults: z
+            .number()
+            .optional()
+            .default(20)
+            .describe('Maximum number of results to return (default: 20)'),
+    }, async (params) => {
+        const result = await callKicadScript('search_footprint', params);
+        return formatToolResult(result);
+    });
     logger.info('Library tools registered');
 }
 //# sourceMappingURL=library.js.map

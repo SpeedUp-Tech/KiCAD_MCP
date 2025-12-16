@@ -271,6 +271,7 @@ class KiCADInterface:
             "create_footprint": self.footprint_manager.create_footprint,
             "get_symbol_pinout": self.symbol_library.get_symbol_pinout,
             "build_symbol_from_template": self._handle_build_symbol_from_template,
+            "search_footprint": self._handle_search_footprint,
 
             # Schematic commands
             "create_schematic": self._handle_create_schematic,
@@ -1884,6 +1885,74 @@ class KiCADInterface:
         except Exception as exc:
             logger.error(f"Error building symbol from template: {exc}")
             logger.error(traceback.format_exc())
+            return {"success": False, "message": str(exc)}
+
+    def _handle_search_footprint(self, params):
+        """
+        Search KiCad footprint database for matching footprints.
+        
+        Args (via params dict):
+            query: Search term (e.g., "QFN-32 5x5", "SOT-23", "SOIC-8")
+            maxResults: Maximum number of results to return (default: 20)
+            
+        Returns:
+            Dict with success status and list of matching footprints
+            Each result includes library name and footprint name
+        """
+        import sqlite3
+        
+        query = params.get("query", "")
+        if not query:
+            return {"success": False, "message": "'query' is required"}
+        
+        max_results = params.get("maxResults", 20)
+        
+        # Path to footprint database
+        db_path = os.path.join(os.path.dirname(__file__), "symbol_lib", "kicad_footprints.sqlite3")
+        if not os.path.exists(db_path):
+            # Try alternate path
+            db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "symbol_lib", "kicad_footprints.sqlite3")
+        
+        if not os.path.exists(db_path):
+            return {"success": False, "message": f"Footprint database not found at {db_path}"}
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Build SQL LIKE pattern - search with wildcards between terms
+            # e.g., "QFN-32 5x5" -> "%QFN%32%5x5%"
+            query_parts = query.replace("-", "%").replace("_", "%").replace(" ", "%")
+            like_pattern = f"%{query_parts}%"
+            
+            cursor.execute(
+                "SELECT name, library FROM footprint_index WHERE name LIKE ? LIMIT ?",
+                (like_pattern, max_results)
+            )
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            matches = []
+            for name, library in rows:
+                matches.append({
+                    "library": library,
+                    "footprint": name,
+                    "fullName": f"{library}:{name}"
+                })
+            
+            # Sort matches by footprint name length (shorter = more specific)
+            matches.sort(key=lambda x: len(x["footprint"]))
+            
+            return {
+                "success": True,
+                "query": query,
+                "matchCount": len(matches),
+                "matches": matches
+            }
+            
+        except Exception as exc:
+            logger.error(f"Error searching footprints: {exc}")
             return {"success": False, "message": str(exc)}
 
     def _handle_generate_schematic_from_netlist(self, params):
