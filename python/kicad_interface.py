@@ -270,6 +270,7 @@ class KiCADInterface:
             "create_symbol": self.symbol_library.create_symbol,
             "create_footprint": self.footprint_manager.create_footprint,
             "get_symbol_pinout": self.symbol_library.get_symbol_pinout,
+            "build_symbol_from_template": self._handle_build_symbol_from_template,
 
             # Schematic commands
             "create_schematic": self._handle_create_schematic,
@@ -1849,6 +1850,39 @@ class KiCADInterface:
             }
         except Exception as exc:
             logger.error(f"Error searching SPICE model database: {exc}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(exc)}
+
+    def _handle_build_symbol_from_template(self, params):
+        """
+        Build a KiCad symbol S-expression from JSON input.
+        
+        Input: JSON with "type" and "name" fields (matches symbol.schema.json)
+        Output: S-expression string
+        """
+        logger.info("Building symbol from template")
+        try:
+            from commands.database_tools.symbol_builders import build_symbol, get_supported_types
+            
+            symbol_type = params.get("type")
+            if not symbol_type:
+                return {
+                    "success": False,
+                    "message": "'type' is required. Supported: " + ", ".join(get_supported_types())
+                }
+            
+            name = params.get("name")
+            if not name:
+                return {"success": False, "message": "'name' is required"}
+            
+            # Build and return the S-expression
+            sexp = build_symbol(symbol_type, params)
+            return {"success": True, "sexp": sexp}
+            
+        except ValueError as exc:
+            return {"success": False, "message": str(exc)}
+        except Exception as exc:
+            logger.error(f"Error building symbol from template: {exc}")
             logger.error(traceback.format_exc())
             return {"success": False, "message": str(exc)}
 

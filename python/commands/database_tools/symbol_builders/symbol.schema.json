@@ -1,0 +1,320 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "symbol.schema.json",
+  "title": "KiCad Symbol Definition",
+  "description": "Schema for defining KiCad schematic symbols. Use 'type' to select the component category, then fill in the appropriate fields.",
+  "type": "object",
+  "required": ["type", "name"],
+  "properties": {
+    "type": {
+      "type": "string",
+      "enum": ["IC", "NMOS", "PMOS", "NPN", "PNP", "DIODE", "ZENER", "LED", "RESISTOR", "CAPACITOR", "INDUCTOR", "CONNECTOR", "OPTOCOUPLER", "TRANSFORMER"],
+      "description": "Component type. Determines the symbol shape and required fields."
+    },
+    "name": {
+      "type": "string",
+      "description": "Symbol name (e.g., 'IP2312', 'AO3400', '1N4148'). Can be library-qualified like 'MyLib:PartName'."
+    },
+    "footprint": {
+      "type": "string",
+      "description": "KiCad footprint reference (e.g., 'Package_SO:TSOT-23-6', 'Package_TO_SOT_SMD:SOT-23')."
+    },
+    "properties": {
+      "type": "object",
+      "description": "Additional symbol properties.",
+      "properties": {
+        "reference": {
+          "type": "string",
+          "description": "Reference designator prefix (e.g., 'U', 'Q', 'R', 'C'). Auto-set based on type if omitted."
+        },
+        "value": {
+          "type": "string",
+          "description": "Value field. Defaults to symbol name if omitted."
+        },
+        "datasheet": {
+          "type": "string",
+          "description": "URL to component datasheet."
+        }
+      },
+      "additionalProperties": {
+        "type": "string",
+        "description": "Custom properties (e.g., 'LCSC Part', 'Manufacturer')."
+      }
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "type": { "const": "IC" }
+      },
+      "required": ["pins"],
+      "$ref": "#/$defs/ic"
+    },
+    {
+      "properties": {
+        "type": { "const": "NMOS" }
+      },
+      "$ref": "#/$defs/mosfet"
+    },
+    {
+      "properties": {
+        "type": { "const": "PMOS" }
+      },
+      "$ref": "#/$defs/mosfet"
+    },
+    {
+      "properties": {
+        "type": { "const": "NPN" }
+      },
+      "$ref": "#/$defs/bjt"
+    },
+    {
+      "properties": {
+        "type": { "const": "PNP" }
+      },
+      "$ref": "#/$defs/bjt"
+    },
+    {
+      "properties": {
+        "type": { "const": "DIODE" }
+      },
+      "$ref": "#/$defs/diode"
+    },
+    {
+      "properties": {
+        "type": { "const": "ZENER" }
+      },
+      "$ref": "#/$defs/diode"
+    },
+    {
+      "properties": {
+        "type": { "const": "LED" }
+      },
+      "$ref": "#/$defs/diode"
+    },
+    {
+      "properties": {
+        "type": { "const": "RESISTOR" }
+      },
+      "$ref": "#/$defs/twoPinPassive"
+    },
+    {
+      "properties": {
+        "type": { "const": "CAPACITOR" }
+      },
+      "$ref": "#/$defs/capacitor"
+    },
+    {
+      "properties": {
+        "type": { "const": "INDUCTOR" }
+      },
+      "$ref": "#/$defs/twoPinPassive"
+    },
+    {
+      "properties": {
+        "type": { "const": "CONNECTOR" }
+      },
+      "$ref": "#/$defs/connector"
+    },
+    {
+      "properties": {
+        "type": { "const": "OPTOCOUPLER" }
+      },
+      "$ref": "#/$defs/optocoupler"
+    },
+    {
+      "properties": {
+        "type": { "const": "TRANSFORMER" }
+      },
+      "$ref": "#/$defs/transformer"
+    }
+  ],
+  "$defs": {
+    "ic": {
+      "title": "IC (Rectangular Box)",
+      "description": "Integrated circuit with pins on sides. Use for MCUs, power ICs, op-amps, etc.",
+      "properties": {
+        "pins": {
+          "type": "array",
+          "description": "List of pin definitions.",
+          "items": {
+            "type": "object",
+            "required": ["name", "number"],
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "Pin name (e.g., 'VIN', 'GND', 'VOUT')."
+              },
+              "number": {
+                "type": "string",
+                "description": "Pin number (e.g., '1', '2', 'A1')."
+              },
+              "type": {
+                "type": "string",
+                "enum": ["input", "output", "bidirectional", "passive", "power_in", "power_out", "open_collector", "open_emitter", "no_connect", "unspecified"],
+                "default": "passive",
+                "description": "Electrical type of the pin."
+              },
+              "orientation": {
+                "type": "string",
+                "enum": ["left", "right", "up", "down"],
+                "description": "Which side of the IC body the pin is on. Auto-assigned if omitted (first half left, second half right)."
+              }
+            }
+          }
+        },
+        "body_width": {
+          "type": "number",
+          "default": 10.0,
+          "description": "Width of the IC body in mm."
+        },
+        "body_height": {
+          "type": "number",
+          "description": "Height of the IC body in mm. Auto-calculated from pin count if omitted."
+        }
+      }
+    },
+    "mosfet": {
+      "title": "MOSFET (N or P channel)",
+      "description": "Field-effect transistor. Pins: G (Gate), D (Drain), S (Source).",
+      "properties": {
+        "pins": {
+          "type": "object",
+          "description": "Pin number mapping.",
+          "properties": {
+            "G": { "type": "string", "description": "Gate pin number." },
+            "D": { "type": "string", "description": "Drain pin number." },
+            "S": { "type": "string", "description": "Source pin number." }
+          },
+          "default": { "G": "1", "D": "2", "S": "3" }
+        }
+      }
+    },
+    "bjt": {
+      "title": "BJT (NPN or PNP)",
+      "description": "Bipolar junction transistor. Pins: B (Base), C (Collector), E (Emitter).",
+      "properties": {
+        "pins": {
+          "type": "object",
+          "description": "Pin number mapping.",
+          "properties": {
+            "B": { "type": "string", "description": "Base pin number." },
+            "C": { "type": "string", "description": "Collector pin number." },
+            "E": { "type": "string", "description": "Emitter pin number." }
+          },
+          "default": { "B": "1", "C": "2", "E": "3" }
+        }
+      }
+    },
+    "diode": {
+      "title": "Diode (Standard, Zener, or LED)",
+      "description": "Two-terminal diode. Pins: A (Anode), K (Cathode).",
+      "properties": {
+        "pins": {
+          "type": "object",
+          "description": "Pin number mapping.",
+          "properties": {
+            "A": { "type": "string", "description": "Anode pin number." },
+            "K": { "type": "string", "description": "Cathode pin number." }
+          },
+          "default": { "A": "1", "K": "2" }
+        }
+      }
+    },
+    "twoPinPassive": {
+      "title": "Two-Pin Passive (Resistor, Inductor)",
+      "description": "Simple two-terminal passive component.",
+      "properties": {
+        "pins": {
+          "type": "object",
+          "description": "Pin number mapping.",
+          "properties": {
+            "1": { "type": "string", "description": "Pin 1 number." },
+            "2": { "type": "string", "description": "Pin 2 number." }
+          },
+          "default": { "1": "1", "2": "2" }
+        }
+      }
+    },
+    "capacitor": {
+      "title": "Capacitor",
+      "description": "Capacitor symbol. Can be polarized (electrolytic) or non-polarized.",
+      "properties": {
+        "pins": {
+          "type": "object",
+          "properties": {
+            "1": { "type": "string" },
+            "2": { "type": "string" }
+          },
+          "default": { "1": "1", "2": "2" }
+        },
+        "polarized": {
+          "type": "boolean",
+          "default": false,
+          "description": "If true, shows '+' marker for electrolytic capacitor."
+        }
+      }
+    },
+    "connector": {
+      "title": "Connector (N-pin)",
+      "description": "Multi-pin connector (header, socket, etc.).",
+      "properties": {
+        "pin_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of pins. Required if 'pins' array not provided."
+        },
+        "pins": {
+          "type": "array",
+          "description": "Optional list of pin definitions with custom names.",
+          "items": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "number": { "type": "string" },
+              "type": { "type": "string", "default": "passive" }
+            }
+          }
+        },
+        "orientation": {
+          "type": "string",
+          "enum": ["left", "right"],
+          "default": "right",
+          "description": "Side where pins exit the connector body."
+        }
+      }
+    },
+    "optocoupler": {
+      "title": "Optocoupler",
+      "description": "Optically isolated coupler. Pins: A (LED Anode), K (LED Cathode), C (Collector), E (Emitter).",
+      "properties": {
+        "pins": {
+          "type": "object",
+          "properties": {
+            "A": { "type": "string", "description": "LED Anode pin number." },
+            "K": { "type": "string", "description": "LED Cathode pin number." },
+            "C": { "type": "string", "description": "Phototransistor Collector pin number." },
+            "E": { "type": "string", "description": "Phototransistor Emitter pin number." }
+          },
+          "default": { "A": "1", "K": "2", "C": "3", "E": "4" }
+        }
+      }
+    },
+    "transformer": {
+      "title": "Transformer",
+      "description": "Two-winding transformer. Pins: P1, P2 (Primary), S1, S2 (Secondary).",
+      "properties": {
+        "pins": {
+          "type": "object",
+          "properties": {
+            "P1": { "type": "string", "description": "Primary winding pin 1." },
+            "P2": { "type": "string", "description": "Primary winding pin 2." },
+            "S1": { "type": "string", "description": "Secondary winding pin 1." },
+            "S2": { "type": "string", "description": "Secondary winding pin 2." }
+          },
+          "default": { "P1": "1", "P2": "2", "S1": "3", "S2": "4" }
+        }
+      }
+    }
+  }
+}

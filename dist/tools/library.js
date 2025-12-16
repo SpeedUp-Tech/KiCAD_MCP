@@ -105,6 +105,24 @@ export function registerLibraryTools(server, callKicadScript) {
         const result = await callKicadScript('get_symbol_pinout', params);
         return formatToolResult(result);
     });
+    server.tool('build_symbol_from_template', {
+        json: z
+            .string()
+            .describe('JSON string conforming to symbol.schema.json. Must include "type" and "name" fields. See schema for type-specific pin formats.'),
+    }, async (params) => {
+        // Parse the JSON string and pass to Python
+        let parsed;
+        try {
+            parsed = JSON.parse(params.json);
+        }
+        catch {
+            return {
+                content: [{ type: 'text', text: JSON.stringify({ success: false, message: 'Invalid JSON' }) }],
+            };
+        }
+        const result = await callKicadScript('build_symbol_from_template', parsed);
+        return formatToolResult(result);
+    });
     logger.info('Library tools registered');
 }
 //# sourceMappingURL=library.js.map
