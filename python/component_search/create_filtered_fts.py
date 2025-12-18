@@ -61,6 +61,9 @@ def create_filtered_fts(db_path: DatabasePath) -> None:
                 family IS NULL OR
                 family NOT IN ({excluded_placeholders})
               )
+          AND datasheet IS NOT NULL
+          AND datasheet != ''
+          AND LOWER(datasheet) != 'unknown'
     """
 
     cursor.execute(
