@@ -177,5 +177,23 @@ export function registerLibraryTools(server: McpServer, callKicadScript: Command
     }
   );
 
+  server.tool(
+    'add_symbol_entry',
+    {
+      mpn: z.string().min(1).describe('Manufacturer part number / symbol name'),
+      library: z.string().min(1).describe('Library name for grouping'),
+      sexp: z.string().min(1).describe('Symbol S-expression definition'),
+      overwrite: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe('If true, overwrite existing entry (default: false)'),
+    },
+    async (params) => {
+      const result = await callKicadScript('add_symbol_entry', params);
+      return formatToolResult(result);
+    }
+  );
+
   logger.info('Library tools registered');
 }

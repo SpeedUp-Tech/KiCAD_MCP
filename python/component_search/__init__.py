@@ -8,6 +8,7 @@ ported to other projects with minimal changes.
 from .service import (
     ComponentSearchConfig,
     SearchMPNResult,
+    add_searchable_part,
     search_datasheet,
     search_mpn_part,
 )
@@ -15,6 +16,7 @@ from .service import (
 __all__ = [
     "ComponentSearchConfig",
     "SearchMPNResult",
+    "add_searchable_part",
     "search_datasheet",
     "search_mpn_part",
 ]

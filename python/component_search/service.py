@@ -424,3 +424,223 @@ def search_mpn_part(
         "dbPath": str(resolved_db_path),
         "results": [item.to_dict() for item in results],
     }
+
+
+def add_searchable_part(
+    mpn: str,
+    library: str,
+    package: str,
+    *,
+    footprint: str = "",
+    datasheet: str = "",
+    attributes: Optional[Dict[str, str]] = None,
+    db_path: Optional[Union[Path, str]] = None,
+    config: Optional[ComponentSearchConfig] = None,
+    rebuild_fts: bool = True,
+) -> Dict[str, object]:
+    """
+    Add a component entry that will be searchable via search_mpn_part().
+
+    Args:
+        mpn: Manufacturer part number (primary search field)
+        library: Library/category name for grouping
+        package: Physical package type (e.g., "SOT-23", "QFN-24")
+        footprint: Optional KiCad footprint path
+        datasheet: Optional datasheet URL
+        attributes: Optional dict of searchable specs (key-value pairs)
+        db_path: Override the default database path
+        config: Optional ComponentSearchConfig
+        rebuild_fts: Whether to rebuild the FTS index after insert (default True)
+
+    Returns:
+        Dict with success status and the assigned LCSC ID
+    """
+    if not mpn or not mpn.strip():
+        return {
+            "success": False,
+            "message": "mpn parameter is required",
+            "errorDetails": "The MPN was empty or missing",
+        }
+
+    if not library or not library.strip():
+        return {
+            "success": False,
+            "message": "library parameter is required",
+            "errorDetails": "The library was empty or missing",
+        }
+
+    if not package or not package.strip():
+        return {
+            "success": False,
+            "message": "package parameter is required",
+            "errorDetails": "The package was empty or missing",
+        }
+
+    settings = config or ComponentSearchConfig()
+    resolved_db_path = Path(db_path).expanduser() if db_path else settings.db_path
+
+    if not resolved_db_path.exists():
+        return {
+            "success": False,
+            "message": f"Database not found: {resolved_db_path}",
+            "errorDetails": "Ensure the database exists",
+        }
+
+    mpn = mpn.strip()
+    library = library.strip()
+    package = package.strip()
+
+    # Build extra JSON with attributes
+    extra_data: Dict[str, object] = {}
+    if datasheet:
+        extra_data["datasheet"] = {"pdf": datasheet}
+    if attributes:
+        extra_data["attributes"] = attributes
+    extra_json = json.dumps(extra_data) if extra_data else None
+
+    # Get a fresh connection for writing (don't use cached read-only connection)
+    conn = sqlite3.connect(str(resolved_db_path))
+    conn.row_factory = sqlite3.Row
+
+    try:
+        # Find or create category
+        category_id = _find_or_create_category(conn, library)
+
+        # Generate next LCSC ID (use negative range to avoid collisions with real JLCPCB IDs)
+        cursor = conn.execute("SELECT MIN(lcsc) FROM components")
+        min_lcsc = cursor.fetchone()[0]
+        if min_lcsc is None or min_lcsc >= 0:
+            new_lcsc = -1
+        else:
+            new_lcsc = min_lcsc - 1
+
+        # Check if MPN already exists in this library
+        cursor = conn.execute(
+            """
+            SELECT c.lcsc FROM components c
+            LEFT JOIN categories cat ON c.category_id = cat.id
+            WHERE c.mfr = ?
+              AND (cat.category = ? OR (cat.category IS NULL AND ? = 'Uncategorized'))
+            """,
+            (mpn, library, library),
+        )
+        existing = cursor.fetchone()
+        if existing:
+            return {
+                "success": False,
+                "message": f"Part {mpn} already exists in library {library}",
+                "errorDetails": f"Existing LCSC: {existing[0]}",
+                "lcsc": existing[0],
+            }
+
+        # Insert the component
+        conn.execute(
+            """
+            INSERT INTO components (
+                lcsc, category_id, mfr, package, joints, manufacturer_id,
+                basic, description, datasheet, stock, price, last_update,
+                extra, flag, last_on_stock, preferred, symbol_lib, spice_model, footprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                new_lcsc,
+                category_id,
+                mpn,
+                package,
+                0,  # joints
+                0,  # manufacturer_id
+                0,  # basic
+                f"{mpn} - {library}",  # description
+                datasheet or "",
+                0,  # stock
+                "[]",  # price
+                0,  # last_update
+                extra_json,
+                0,  # flag
+                0,  # last_on_stock
+                0,  # preferred
+                1,  # symbol_lib = 1 (required for FTS filtering)
+                0,  # spice_model = 0 (no SPICE model)
+                footprint or "",
+            ),
+        )
+        conn.commit()
+
+        # Rebuild FTS index if requested
+        if rebuild_fts:
+            _rebuild_fts_for_entry(conn, new_lcsc)
+
+        return {
+            "success": True,
+            "message": f"Added {mpn} to {library}",
+            "lcsc": new_lcsc,
+            "mpn": mpn,
+            "library": library,
+            "package": package,
+            "dbPath": str(resolved_db_path),
+        }
+
+    except sqlite3.Error as err:
+        logger.error("SQLite error adding searchable part: %s", err)
+        return {
+            "success": False,
+            "message": "Failed to add part",
+            "errorDetails": str(err),
+        }
+    finally:
+        conn.close()
+
+
+def _find_or_create_category(conn: sqlite3.Connection, library: str) -> int:
+    """Find existing category or create a new one for the given library name."""
+    # First try to find an existing category
+    cursor = conn.execute(
+        "SELECT id FROM categories WHERE category = ? LIMIT 1",
+        (library,),
+    )
+    row = cursor.fetchone()
+    if row:
+        return row[0]
+
+    # Create new category (use library name for both category and subcategory)
+    cursor = conn.execute("SELECT MAX(id) FROM categories")
+    max_id = cursor.fetchone()[0] or 0
+    new_id = max_id + 1
+
+    conn.execute(
+        "INSERT INTO categories (id, category, subcategory) VALUES (?, ?, ?)",
+        (new_id, library, library),
+    )
+    return new_id
+
+
+def _rebuild_fts_for_entry(conn: sqlite3.Connection, lcsc: int) -> None:
+    """Add a single entry to the FTS index."""
+    from .constants import FILTERED_FTS_TABLE
+
+    # Get the entry from the view
+    cursor = conn.execute(
+        """
+        SELECT lcsc, mpn, package, family, class, specs
+        FROM v_components_search
+        WHERE lcsc = ?
+        """,
+        (lcsc,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return
+
+    # Insert into FTS table
+    try:
+        conn.execute(
+            f"""
+            INSERT INTO {FILTERED_FTS_TABLE} (lcsc, mpn, package, family, class, specs)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (row["lcsc"], row["mpn"], row["package"], row["family"], row["class"], row["specs"]),
+        )
+        conn.commit()
+    except sqlite3.Error:
+        # FTS table might not exist or entry might already exist
+        pass

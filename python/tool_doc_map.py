@@ -55,6 +55,10 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/commands/database_tools/library_schematic.py",
         ("LibraryManager", "list_available_libraries"),
     ),
+    "add_symbol_entry": (
+        "python/commands/database_tools/library_schematic.py",
+        ("LibraryManager", "add_symbol_entry"),
+    ),
     "export_schematic_pdf": ("python/commands/pcb/export.py", ("ExportCommands", "export_pdf")),
     "export_schematic_svg": ("python/commands/pcb/export.py", ("ExportCommands", "export_svg")),
     "run_erc": ("python/kicad_interface.py", ("KiCADInterface", "_handle_run_erc")),
@@ -67,6 +71,7 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
     "get_schematic_state": ("python/commands/kicad_schematics/schematic_state.py", ("get_schematic_state",)),
     "search_mpn_part": ("python/commands/database_tools/component_search.py", ("ComponentSearchCommands", "search_mpn_part")),
     "search_datasheet": ("python/commands/database_tools/component_search.py", ("ComponentSearchCommands", "search_datasheet")),
+    "add_searchable_part": ("python/commands/database_tools/component_search.py", ("ComponentSearchCommands", "add_searchable_part")),
     "run_spice_simulation_testcase": (
         "python/spice_tools/testbench_runner.py",
         ("run_use_case",),

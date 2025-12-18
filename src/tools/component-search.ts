@@ -173,4 +173,85 @@ export function registerComponentSearchTools(
       };
     }
   );
+
+  server.tool(
+    'add_searchable_part',
+    toolDescription('add_searchable_part'),
+    {
+      mpn: z
+        .string()
+        .min(1)
+        .describe('Manufacturer part number (primary search field)'),
+      library: z
+        .string()
+        .min(1)
+        .describe('Library/category name for grouping (e.g., "Power_Supply_Chip", "MOSFET")'),
+      package: z
+        .string()
+        .min(1)
+        .describe('Physical package type (e.g., "SOT-23", "QFN-24", "SOP-8")'),
+      footprint: z
+        .string()
+        .optional()
+        .describe('Optional KiCad footprint path (e.g., "Package_TO_SOT_SMD:SOT-23")'),
+      datasheet: z
+        .string()
+        .optional()
+        .describe('Optional URL to datasheet PDF'),
+      attributes: z
+        .record(z.string())
+        .optional()
+        .describe('Optional dict of searchable specs as key-value pairs'),
+    },
+    async ({ mpn, library, package: pkg, footprint, datasheet, attributes }) => {
+      const result = await callKicadScript('add_searchable_part', {
+        mpn,
+        library,
+        package: pkg,
+        footprint: footprint ?? '',
+        datasheet: datasheet ?? '',
+        attributes: attributes ?? undefined,
+      });
+
+      if (!result || typeof result !== 'object') {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: 'Add searchable part returned an unexpected response.',
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      const payload = result as Record<string, unknown>;
+      const success = payload.success === true;
+
+      if (!success) {
+        const message =
+          typeof payload.message === 'string'
+            ? payload.message
+            : JSON.stringify({ success: false }, null, 2);
+        return {
+          content: [
+            {
+              type: 'text',
+              text: message,
+            },
+          ],
+          isError: true,
+        };
+      }
+
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify(payload, null, 2),
+          },
+        ],
+      };
+    }
+  );
 }

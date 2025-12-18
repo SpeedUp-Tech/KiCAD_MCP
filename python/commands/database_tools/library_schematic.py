@@ -507,6 +507,125 @@ class LibraryManager:
         # Default fallback
         return {"library": "Device", "symbol": "R"}
 
+    @staticmethod
+    def add_symbol_entry(params: Dict[str, Any]) -> Dict[str, Any]:
+        """Add a symbol entry to the symbol_index database.
+
+        Required parameters:
+            mpn: Manufacturer part number / symbol name
+            library: Library name for grouping
+            sexp: Symbol S-expression definition
+
+        Optional parameters:
+            symbolDbPath: Override the default symbol database path
+            overwrite: If True, overwrite existing entry (default False)
+
+        Returns:
+            Dict with success status and inserted symbol info
+        """
+        mpn = params.get("mpn")
+        library = params.get("library")
+        sexp = params.get("sexp")
+        db_override = params.get("symbolDbPath")
+        overwrite = params.get("overwrite", False)
+
+        # Validate required parameters
+        if not isinstance(mpn, str) or not mpn.strip():
+            return {
+                "success": False,
+                "message": "mpn parameter is required and must be a non-empty string",
+                "errorDetails": "The 'mpn' parameter was missing or empty",
+            }
+
+        if not isinstance(library, str) or not library.strip():
+            return {
+                "success": False,
+                "message": "library parameter is required and must be a non-empty string",
+                "errorDetails": "The 'library' parameter was missing or empty",
+            }
+
+        if not isinstance(sexp, str) or not sexp.strip():
+            return {
+                "success": False,
+                "message": "sexp parameter is required and must be a non-empty string",
+                "errorDetails": "The 'sexp' parameter was missing or empty",
+            }
+
+        mpn = mpn.strip()
+        library = library.strip()
+        sexp = sexp.strip()
+
+        # Resolve database path
+        db_path = DEFAULT_SYMBOL_DB
+        if db_override:
+            candidate = Path(str(db_override)).expanduser()
+            if not candidate.is_absolute():
+                candidate = (PROJECT_ROOT / candidate).resolve()
+            db_path = candidate
+
+        if not db_path.exists():
+            return {
+                "success": False,
+                "message": f"Symbol database not found at {db_path}",
+                "errorDetails": "Ensure the database exists",
+            }
+
+        try:
+            conn = sqlite3.connect(str(db_path))
+            conn.row_factory = sqlite3.Row
+
+            # Check if entry already exists
+            cursor = conn.execute(
+                "SELECT mpn, library FROM symbol_index WHERE mpn = ? AND library = ?",
+                (mpn, library),
+            )
+            existing = cursor.fetchone()
+
+            if existing and not overwrite:
+                conn.close()
+                return {
+                    "success": False,
+                    "message": f"Symbol {mpn} already exists in library {library}",
+                    "errorDetails": "Use overwrite=True to replace the existing entry",
+                    "mpn": mpn,
+                    "library": library,
+                }
+
+            if existing and overwrite:
+                # Update existing entry
+                conn.execute(
+                    "UPDATE symbol_index SET sexp = ? WHERE mpn = ? AND library = ?",
+                    (sexp, mpn, library),
+                )
+                action = "Updated"
+            else:
+                # Insert new entry
+                conn.execute(
+                    "INSERT INTO symbol_index (mpn, library, sexp) VALUES (?, ?, ?)",
+                    (mpn, library, sexp),
+                )
+                action = "Added"
+
+            conn.commit()
+            conn.close()
+
+            logger.info(f"{action} symbol {mpn} in library {library}")
+            return {
+                "success": True,
+                "message": f"{action} symbol {mpn} in library {library}",
+                "mpn": mpn,
+                "library": library,
+                "dbPath": str(db_path),
+            }
+
+        except sqlite3.Error as err:
+            logger.error("SQLite error adding symbol entry: %s", err)
+            return {
+                "success": False,
+                "message": "Failed to add symbol entry",
+                "errorDetails": str(err),
+            }
+
 if __name__ == '__main__':
     # Example Usage (for testing)
     # List available libraries

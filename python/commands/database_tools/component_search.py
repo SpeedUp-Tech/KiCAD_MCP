@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional, Union, List
 
 from component_search import (
     ComponentSearchConfig,
+    add_searchable_part as insert_part,
     search_datasheet as lookup_datasheet,
     search_mpn_part as execute_search,
 )
@@ -115,5 +116,74 @@ class ComponentSearchCommands:
             return {
                 "success": False,
                 "message": "Datasheet lookup encountered an unexpected error",
+                "errorDetails": str(exc),
+            }
+
+    def add_searchable_part(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Add a component entry that will be searchable via search_mpn_part().
+
+        Required parameters:
+            mpn: Manufacturer part number (primary search field)
+            library: Library/category name for grouping
+            package: Physical package type (e.g., "SOT-23", "QFN-24")
+
+        Optional parameters:
+            footprint: KiCad footprint path
+            datasheet: URL to datasheet PDF
+            attributes: Dict of searchable specs (key-value pairs)
+        """
+        mpn = params.get("mpn")
+        library = params.get("library")
+        package = params.get("package")
+        footprint = params.get("footprint", "")
+        datasheet = params.get("datasheet", "")
+        attributes = params.get("attributes")
+        db_path = params.get("dbPath")
+
+        if not isinstance(mpn, str) or not mpn.strip():
+            return {
+                "success": False,
+                "message": "mpn parameter is required and must be a non-empty string",
+                "errorDetails": "The 'mpn' parameter was missing or empty",
+            }
+
+        if not isinstance(library, str) or not library.strip():
+            return {
+                "success": False,
+                "message": "library parameter is required and must be a non-empty string",
+                "errorDetails": "The 'library' parameter was missing or empty",
+            }
+
+        if not isinstance(package, str) or not package.strip():
+            return {
+                "success": False,
+                "message": "package parameter is required and must be a non-empty string",
+                "errorDetails": "The 'package' parameter was missing or empty",
+            }
+
+        # Validate attributes if provided
+        if attributes is not None and not isinstance(attributes, dict):
+            return {
+                "success": False,
+                "message": "attributes must be a dict if provided",
+                "errorDetails": "The 'attributes' parameter was not a dictionary",
+            }
+
+        try:
+            return insert_part(
+                mpn,
+                library,
+                package,
+                footprint=footprint if isinstance(footprint, str) else "",
+                datasheet=datasheet if isinstance(datasheet, str) else "",
+                attributes=attributes,
+                db_path=self._resolve_db_path(db_path),
+                config=self._config,
+            )
+        except Exception as exc:  # pragma: no cover - defensive guard
+            logger.error("Unhandled error adding searchable part: %s", exc, exc_info=True)
+            return {
+                "success": False,
+                "message": "Failed to add searchable part",
                 "errorDetails": str(exc),
             }

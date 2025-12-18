@@ -242,6 +242,7 @@ class KiCADInterface:
             "duplicate_component": self.component_commands.duplicate_component,
             "search_mpn_part": self.component_search_commands.search_mpn_part,
             "search_datasheet": self.component_search_commands.search_datasheet,
+            "add_searchable_part": self.component_search_commands.add_searchable_part,
 
             # Routing commands
             "add_net": self.routing_commands.add_net,
@@ -270,6 +271,7 @@ class KiCADInterface:
             "create_symbol": self.symbol_library.create_symbol,
             "create_footprint": self.footprint_manager.create_footprint,
             "get_symbol_pinout": self.symbol_library.get_symbol_pinout,
+            "add_symbol_entry": self.symbol_library.add_symbol_entry,
             "build_symbol_from_template": self._handle_build_symbol_from_template,
             "search_footprint": self._handle_search_footprint,
 
