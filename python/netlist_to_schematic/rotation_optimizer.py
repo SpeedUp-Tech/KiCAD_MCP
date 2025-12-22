@@ -288,9 +288,28 @@ def run_elk_layout(elk_input: dict, work_dir: Path) -> dict:
     return elk_output
 
 
-def find_non_primitive_parts(circuit) -> list:
-    """Find all non-primitive parts in the circuit."""
-    return [p for p in circuit.parts if is_non_primitive(p)]
+def find_non_primitive_parts(circuit, skip_prefixes: list[str] | None = None) -> list:
+    """
+    Find all non-primitive parts in the circuit.
+
+    Args:
+        circuit: SKiDL Circuit object
+        skip_prefixes: List of reference prefixes to skip (e.g., ["U"] to skip ICs)
+
+    Returns:
+        List of non-primitive parts eligible for rotation optimization
+    """
+    skip_prefixes = skip_prefixes or []
+    parts = []
+    for p in circuit.parts:
+        if not is_non_primitive(p):
+            continue
+        # Extract prefix (letters at start of reference)
+        prefix = ''.join(c for c in p.ref if c.isalpha())
+        if prefix in skip_prefixes:
+            continue
+        parts.append(p)
+    return parts
 
 
 def optimize_rotations(
@@ -303,7 +322,7 @@ def optimize_rotations(
 ) -> tuple[dict, dict[str, int]]:
     """
     Find optimal rotations for non-primitive components.
-    
+
     Args:
         circuit: SKiDL Circuit object
         logic_hints: Logic hints dict
@@ -311,12 +330,13 @@ def optimize_rotations(
         builder_class: ElkGraphBuilder class
         work_dir: Working directory for temp files
         verbose: Print progress
-        
+
     Returns:
         Tuple of (best_elk_output, rotation_map)
         rotation_map is {ref: rotation_degrees}
     """
-    non_primitives = find_non_primitive_parts(circuit)
+    # Skip ICs (prefix "U") - they should keep their standard orientation
+    non_primitives = find_non_primitive_parts(circuit, skip_prefixes=["U"])
     
     if not non_primitives:
         if verbose:
