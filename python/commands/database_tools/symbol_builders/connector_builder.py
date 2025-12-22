@@ -41,19 +41,19 @@ def build_connector_symbol(params: Dict[str, Any]) -> str:
     orientation = params.get("orientation", "right").lower()
     
     pin_spacing = 2.54
-    total_height = (pin_count - 1) * pin_spacing + 2.54
-    # Snap half_height to grid to ensure body and pin positions are grid-aligned
-    half_height = snap_to_grid(total_height / 2)
+    margin = pin_spacing  # 2.54mm margin beyond outermost pins
     body_width = 5.08
+
+    # Calculate pin start position (snapped to grid)
+    start_y = snap_to_grid((pin_count - 1) * pin_spacing / 2)
+
+    # Body height based on pin extent plus margin (symmetric around y=0)
+    half_height = start_y + margin
 
     graphics = []
 
     # Body rectangle
     graphics.append(build_rectangle(-body_width/2, half_height, body_width/2, -half_height))
-
-    # Pin markers (small boxes or circles at pin positions)
-    # Snap start_y to grid for even pin counts
-    start_y = snap_to_grid((pin_count - 1) * pin_spacing / 2)
 
     for i, pin_def in enumerate(pins_input):
         y = start_y - i * pin_spacing

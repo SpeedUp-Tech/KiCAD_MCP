@@ -50,23 +50,30 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
     top_pins = [p for p in pins if p["orientation"] == "up"]
     bottom_pins = [p for p in pins if p["orientation"] == "down"]
     
-    # Calculate body height if not specified
+    # Calculate body dimensions
     pin_spacing = 2.54
-    if body_height is None:
-        max_vertical = max(len(left_pins), len(right_pins), 1)
-        body_height = max(5.08, max_vertical * pin_spacing + pin_spacing)
-    
-    # Adjust body width for top/bottom pins
-    if top_pins or bottom_pins:
-        max_horizontal = max(len(top_pins), len(bottom_pins), 1)
-        min_width = max_horizontal * pin_spacing + pin_spacing
-        body_width = max(body_width, min_width)
-    
-    # Snap body dimensions to grid to ensure pin positions are grid-aligned
-    # This is critical for schematic wire connections
-    half_w = snap_to_grid(body_width / 2)
-    half_h = snap_to_grid(body_height / 2)
+    margin = pin_spacing  # 2.54mm margin beyond outermost pins
     pin_length = 2.54
+
+    # Calculate pin start positions (these get snapped to grid)
+    max_vertical = max(len(left_pins), len(right_pins), 1)
+    max_horizontal = max(len(top_pins), len(bottom_pins), 1)
+
+    vert_start_y = snap_to_grid((max_vertical - 1) * pin_spacing / 2)
+    horiz_start_x = snap_to_grid((max_horizontal - 1) * pin_spacing / 2)
+
+    # Body half dimensions = outermost pin position + margin
+    # Since start positions are on grid and margin is on grid, result is on grid
+    if body_height is None:
+        half_h = vert_start_y + margin
+    else:
+        half_h = snap_to_grid(body_height / 2)
+
+    if top_pins or bottom_pins:
+        min_half_w = horiz_start_x + margin
+        half_w = max(snap_to_grid(body_width / 2), min_half_w)
+    else:
+        half_w = snap_to_grid(body_width / 2)
     
     graphics = []
     
