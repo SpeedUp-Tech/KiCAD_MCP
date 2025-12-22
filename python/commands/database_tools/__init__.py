@@ -5,4 +5,5 @@ __all__ = [
     'library_export',
     'component_search',
     'footprint',
+    'symbol_visualizer',
 ]
