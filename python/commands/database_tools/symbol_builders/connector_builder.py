@@ -6,7 +6,7 @@ from typing import Dict, Any, List
 
 from .base import (
     format_float, build_pin, build_polyline, build_rectangle,
-    wrap_symbol, get_common_properties
+    wrap_symbol, get_common_properties, snap_to_grid
 )
 
 
@@ -42,17 +42,19 @@ def build_connector_symbol(params: Dict[str, Any]) -> str:
     
     pin_spacing = 2.54
     total_height = (pin_count - 1) * pin_spacing + 2.54
-    half_height = total_height / 2
+    # Snap half_height to grid to ensure body and pin positions are grid-aligned
+    half_height = snap_to_grid(total_height / 2)
     body_width = 5.08
-    
+
     graphics = []
-    
+
     # Body rectangle
     graphics.append(build_rectangle(-body_width/2, half_height, body_width/2, -half_height))
-    
+
     # Pin markers (small boxes or circles at pin positions)
-    start_y = (pin_count - 1) * pin_spacing / 2
-    
+    # Snap start_y to grid for even pin counts
+    start_y = snap_to_grid((pin_count - 1) * pin_spacing / 2)
+
     for i, pin_def in enumerate(pins_input):
         y = start_y - i * pin_spacing
         pin_name = pin_def.get("name", f"Pin_{i+1}")

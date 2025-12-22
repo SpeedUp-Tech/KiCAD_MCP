@@ -4,6 +4,14 @@ Base utilities and shared functions for symbol builders.
 
 from typing import Dict, Any, List, Optional
 
+# KiCad schematic grid size
+GRID_SIZE = 2.54
+
+
+def snap_to_grid(value: float, grid: float = GRID_SIZE) -> float:
+    """Snap a value to the nearest grid point."""
+    return round(value / grid) * grid
+
 
 def format_float(value: float) -> str:
     """Format float to KiCad-friendly string (no trailing zeros)."""

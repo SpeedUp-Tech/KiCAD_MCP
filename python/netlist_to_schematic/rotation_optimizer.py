@@ -260,10 +260,12 @@ def score_layout(elk_output: dict) -> float:
 def run_elk_layout(elk_input: dict, work_dir: Path) -> dict:
     """Run ELK layout and return the output graph."""
     elk_runner = Path(__file__).parent / "elk" / "elk_layout_runner.cjs"
-    
+
     input_path = work_dir / "_rotation_opt_input.json"
     output_path = work_dir / "_rotation_opt_output.json"
-    
+
+    work_dir.mkdir(parents=True, exist_ok=True)
+
     with open(input_path, "w") as f:
         json.dump(elk_input, f)
     

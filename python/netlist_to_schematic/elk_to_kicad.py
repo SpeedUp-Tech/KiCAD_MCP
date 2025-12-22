@@ -211,18 +211,18 @@ def run_conversion(
         pos_y = snap_to_grid((node_y + origin_off_y) * SCALE_FACTOR + shift_y)
         
         # Build pin positions from port properties
-        # Pin positions must also be snapped to grid for wire connections
+        # Pin positions are exact: symbol origin + pin offset (no extra snapping)
+        # The offsets come from the symbol definition which should already be grid-aligned
         for port in node.get("ports", []):
             port_id = port["id"]
             port_props = port.get("properties", {})
-            
+
             if "kicad_offset_x" in port_props and "kicad_offset_y" in port_props:
                 # Pin position = symbol origin + pin offset
-                # Pin offsets are defined on 2.54mm grid in KiCad symbols
                 # Note: KiCad Y-axis is inverted (positive Y goes down)
                 # The kicad_offset values are already rotated in elk_graph_adapter
-                pin_x = snap_to_grid(pos_x + port_props["kicad_offset_x"])
-                pin_y = snap_to_grid(pos_y - port_props["kicad_offset_y"])
+                pin_x = pos_x + port_props["kicad_offset_x"]
+                pin_y = pos_y - port_props["kicad_offset_y"]
                 pin_positions[port_id] = (pin_x, pin_y)
         
         # Get rotation from node properties (set by rotation optimizer)
@@ -260,17 +260,16 @@ def run_conversion(
         port_y = port.get("y", 0)
         
         # Calculate label position at the port (connection point)
+        # Label positions should be on grid for clean schematic appearance
         label_x = snap_to_grid((node_x + port_x) * SCALE_FACTOR + shift_x)
         label_y = snap_to_grid((node_y + port_y) * SCALE_FACTOR + shift_y)
-        
-        # Store port position for wire connections (same as label position)
+
+        # Store port position for wire connections
+        # Use the same snapped position since the label IS at this position
         for p in node.get("ports", []):
             port_id = p["id"]
-            p_x = p.get("x", 0)
-            p_y = p.get("y", 0)
-            port_pos_x = snap_to_grid((node_x + p_x) * SCALE_FACTOR + shift_x)
-            port_pos_y = snap_to_grid((node_y + p_y) * SCALE_FACTOR + shift_y)
-            pin_positions[port_id] = (port_pos_x, port_pos_y)
+            # Label port positions match the label position (snapped)
+            pin_positions[port_id] = (label_x, label_y)
         
         try:
             print(f"Adding Net Label '{net_name}' ({label_type}, {label_shape}, {label_role}) at ({label_x:.2f}, {label_y:.2f})")
@@ -288,57 +287,70 @@ def run_conversion(
     # Also track net -> first wire endpoint (for adding labels to unlabeled nets)
     net_first_endpoint: dict[str, tuple[float, float]] = {}
 
-    # Add Wires using ELK's routed sections directly
-    # Since we now use FIXED_POS, ELK's port positions match KiCad pin positions
+    # Add Wires using ELK's routed sections
+    # Wire endpoints must use exact pin positions from pin_positions map
+    # to ensure proper connections (no snapping that could cause misalignment)
     for edge in graph.get("edges", []):
         edge_id = edge.get("id", "unknown")
-        
+
         # Skip phantom edges - they're for layout guidance only, not real wires
         if edge_id.startswith(("flow_", "chain_", "align_", "adjacent_", "halign_")):
             continue
-            
+
         sections = edge.get("sections", [])
-        
+
         if not sections:
             print(f"Skipping edge {edge_id}: no routing sections")
             continue
-        
+
         # Get net_name from edge properties if available
         edge_props = edge.get("properties", {})
         net_name = edge_props.get("net_name")
-        
+
+        # Get source and target port IDs for exact pin positions
+        sources = edge.get("sources", [])
+        targets = edge.get("targets", [])
+        source_port_id = sources[0] if sources else None
+        target_port_id = targets[0] if targets else None
+
         for section in sections:
             points: List[List[float]] = []
-            
-            # Start point from ELK
-            start = section.get("startPoint", {})
-            start_x = snap_to_grid(start.get("x", 0) * SCALE_FACTOR + shift_x)
-            start_y = snap_to_grid(start.get("y", 0) * SCALE_FACTOR + shift_y)
+
+            # Start point: use exact pin position if available, otherwise transform ELK coords
+            if source_port_id and source_port_id in pin_positions:
+                start_x, start_y = pin_positions[source_port_id]
+            else:
+                start = section.get("startPoint", {})
+                start_x = start.get("x", 0) * SCALE_FACTOR + shift_x
+                start_y = start.get("y", 0) * SCALE_FACTOR + shift_y
             points.append([start_x, start_y])
-            
-            # Bend points from ELK routing
+
+            # Bend points from ELK routing - snap these for clean routing
             for bp in section.get("bendPoints", []):
                 bp_x = snap_to_grid(bp["x"] * SCALE_FACTOR + shift_x)
                 bp_y = snap_to_grid(bp["y"] * SCALE_FACTOR + shift_y)
                 points.append([bp_x, bp_y])
-            
-            # End point from ELK
-            end = section.get("endPoint", {})
-            end_x = snap_to_grid(end.get("x", 0) * SCALE_FACTOR + shift_x)
-            end_y = snap_to_grid(end.get("y", 0) * SCALE_FACTOR + shift_y)
+
+            # End point: use exact pin position if available, otherwise transform ELK coords
+            if target_port_id and target_port_id in pin_positions:
+                end_x, end_y = pin_positions[target_port_id]
+            else:
+                end = section.get("endPoint", {})
+                end_x = end.get("x", 0) * SCALE_FACTOR + shift_x
+                end_y = end.get("y", 0) * SCALE_FACTOR + shift_y
             points.append([end_x, end_y])
-            
+
             # Track first endpoint for nets that need labels
             if net_name and net_name not in labeled_nets and net_name not in net_first_endpoint:
                 net_first_endpoint[net_name] = (start_x, start_y)
-            
+
             try:
                 bend_count = len(section.get("bendPoints", []))
                 print(f"Adding wire {edge_id}: ({start_x:.2f}, {start_y:.2f}) -> ({end_x:.2f}, {end_y:.2f}) [{bend_count} bends]")
                 ConnectionManager.add_wire(
-                    schematic, 
-                    start_point=None, 
-                    end_point=None, 
+                    schematic,
+                    start_point=None,
+                    end_point=None,
                     properties={"points": points}
                 )
             except Exception as e:

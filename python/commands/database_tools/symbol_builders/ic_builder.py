@@ -9,7 +9,7 @@ from typing import Dict, Any, List
 
 from .base import (
     format_float, build_property, build_pin, build_rectangle,
-    build_circle, wrap_symbol, get_common_properties
+    build_circle, wrap_symbol, get_common_properties, snap_to_grid
 )
 
 
@@ -62,8 +62,10 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
         min_width = max_horizontal * pin_spacing + pin_spacing
         body_width = max(body_width, min_width)
     
-    half_w = body_width / 2
-    half_h = body_height / 2
+    # Snap body dimensions to grid to ensure pin positions are grid-aligned
+    # This is critical for schematic wire connections
+    half_w = snap_to_grid(body_width / 2)
+    half_h = snap_to_grid(body_height / 2)
     pin_length = 2.54
     
     graphics = []
