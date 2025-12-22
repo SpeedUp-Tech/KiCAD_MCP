@@ -76,7 +76,8 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
         graphics.append(build_circle(-half_w + 1.27, half_h - 1.27, 0.38))
     
     # Build pins
-    # Left side pins (pointing left, rotation 180)
+    # In KiCAD, pin rotation indicates direction the pin points TOWARD (toward body center)
+    # Left side pins: connection point is left of body, pin points RIGHT (rotation=0)
     left_start_y = ((len(left_pins) - 1) * pin_spacing / 2) if left_pins else 0
     for i, pin in enumerate(left_pins):
         x = -half_w - pin_length
@@ -85,11 +86,11 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
             pin.get("type", "passive"),
             pin["name"],
             pin["number"],
-            x, y, rotation=180,
+            x, y, rotation=0,
             length=pin_length
         ))
-    
-    # Right side pins (pointing right, rotation 0)
+
+    # Right side pins: connection point is right of body, pin points LEFT (rotation=180)
     right_start_y = ((len(right_pins) - 1) * pin_spacing / 2) if right_pins else 0
     for i, pin in enumerate(right_pins):
         x = half_w + pin_length
@@ -98,11 +99,11 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
             pin.get("type", "passive"),
             pin["name"],
             pin["number"],
-            x, y, rotation=0,
+            x, y, rotation=180,
             length=pin_length
         ))
-    
-    # Top side pins (pointing up, rotation 90)
+
+    # Top side pins: connection point is above body, pin points DOWN (rotation=270)
     top_start_x = -((len(top_pins) - 1) * pin_spacing / 2) if top_pins else 0
     for i, pin in enumerate(top_pins):
         x = top_start_x + i * pin_spacing
@@ -111,11 +112,11 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
             pin.get("type", "passive"),
             pin["name"],
             pin["number"],
-            x, y, rotation=90,
+            x, y, rotation=270,
             length=pin_length
         ))
-    
-    # Bottom side pins (pointing down, rotation 270)
+
+    # Bottom side pins: connection point is below body, pin points UP (rotation=90)
     bottom_start_x = -((len(bottom_pins) - 1) * pin_spacing / 2) if bottom_pins else 0
     for i, pin in enumerate(bottom_pins):
         x = bottom_start_x + i * pin_spacing
@@ -124,7 +125,7 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
             pin.get("type", "passive"),
             pin["name"],
             pin["number"],
-            x, y, rotation=270,
+            x, y, rotation=90,
             length=pin_length
         ))
     

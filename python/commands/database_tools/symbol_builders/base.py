@@ -37,21 +37,24 @@ def build_property(name: str, value: str, x: float = 0, y: float = 0,
     )
 
 
-def build_pin(pin_type: str, name: str, number: str, 
+def build_pin(pin_type: str, name: str, number: str,
               x: float, y: float, rotation: int = 0,
               length: float = 2.54, shape: str = "line",
               font_size: float = 1.27, hide_name: bool = False,
               hide_number: bool = False) -> str:
     """
     Build a pin S-expression.
-    
+
     Args:
         pin_type: Pin electrical type (input, output, bidirectional, passive, power_in, etc.)
         name: Pin name
         number: Pin number
-        x, y: Pin position (connection point)
-        rotation: Pin rotation (0=right, 90=up, 180=left, 270=down)
-        length: Pin length
+        x, y: Pin position - this is where wires connect (outside the symbol body)
+        rotation: Direction the pin points TOWARD (toward body center):
+                  0=points right, 90=points up, 180=points left, 270=points down
+                  For left-side pins use 0, for right-side pins use 180,
+                  for top pins use 270, for bottom pins use 90.
+        length: Pin length (extends from connection point toward body)
         shape: Pin shape (line, inverted, clock, etc.)
         font_size: Font size for name/number
         hide_name: Whether to hide pin name

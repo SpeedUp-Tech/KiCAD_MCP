@@ -49,6 +49,30 @@ def get_supported_types() -> list:
     return list(_BUILDERS.keys())
 
 
+def build_symbol_from_json(json_data: Dict[str, Any]) -> str:
+    """
+    Build a KiCad symbol S-expression from a JSON object.
+
+    Args:
+        json_data: Dictionary containing "type" field and symbol parameters.
+                   Must include "type" and "name" fields.
+
+    Returns:
+        S-expression string for the symbol
+
+    Raises:
+        ValueError: If "type" is missing or not supported
+        KeyError: If required parameters are missing
+    """
+    params = json_data.copy()
+    symbol_type = params.pop("type", None)
+
+    if not symbol_type:
+        raise ValueError("'type' is required. Supported: " + ", ".join(get_supported_types()))
+
+    return build_symbol(symbol_type, params)
+
+
 def build_symbol(symbol_type: str, params: Dict[str, Any]) -> str:
     """
     Build a KiCad symbol S-expression.
