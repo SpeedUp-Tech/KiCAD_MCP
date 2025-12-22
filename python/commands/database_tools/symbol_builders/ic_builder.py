@@ -80,7 +80,8 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
     # Build pins
     # In KiCAD, pin rotation indicates direction the pin points TOWARD (toward body center)
     # Left side pins: connection point is left of body, pin points RIGHT (rotation=0)
-    left_start_y = ((len(left_pins) - 1) * pin_spacing / 2) if left_pins else 0
+    # Snap start position to grid to ensure all pins land on grid
+    left_start_y = snap_to_grid((len(left_pins) - 1) * pin_spacing / 2) if left_pins else 0
     for i, pin in enumerate(left_pins):
         x = -half_w - pin_length
         y = left_start_y - i * pin_spacing
@@ -93,7 +94,7 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
         ))
 
     # Right side pins: connection point is right of body, pin points LEFT (rotation=180)
-    right_start_y = ((len(right_pins) - 1) * pin_spacing / 2) if right_pins else 0
+    right_start_y = snap_to_grid((len(right_pins) - 1) * pin_spacing / 2) if right_pins else 0
     for i, pin in enumerate(right_pins):
         x = half_w + pin_length
         y = right_start_y - i * pin_spacing
@@ -106,7 +107,7 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
         ))
 
     # Top side pins: connection point is above body, pin points DOWN (rotation=270)
-    top_start_x = -((len(top_pins) - 1) * pin_spacing / 2) if top_pins else 0
+    top_start_x = snap_to_grid(-((len(top_pins) - 1) * pin_spacing / 2)) if top_pins else 0
     for i, pin in enumerate(top_pins):
         x = top_start_x + i * pin_spacing
         y = half_h + pin_length
@@ -119,7 +120,7 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
         ))
 
     # Bottom side pins: connection point is below body, pin points UP (rotation=90)
-    bottom_start_x = -((len(bottom_pins) - 1) * pin_spacing / 2) if bottom_pins else 0
+    bottom_start_x = snap_to_grid(-((len(bottom_pins) - 1) * pin_spacing / 2)) if bottom_pins else 0
     for i, pin in enumerate(bottom_pins):
         x = bottom_start_x + i * pin_spacing
         y = -half_h - pin_length

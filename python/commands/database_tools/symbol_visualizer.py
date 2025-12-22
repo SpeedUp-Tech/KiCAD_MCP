@@ -272,6 +272,9 @@ def _draw_pin(ax: Axes, pin: Dict[str, Any], scale: float = 1.0) -> None:
     # Draw pin line
     ax.plot([x, end_x], [y, end_y], color=color, linewidth=1.5, solid_capstyle='round')
 
+    # Draw connection point marker (small dot at the wire connection point)
+    ax.plot(x, y, 'o', color=color, markersize=4, markerfacecolor='white', markeredgewidth=1.5)
+
     # Draw inverted circle if style is inverted
     if style == 'inverted':
         circle_radius = 0.5
