@@ -745,18 +745,14 @@ class ElkGraphBuilder:
                     "height": 0
                 }
                 
-                # Get original (non-rotated) pin geometry for KiCad offset
-                original_pins = geom_data.get("pins", {})
-                
                 if pin.num in pins:
-                    p_geo = pins[pin.num]  # Rotated pin for ELK layout
-                    original_p_geo = original_pins.get(pin.num, p_geo)  # Original for KiCad
-                    
-                    # Store ORIGINAL KiCad pin offset for wire endpoint calculation
-                    # KiCad will apply the symbol rotation to these offsets
+                    p_geo = pins[pin.num]  # Rotated pin positions for both ELK and KiCad
+
+                    # Store ROTATED KiCad pin offset for wire endpoint calculation
+                    # When component is rotated, wire endpoints must match the rotated pin positions
                     port["properties"] = {
-                        "kicad_offset_x": original_p_geo["x"],
-                        "kicad_offset_y": original_p_geo["y"]
+                        "kicad_offset_x": p_geo["x"],
+                        "kicad_offset_y": p_geo["y"]
                     }
                     
                     # Calculate port position within ELK node using ROTATED positions

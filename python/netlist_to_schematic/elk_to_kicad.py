@@ -209,7 +209,7 @@ def run_conversion(
         # IMPORTANT: Snap to grid since ComponentManager will snap the symbol position
         pos_x = snap_to_grid((node_x + origin_off_x) * SCALE_FACTOR + shift_x)
         pos_y = snap_to_grid((node_y + origin_off_y) * SCALE_FACTOR + shift_y)
-        
+
         # Build pin positions from port properties
         # Pin positions are exact: symbol origin + pin offset (no extra snapping)
         # The offsets come from the symbol definition which should already be grid-aligned
@@ -224,10 +224,10 @@ def run_conversion(
                 pin_x = pos_x + port_props["kicad_offset_x"]
                 pin_y = pos_y - port_props["kicad_offset_y"]
                 pin_positions[port_id] = (pin_x, pin_y)
-        
+
         # Get rotation from node properties (set by rotation optimizer)
         rotation = meta.get("rotation", 0)
-        
+
         comp_def = {
             "reference": ref,
             "value": meta.get("value", "Val"),
