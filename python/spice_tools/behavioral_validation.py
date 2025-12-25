@@ -84,6 +84,40 @@ def _guess_pin_type(pin_name: str) -> str:
     if any(p in name for p in ("PROG", "ISET", "ICHG", "ILIM", "RSET")):
         return "programming"
     
+    # ========== DISCRETE COMPONENTS ==========
+    
+    # MOSFET gate (G)
+    if name == "G" or name.startswith("GATE"):
+        return "mosfet_gate"
+    
+    # MOSFET drain (D)
+    if name == "D" or name.startswith("DRAIN"):
+        return "mosfet_drain"
+    
+    # MOSFET source (S, S1, S2, S3, etc.)
+    if name == "S" or name.startswith("S") and (len(name) == 1 or name[1:].isdigit()) or name.startswith("SOURCE"):
+        return "mosfet_source"
+    
+    # Diode anode (A)
+    if name == "A" or name.startswith("ANODE"):
+        return "diode_anode"
+    
+    # Diode cathode (K)
+    if name == "K" or name.startswith("CATHODE"):
+        return "diode_cathode"
+    
+    # BJT base (B)
+    if name == "B" or name.startswith("BASE"):
+        return "bjt_base"
+    
+    # BJT collector (C) - be careful not to match capacitor references
+    if name == "C" or name.startswith("COLLECTOR"):
+        return "bjt_collector"
+    
+    # BJT emitter (E)
+    if name == "E" or name.startswith("EMITTER"):
+        return "bjt_emitter"
+    
     # Default: unknown
     return "unknown"
 
@@ -200,6 +234,69 @@ def _create_generic_harness(
             elif pin_type == "feedback":
                 # Feedback: resistor divider or just to ground
                 r = R(ref=f"R_{pin}", value=100000)
+                net += r[1]
+                GND += r[2]
+            
+            # ========== DISCRETE COMPONENTS ==========
+            
+            elif pin_type == "mosfet_gate":
+                # Gate: bias near threshold (0V for NMOS off, -Vth for PMOS off)
+                # Use 0V (ground-referenced) for safe default
+                r = R(ref=f"R_{pin}_GATE", value=10000)
+                net += r[1]
+                GND += r[2]
+            
+            elif pin_type == "mosfet_drain":
+                # Drain: power rail through load resistor
+                v = V(ref=f"V_{pin}_DRAIN", dc_value=power_voltage)
+                v_node = Net(f"{pin}_VDD")
+                v_node += v["p"]
+                GND += v["n"]
+                r = R(ref=f"R_{pin}_LOAD", value=100)
+                v_node += r[1]
+                net += r[2]
+            
+            elif pin_type == "mosfet_source":
+                # Source: ground reference (for NMOS) or low impedance
+                r = R(ref=f"R_{pin}_SRC", value=0.1)
+                net += r[1]
+                GND += r[2]
+            
+            elif pin_type == "diode_anode":
+                # Anode: current-limited source
+                v = V(ref=f"V_{pin}_ANODE", dc_value=power_voltage)
+                v_node = Net(f"{pin}_VCC")
+                v_node += v["p"]
+                GND += v["n"]
+                r = R(ref=f"R_{pin}_LIM", value=1000)
+                v_node += r[1]
+                net += r[2]
+            
+            elif pin_type == "diode_cathode":
+                # Cathode: ground reference
+                r = R(ref=f"R_{pin}_K", value=0.1)
+                net += r[1]
+                GND += r[2]
+            
+            elif pin_type == "bjt_base":
+                # Base: current-limited bias
+                r = R(ref=f"R_{pin}_BASE", value=10000)
+                net += r[1]
+                GND += r[2]
+            
+            elif pin_type == "bjt_collector":
+                # Collector: power through load
+                v = V(ref=f"V_{pin}_VCC", dc_value=power_voltage)
+                v_node = Net(f"{pin}_VCC")
+                v_node += v["p"]
+                GND += v["n"]
+                r = R(ref=f"R_{pin}_LOAD", value=1000)
+                v_node += r[1]
+                net += r[2]
+            
+            elif pin_type == "bjt_emitter":
+                # Emitter: ground or small resistor
+                r = R(ref=f"R_{pin}_E", value=10)
                 net += r[1]
                 GND += r[2]
                 
