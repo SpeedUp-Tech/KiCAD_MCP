@@ -281,6 +281,7 @@ def validate_spice_model(
     model_path: str | Path,
     expected_subckt_name: str,
     expected_pinout: Sequence[Dict[str, Any]] | None = None,
+    run_behavioral: bool = True,
 ) -> List[str]:
     """
     Validate a SPICE model file by parsing and smoke-instantiating its subcircuit.
@@ -289,6 +290,7 @@ def validate_spice_model(
         model_path: Filesystem path to the .lib/.spice file containing the model.
         expected_subckt_name: Name of the .SUBCKT expected in the library.
         expected_pinout: Ordered pinout description used for comparison and wiring.
+        run_behavioral: If True, also run behavioral validation (DC/transient).
 
     Returns:
         List of human-readable problems. Empty list means validation passed.
@@ -405,4 +407,14 @@ def validate_spice_model(
         except Exception:
             pass
 
+    # Run behavioral validation if requested and no structural problems
+    if run_behavioral and not problems:
+        from python.spice_tools.behavioral_validation import validate_model_behavior
+        behavioral_problems = validate_model_behavior(
+            model_path=model_path,
+            subckt_name=expected_subckt_name,
+        )
+        problems.extend(behavioral_problems)
+
     return problems
+
