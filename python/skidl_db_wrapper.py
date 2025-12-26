@@ -261,16 +261,29 @@ def Part(*args, **kwargs):
     if len(args_list) >= 2:
         name = args_list[1]
 
-    if isinstance(lib, str) and isinstance(name, str):
-        db_lib = _LIB_REGISTRY.resolve(lib, name, kwargs.get("tool"))
-        if db_lib:
-            if len(args_list) >= 1:
-                args_list[0] = db_lib
-            else:
-                kwargs["lib"] = db_lib
-            # Force kicad9 tool for database-backed parts to ensure correct pin parsing
-            if "tool" not in kwargs:
-                kwargs["tool"] = "kicad9"
+    if not isinstance(lib, str):
+        raise TypeError(
+            f"Part 'lib' must be a string, got {type(lib).__name__}. "
+        )
+    if not isinstance(name, str):
+        raise TypeError(
+            f"Part 'name' must be a string, got {type(name).__name__}. "
+        )
+    
+    db_lib = _LIB_REGISTRY.resolve(lib, name, kwargs.get("tool"))
+    if db_lib is None:
+        raise ValueError(
+            f"Symbol '{name}' not found in library '{lib}'"
+        )
+    
+    if len(args_list) >= 1:
+        args_list[0] = db_lib
+    else:
+        kwargs["lib"] = db_lib
+    # Force kicad9 tool for database-backed parts to ensure correct pin parsing
+    if "tool" not in kwargs:
+        kwargs["tool"] = "kicad9"
+    
     return _SkidlPart(*tuple(args_list), **kwargs)
 
 
