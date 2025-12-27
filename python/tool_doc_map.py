@@ -51,6 +51,10 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/kicad_interface.py",
         ("KiCADInterface", "_handle_execute_skidl_netlist"),
     ),
+    "execute_skidl_netlist_json": (
+        "python/commands/skidl_tools/netlist_json.py",
+        ("generate_skidl_netlist_json",),
+    ),
     "list_schematic_libraries": (
         "python/commands/database_tools/library_schematic.py",
         ("LibraryManager", "list_available_libraries"),

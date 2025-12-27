@@ -242,6 +242,16 @@ export function registerSchematicTools(server, callKicadScript) {
         });
         return formatToolResult(result);
     });
+    server.tool('execute_skidl_netlist_json', toolDescription('execute_skidl_netlist_json'), {
+        skidlPath: z.string().describe('Path to the SKiDL Python file containing subcircuit definitions'),
+        subcircuitName: z.string().optional().describe('Name of the @SubCircuit function to instantiate. If not provided, auto-detects from the module.'),
+    }, async ({ skidlPath, subcircuitName }) => {
+        const result = await callKicadScript('execute_skidl_netlist_json', {
+            skidlPath,
+            subcircuitName,
+        });
+        return formatToolResult(result);
+    });
     server.tool('list_schematic_libraries', toolDescription('list_schematic_libraries'), {
         searchPaths: z.array(z.string()).optional().describe('Optional glob patterns or directories to search'),
     }, async ({ searchPaths }) => {

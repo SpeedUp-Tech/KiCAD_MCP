@@ -336,7 +336,7 @@ def optimize_rotations(
         rotation_map is {ref: rotation_degrees}
     """
     # Skip ICs (prefix "U") - they should keep their standard orientation
-    non_primitives = find_non_primitive_parts(circuit, skip_prefixes=["U"])
+    non_primitives = find_non_primitive_parts(circuit, skip_prefixes=["U","J"])
     
     if not non_primitives:
         if verbose:

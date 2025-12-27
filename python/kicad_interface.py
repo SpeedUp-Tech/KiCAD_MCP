@@ -133,6 +133,7 @@ try:
     from commands.database_tools.component_search import ComponentSearchCommands
     from commands.kicad_schematics.erc_utils import prepare_module_erc_artifacts
     from commands.database_tools.library_export import export_project_libraries
+    from commands.skidl_tools.netlist_json import generate_skidl_netlist_json
     from python.spice_tools.testbench_runner import run_use_case
     from python.spice_tools.harness_sanity import harness_sanity_check
     from python.spice_tools.pyspice_converter import convert_skidl_module
@@ -287,6 +288,7 @@ class KiCADInterface:
             "run_module_erc": self._handle_run_module_erc,
             "run_skidl_erc": self._handle_run_skidl_erc,
             "execute_skidl_netlist": self._handle_execute_skidl_netlist,
+            "execute_skidl_netlist_json": generate_skidl_netlist_json,
             "compile_schematic": self._handle_compile_schematic,
             "list_schematic_libraries": self._handle_list_schematic_libraries,
             "export_schematic_pdf": self._handle_export_schematic_pdf,
