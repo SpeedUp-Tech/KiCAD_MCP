@@ -1976,6 +1976,8 @@ class KiCADInterface:
             verify: If True, verify the generated schematic matches the original netlist
             optimizeRotation: If True, optimize component rotations for minimal wire bends
             keepIntermediate: If True, keep intermediate elk_input.json and elk_output.json files
+            useDirectConnections: If True, use direct label/power connections (grid-like layout)
+            labelHighFanoutNets: If True, labelize high-fanout nets to reduce crossings
             
         Returns:
             Dict with success status, file paths, part/net counts, and verification result
@@ -1990,6 +1992,16 @@ class KiCADInterface:
             verify = params.get("verify", True)
             optimize_rotation = params.get("optimizeRotation", False) or params.get("optimize_rotation", False)
             keep_intermediate = params.get("keepIntermediate", False) or params.get("keep_intermediate", False)
+            use_direct_connections = (
+                params.get("useDirectConnections", False)
+                or params.get("use_direct_connections", False)
+                or params.get("directConnections", False)
+                or params.get("direct_connections", False)
+            )
+            label_high_fanout_nets = (
+                params.get("labelHighFanoutNets", False)
+                or params.get("label_high_fanout_nets", False)
+            )
 
             if not skidl_module_path:
                 return {"success": False, "message": "skidlModulePath is required"}
@@ -2007,6 +2019,8 @@ class KiCADInterface:
                 verify=verify,
                 optimize_rotation=optimize_rotation,
                 keep_intermediate=keep_intermediate,
+                use_direct_connections=use_direct_connections,
+                label_high_fanout_nets=label_high_fanout_nets,
             )
             
             return result

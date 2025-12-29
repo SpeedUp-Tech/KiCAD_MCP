@@ -17,7 +17,7 @@ from typing import Dict, Any, Optional
 from python.skidl_db_wrapper import SymbolDatabase
 
 
-SPECIAL_PIN_THRESHOLD = 6
+SPECIAL_PIN_THRESHOLD = 5
 
 
 def _rotate_point(x: float, y: float, angle_deg: int) -> tuple[float, float]:

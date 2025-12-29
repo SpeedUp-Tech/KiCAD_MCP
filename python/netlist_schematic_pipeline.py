@@ -30,6 +30,7 @@ def generate_schematic(
     optimize_rotation: bool = False,
     interface_nets: set[str] | None = None,
     use_direct_connections: bool = False,
+    label_high_fanout_nets: bool = False,
 ) -> str:
     """
     Generate a KiCad schematic from a SKiDL circuit.
@@ -43,6 +44,7 @@ def generate_schematic(
         optimize_rotation: If True, find optimal rotations for non-primitive components
         interface_nets: Optional set of interface net names for hierarchical labels
         use_direct_connections: If True, emit direct label/power connections with no ordering hints
+        label_high_fanout_nets: If True, labelize high-fanout nets to reduce crossings
         
     Returns:
         Path to the generated schematic file
@@ -79,6 +81,7 @@ def generate_schematic(
             circuit,
             interface_nets=interface_nets,
             use_direct_connections=use_direct_connections,
+            label_high_fanout_nets=label_high_fanout_nets,
         )
     
     # Stage 1: Generate ELK graph
@@ -157,6 +160,7 @@ def generate_schematic_svg(
     optimize_rotation: bool = False,
     interface_nets: set[str] | None = None,
     use_direct_connections: bool = False,
+    label_high_fanout_nets: bool = False,
 ) -> tuple[str, str]:
     """
     Generate both KiCad schematic and SVG export.
@@ -170,6 +174,7 @@ def generate_schematic_svg(
         optimize_rotation: If True, find optimal rotations for non-primitive components
         interface_nets: Optional set of interface net names for hierarchical labels
         use_direct_connections: If True, emit direct label/power connections with no ordering hints
+        label_high_fanout_nets: If True, labelize high-fanout nets to reduce crossings
         
     Returns:
         Tuple of (schematic_path, svg_path)
@@ -180,6 +185,7 @@ def generate_schematic_svg(
         optimize_rotation=optimize_rotation,
         interface_nets=interface_nets,
         use_direct_connections=use_direct_connections,
+        label_high_fanout_nets=label_high_fanout_nets,
     )
     
     svg_dir = Path(sch_path).parent / f"{Path(sch_path).stem}_svg"
@@ -215,6 +221,7 @@ def generate_schematic_from_skidl_module(
     optimize_rotation: bool = False,
     keep_intermediate: bool = False,
     use_direct_connections: bool = False,
+    label_high_fanout_nets: bool = False,
 ) -> dict:
     """
     Generate a KiCad schematic from a SKiDL module file.
@@ -236,6 +243,7 @@ def generate_schematic_from_skidl_module(
         optimize_rotation: If True, optimize component rotations for minimal wire bends.
         keep_intermediate: If True, keep intermediate elk_input.json and elk_output.json files.
         use_direct_connections: If True, emit direct label/power connections with no ordering hints.
+        label_high_fanout_nets: If True, labelize high-fanout nets to reduce crossings.
     
     Returns:
         A dict with keys:
@@ -308,6 +316,7 @@ def generate_schematic_from_skidl_module(
                 optimize_rotation=optimize_rotation,
                 interface_nets=set(param_names),
                 use_direct_connections=use_direct_connections,
+                label_high_fanout_nets=label_high_fanout_nets,
             )
         else:
             sch_path = generate_schematic(
@@ -317,6 +326,7 @@ def generate_schematic_from_skidl_module(
                 optimize_rotation=optimize_rotation,
                 interface_nets=set(param_names),
                 use_direct_connections=use_direct_connections,
+                label_high_fanout_nets=label_high_fanout_nets,
             )
         
         result: dict = {
@@ -407,6 +417,11 @@ Examples:
         help="Use direct label/power connections without ordering constraints"
     )
     parser.add_argument(
+        "--label-high-fanout-nets",
+        action="store_true",
+        help="Labelize high-fanout nets to reduce crossings"
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="Verify schematic by comparing netlists with original SKiDL circuit"
@@ -456,6 +471,7 @@ Examples:
             optimize_rotation=args.optimize_rotation,
             interface_nets=set(param_names),
             use_direct_connections=args.direct_connections,
+            label_high_fanout_nets=args.label_high_fanout_nets,
         )
         print(f"\nOutput schematic: {sch_path}")
         print(f"Output SVG: {svg_path}")
@@ -466,6 +482,7 @@ Examples:
             optimize_rotation=args.optimize_rotation,
             interface_nets=set(param_names),
             use_direct_connections=args.direct_connections,
+            label_high_fanout_nets=args.label_high_fanout_nets,
         )
         print(f"\nOutput schematic: {sch_path}")
     

@@ -27,12 +27,15 @@ def build_simple_logic_hints(
     interface_nets: Iterable[str] | None = None,
     *,
     special_pin_threshold: int = SPECIAL_PIN_THRESHOLD,
+    label_high_fanout_nets: bool = False,
+    high_fanout_threshold: int = 4,
     power_symbol_map: dict[str, str] | None = None,
     use_direct_connections: bool = False,
 ) -> dict:
     """
     Build logic hints that apply the satellite-style rules:
     - Special parts (pin count >= threshold) connect via net labels only.
+    - Optionally labelize high-fanout nets (refs >= threshold) to reduce crossings.
     - Each component gets its own power symbol per supported power net.
     - Interface nets get a hierarchical label anchor.
     - Optionally emit direct connections instead of layout ordering.
@@ -151,6 +154,16 @@ def build_simple_logic_hints(
                     side = choose_side(ref, component_pins.get(ref, []))
                     add_connection(power_id, ref, side)
                     add_adjacency(power_id, ref, side)
+            continue
+
+        if label_high_fanout_nets and len(refs) >= high_fanout_threshold:
+            label_type = "hierarchical" if is_interface else "local"
+            for ref in refs:
+                for pin_num in sorted(component_pins.get(ref, []), key=str):
+                    label_id = add_label(f"{net_name}_{ref}_p{pin_num}", net_name, label_type)
+                    side = pin_side_map.get(ref, {}).get(str(pin_num))
+                    add_connection(label_id, ref, side)
+                    add_adjacency(label_id, ref, side)
             continue
 
         if special_in_net:
