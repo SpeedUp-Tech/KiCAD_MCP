@@ -15,6 +15,9 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
+# Final schematic layout is produced via clustered layout.
+from python.netlist_to_schematic.elk_cluster_layout import run_clustered_layout
+
 # Primitive component names - these don't need rotation optimization
 # These are checked against part.name (e.g., "R", "C", "LED"), not reference
 PRIMITIVE_NAMES = frozenset([
@@ -265,27 +268,26 @@ def run_elk_layout(elk_input: dict, work_dir: Path) -> dict:
     output_path = work_dir / "_rotation_opt_output.json"
 
     work_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(input_path, "w") as f:
+            json.dump(elk_input, f)
 
-    with open(input_path, "w") as f:
-        json.dump(elk_input, f)
-    
-    result = subprocess.run(
-        ["node", str(elk_runner), str(input_path), str(output_path)],
-        capture_output=True,
-        text=True
-    )
-    
-    if result.returncode != 0:
-        raise RuntimeError(f"ELK layout failed: {result.stderr}")
-    
-    with open(output_path) as f:
-        elk_output = json.load(f)
-    
-    # Cleanup
-    input_path.unlink(missing_ok=True)
-    output_path.unlink(missing_ok=True)
-    
-    return elk_output
+        result = subprocess.run(
+            ["node", str(elk_runner), str(input_path), str(output_path)],
+            capture_output=True,
+            text=True,
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(f"ELK layout failed: {result.stderr}")
+
+        with open(output_path) as f:
+            elk_output = json.load(f)
+
+        return elk_output
+    finally:
+        input_path.unlink(missing_ok=True)
+        output_path.unlink(missing_ok=True)
 
 
 def find_non_primitive_parts(circuit, skip_prefixes: list[str] | None = None) -> list:
@@ -341,10 +343,10 @@ def optimize_rotations(
     if not non_primitives:
         if verbose:
             print("  No non-primitive components to optimize")
-        # Run single layout with no rotations
+        # Run single layout with no rotations (final layout uses clustered strategy)
         builder = builder_class(circuit, logic_hints, fetcher, {})
         elk_graph = builder.build_graph()
-        elk_output = run_elk_layout(elk_graph, work_dir)
+        elk_output = run_clustered_layout(elk_graph, work_dir, base_name="rotation_final", keep_intermediate=False)
         return elk_output, {}
     
     if len(non_primitives) > MAX_NON_PRIMITIVES:
@@ -352,7 +354,7 @@ def optimize_rotations(
             print(f"  {len(non_primitives)} non-primitives > max {MAX_NON_PRIMITIVES}, skipping optimization")
         builder = builder_class(circuit, logic_hints, fetcher, {})
         elk_graph = builder.build_graph()
-        elk_output = run_elk_layout(elk_graph, work_dir)
+        elk_output = run_clustered_layout(elk_graph, work_dir, base_name="rotation_final", keep_intermediate=False)
         return elk_output, {}
     
     refs = [p.ref for p in non_primitives]
@@ -364,7 +366,6 @@ def optimize_rotations(
         print(f"  Testing {len(combinations)} rotation combinations...")
     
     best_score = float("inf")
-    best_output = None
     best_rotation_map: dict[str, int] = {}
     
     for i, combo in enumerate(combinations):
@@ -382,7 +383,6 @@ def optimize_rotations(
         
         if score < best_score:
             best_score = score
-            best_output = elk_output
             best_rotation_map = rotation_map.copy()
         
         if verbose and (i + 1) % 16 == 0:
@@ -390,5 +390,9 @@ def optimize_rotations(
     
     if verbose:
         print(f"  Best rotation: {best_rotation_map} (score: {best_score:.1f})")
-    
-    return best_output, best_rotation_map
+
+    # Re-run final layout using the best rotations, using clustered strategy.
+    builder = builder_class(circuit, logic_hints, fetcher, best_rotation_map)
+    elk_graph = builder.build_graph()
+    final_output = run_clustered_layout(elk_graph, work_dir, base_name="rotation_final", keep_intermediate=False)
+    return final_output, best_rotation_map

@@ -15,7 +15,9 @@ from pathlib import Path
 
 # Import pipeline components
 from python.netlist_to_schematic.elk_graph_adapter import ElkGraphBuilder, SymbolGeometryFetcher
+from python.netlist_to_schematic.elk_layout import run_elk_layout
 from python.netlist_to_schematic.elk_to_kicad import run_conversion
+from python.netlist_to_schematic.simple_logic import build_simple_logic_hints
 from python.netlist_to_schematic.rotation_optimizer import optimize_rotations
 
 
@@ -25,7 +27,9 @@ def generate_schematic(
     logic_hints_path: str | None = None,
     keep_intermediate: bool = False,
     verbose: bool = True,
-    optimize_rotation: bool = False
+    optimize_rotation: bool = False,
+    interface_nets: set[str] | None = None,
+    use_direct_connections: bool = False,
 ) -> str:
     """
     Generate a KiCad schematic from a SKiDL circuit.
@@ -37,6 +41,8 @@ def generate_schematic(
         keep_intermediate: If True, keep elk_input.json and elk_output.json
         verbose: If True, print progress messages
         optimize_rotation: If True, find optimal rotations for non-primitive components
+        interface_nets: Optional set of interface net names for hierarchical labels
+        use_direct_connections: If True, emit direct label/power connections with no ordering hints
         
     Returns:
         Path to the generated schematic file
@@ -66,6 +72,14 @@ def generate_schematic(
             logic_hints = json.load(f)
         if verbose:
             print(f"Loaded logic hints from: {logic_hints_path}")
+    if not logic_hints.get("elk_support_fields"):
+        if verbose:
+            print("Using auto-generated layout hints (satellite rules).")
+        logic_hints = build_simple_logic_hints(
+            circuit,
+            interface_nets=interface_nets,
+            use_direct_connections=use_direct_connections,
+        )
     
     # Stage 1: Generate ELK graph
     if verbose:
@@ -99,19 +113,18 @@ def generate_schematic(
             print(f"  Created {node_count} nodes, {edge_count} edges")
         
         if verbose:
-            print("Stage 2: Running ELK layout engine...")
-        
-        elk_runner = Path(__file__).parent / "netlist_to_schematic" / "elk" / "elk_layout_runner.cjs"
-        
-        result = subprocess.run(
-            ["node", str(elk_runner), str(elk_input_path), str(elk_output_path)],
-            capture_output=True,
-            text=True
+            print("Stage 2: Running clustered ELK layout...")
+
+        elk_output = run_elk_layout(
+            elk_graph,
+            work_dir,
+            base_name=base_name,
+            keep_intermediate=keep_intermediate,
         )
-        
-        if result.returncode != 0:
-            raise RuntimeError(f"ELK layout failed: {result.stderr}")
-        
+
+        with open(elk_output_path, "w") as f:
+            json.dump(elk_output, f, indent=2)
+
         if verbose:
             print("  Layout complete")
     
@@ -141,7 +154,9 @@ def generate_schematic_svg(
     logic_hints_path: str | None = None,
     keep_intermediate: bool = False,
     verbose: bool = True,
-    optimize_rotation: bool = False
+    optimize_rotation: bool = False,
+    interface_nets: set[str] | None = None,
+    use_direct_connections: bool = False,
 ) -> tuple[str, str]:
     """
     Generate both KiCad schematic and SVG export.
@@ -153,6 +168,8 @@ def generate_schematic_svg(
         keep_intermediate: If True, keep elk_input.json and elk_output.json
         verbose: Print progress messages
         optimize_rotation: If True, find optimal rotations for non-primitive components
+        interface_nets: Optional set of interface net names for hierarchical labels
+        use_direct_connections: If True, emit direct label/power connections with no ordering hints
         
     Returns:
         Tuple of (schematic_path, svg_path)
@@ -160,7 +177,9 @@ def generate_schematic_svg(
     sch_path = generate_schematic(
         circuit, output_path, logic_hints_path, 
         keep_intermediate=keep_intermediate, verbose=verbose,
-        optimize_rotation=optimize_rotation
+        optimize_rotation=optimize_rotation,
+        interface_nets=interface_nets,
+        use_direct_connections=use_direct_connections,
     )
     
     svg_dir = Path(sch_path).parent / f"{Path(sch_path).stem}_svg"
@@ -195,6 +214,7 @@ def generate_schematic_from_skidl_module(
     verify: bool = True,
     optimize_rotation: bool = False,
     keep_intermediate: bool = False,
+    use_direct_connections: bool = False,
 ) -> dict:
     """
     Generate a KiCad schematic from a SKiDL module file.
@@ -215,6 +235,7 @@ def generate_schematic_from_skidl_module(
         verify: If True, verify the generated schematic against the original netlist.
         optimize_rotation: If True, optimize component rotations for minimal wire bends.
         keep_intermediate: If True, keep intermediate elk_input.json and elk_output.json files.
+        use_direct_connections: If True, emit direct label/power connections with no ordering hints.
     
     Returns:
         A dict with keys:
@@ -284,14 +305,18 @@ def generate_schematic_from_skidl_module(
                 circuit, output_path, logic_hints_path,
                 keep_intermediate=keep_intermediate,
                 verbose=False,
-                optimize_rotation=optimize_rotation
+                optimize_rotation=optimize_rotation,
+                interface_nets=set(param_names),
+                use_direct_connections=use_direct_connections,
             )
         else:
             sch_path = generate_schematic(
                 circuit, output_path, logic_hints_path,
                 keep_intermediate=keep_intermediate,
                 verbose=False,
-                optimize_rotation=optimize_rotation
+                optimize_rotation=optimize_rotation,
+                interface_nets=set(param_names),
+                use_direct_connections=use_direct_connections,
             )
         
         result: dict = {
@@ -377,6 +402,11 @@ Examples:
         help="Find optimal rotations for non-primitive components (ICs, etc.)"
     )
     parser.add_argument(
+        "--direct-connections",
+        action="store_true",
+        help="Use direct label/power connections without ordering constraints"
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="Verify schematic by comparing netlists with original SKiDL circuit"
@@ -423,7 +453,9 @@ Examples:
         sch_path, svg_path = generate_schematic_svg(
             circuit, args.output, args.logic_hints,
             keep_intermediate=args.keep_intermediate,
-            optimize_rotation=args.optimize_rotation
+            optimize_rotation=args.optimize_rotation,
+            interface_nets=set(param_names),
+            use_direct_connections=args.direct_connections,
         )
         print(f"\nOutput schematic: {sch_path}")
         print(f"Output SVG: {svg_path}")
@@ -431,7 +463,9 @@ Examples:
         sch_path = generate_schematic(
             circuit, args.output, args.logic_hints,
             keep_intermediate=args.keep_intermediate,
-            optimize_rotation=args.optimize_rotation
+            optimize_rotation=args.optimize_rotation,
+            interface_nets=set(param_names),
+            use_direct_connections=args.direct_connections,
         )
         print(f"\nOutput schematic: {sch_path}")
     
@@ -443,4 +477,3 @@ Examples:
         if not passed:
             print("\nWARNING: Schematic verification failed!")
             exit(1)
-

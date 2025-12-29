@@ -345,6 +345,7 @@ def run_conversion(
                 net_first_endpoint[net_name] = (start_x, start_y)
 
             try:
+                points = _orthogonalize_points(points)
                 bend_count = len(section.get("bendPoints", []))
                 print(f"Adding wire {edge_id}: ({start_x:.2f}, {start_y:.2f}) -> ({end_x:.2f}, {end_y:.2f}) [{bend_count} bends]")
                 ConnectionManager.add_wire(
@@ -363,7 +364,7 @@ def run_conversion(
             _add_net_label(schematic, net_name, label_x, label_y, label_type="local")
         except Exception as e:
             print(f"Failed to add net label {net_name}: {e}")
-    
+
     # Compile: add labels to any remaining unlabeled nets (e.g., GND connections to power symbols)
     compile_result = SchematicCompiler.compile(schematic)
     if compile_result.get("generatedLabelCount", 0) > 0:
@@ -373,3 +374,38 @@ def run_conversion(
     SchematicManager.save_schematic(schematic, str(output_sch))
     print(f"Schematic saved: {output_sch}")
 
+
+def _orthogonalize_points(points: List[List[float]]) -> List[List[float]]:
+    if len(points) < 2:
+        return points
+    def _is_aligned(a: float, b: float, tol: float = 1e-6) -> bool:
+        return abs(a - b) <= tol
+
+    adjusted: List[List[float]] = [points[0]]
+    for point in points[1:]:
+        last = adjusted[-1]
+        if not _is_aligned(last[0], point[0]) and not _is_aligned(last[1], point[1]):
+            bend1 = [last[0], point[1]]
+            bend2 = [point[0], last[1]]
+            bend = bend1 if bend1 != last and bend1 != point else bend2
+            if bend != last and bend != point:
+                adjusted.append(bend)
+        adjusted.append(point)
+
+    deduped: List[List[float]] = [adjusted[0]]
+    for point in adjusted[1:]:
+        if point != deduped[-1]:
+            deduped.append(point)
+
+    simplified: List[List[float]] = [deduped[0]]
+    for point in deduped[1:]:
+        if len(simplified) >= 2:
+            prev = simplified[-1]
+            prev2 = simplified[-2]
+            if (_is_aligned(prev2[0], prev[0]) and _is_aligned(prev[0], point[0])) or (
+                _is_aligned(prev2[1], prev[1]) and _is_aligned(prev[1], point[1])
+            ):
+                simplified[-1] = point
+                continue
+        simplified.append(point)
+    return simplified

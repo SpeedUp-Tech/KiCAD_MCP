@@ -17,6 +17,9 @@ from typing import Dict, Any, Optional
 from python.skidl_db_wrapper import SymbolDatabase
 
 
+SPECIAL_PIN_THRESHOLD = 5
+
+
 def _rotate_point(x: float, y: float, angle_deg: int) -> tuple[float, float]:
     """Rotate a point around origin by angle_deg degrees."""
     if angle_deg == 0:
@@ -163,12 +166,12 @@ class ElkGraphBuilder:
                 "elk.algorithm": "layered",
                 "elk.direction": "RIGHT",
                 "elk.randomSeed": "1",  # Fixed seed for deterministic layout
-                "elk.spacing.nodeNode": "5.08",
+                "elk.spacing.nodeNode": "1.27",
                 "elk.spacing.edgeEdge": "1.27",
-                "elk.spacing.edgeNode": "2.54",
-                "elk.layered.spacing.baseValue": "2.54",
-                "elk.layered.spacing.edgeNodeBetweenLayers": "5.08",
-                "elk.layered.spacing.nodeNodeBetweenLayers": "7.62",
+                "elk.spacing.edgeNode": "1.27",
+                "elk.layered.spacing.baseValue": "1.27",
+                "elk.layered.spacing.edgeNodeBetweenLayers": "1.27",
+                "elk.layered.spacing.nodeNodeBetweenLayers": "1.27",
                 "elk.padding": "[top=0,left=0,bottom=0,right=0]",
                 "elk.hierarchyHandling": "INCLUDE_CHILDREN",
                 "elk.layered.edgeRouting": "ORTHOGONAL",
@@ -182,12 +185,61 @@ class ElkGraphBuilder:
             "children": [],
             "edges": []
         }
+
+        if not elk_fields.get("layout_chains") and not elk_fields.get("constraints"):
+            # No-order mode: avoid collapsing into a single narrow column.
+            node_count = len(getattr(self.circuit, "parts", []) or [])
+            node_count += len(elk_fields.get("net_labels", []))
+            node_count += len(elk_fields.get("power_symbols", []))
+            layer_bound = max(4, int(math.sqrt(max(node_count, 1))))
+            self.graph["layoutOptions"].update({
+                "elk.layered.layering.strategy": "COFFMAN_GRAHAM",
+                "elk.layered.layering.coffmanGraham.layerBound": str(layer_bound),
+                "elk.layered.nodePlacement.strategy": "NETWORK_SIMPLEX",
+                "elk.layered.mergeEdges": "false",
+            })
         
         # Component nodes by reference (for cluster building)
         self._component_nodes = {}
+        connected_pins: dict[str, set[str]] = {}
+        for net in getattr(self.circuit, "nets", []) or []:
+            for pin in getattr(net, "pins", []) or []:
+                ref = getattr(pin, "ref", None) or getattr(getattr(pin, "part", None), "ref", None)
+                num = str(getattr(pin, "num", "") or "")
+                if not ref or not num:
+                    continue
+                connected_pins.setdefault(ref, set()).add(num)
+
+        def _pin_count(part) -> int:
+            pins = getattr(part, "pins", []) or []
+            try:
+                total = len(pins)
+            except TypeError:
+                total = 0
+            connected = len(connected_pins.get(getattr(part, "ref", ""), set()))
+            return max(total, connected)
+
+        self._special_refs = {
+            part.ref
+            for part in getattr(self.circuit, "parts", [])
+            if getattr(part, "ref", None)
+            and _pin_count(part) >= SPECIAL_PIN_THRESHOLD
+        }
         
         # Track pins connected via labels (for insurance logic)
         self._covered_pins = set()
+        # Track label pin usage per (component, net) to avoid reusing pins
+        self._label_pin_usage = {}
+        # Track labels adjacent to a component per net (for insurance routing)
+        self._component_net_labels = {}
+        # Track label side (left/right) per component net for side-aware wiring
+        self._component_net_label_sides = {}
+        # Track power symbol pin usage per (component, net) to avoid reusing pins
+        self._power_pin_usage = {}
+        # Track power symbols adjacent to a component per net (for insurance routing)
+        self._component_net_powers = {}
+        # Track power symbol side (left/right) per component net for side-aware wiring
+        self._component_net_power_sides = {}
 
     def _determine_library(self, part) -> str:
         """Determine the library name for a part."""
@@ -233,8 +285,9 @@ class ElkGraphBuilder:
         Power symbols are first-class nodes that participate in ELK layout,
         positioned via layout_chains just like regular components.
         """
-        MARGIN_X = 2.54
-        MARGIN_Y = 2.54
+        MARGIN_X = 1.27
+        MARGIN_Y = 1.27
+        MIN_SIZE = 2.54  # Keep power symbols compact (2 grid units).
         
         elk_fields = self._get_elk_support_fields()
         power_symbols = elk_fields.get("power_symbols", [])
@@ -264,10 +317,10 @@ class ElkGraphBuilder:
             width = (bbox["max_x"] - bbox["min_x"]) + (2 * MARGIN_X)
             height = (bbox["max_y"] - bbox["min_y"]) + (2 * MARGIN_Y)
             
-            if width < 5:
-                width = 5.0
-            if height < 5:
-                height = 5.0
+            if width < MIN_SIZE:
+                width = MIN_SIZE
+            if height < MIN_SIZE:
+                height = MIN_SIZE
             
             origin_offset_x = -bbox["min_x"] + MARGIN_X
             origin_offset_y = bbox["max_y"] + MARGIN_Y
@@ -331,12 +384,13 @@ class ElkGraphBuilder:
         """
         # Label dimensions based on KiCad default font (1.27mm)
         CHAR_WIDTH = 1.27    # mm per character (KiCad default font)
-        MIN_WIDTH = 5.08     # minimum width (~2 grid units)
-        LABEL_HEIGHT = 2.54  # ~1 grid unit
+        MIN_WIDTH = 2.54     # minimum width (~2 grid units)
+        LABEL_HEIGHT = 1.27  # KiCad default font height
         
         elk_fields = self._get_elk_support_fields()
         net_labels = elk_fields.get("net_labels", [])
         layout_chains = elk_fields.get("layout_chains", [])
+        direct_connections = elk_fields.get("direct_connections", [])
         
         # Build a set of label IDs for quick lookup
         label_ids = {nl.get("id") for nl in net_labels if nl.get("id")}
@@ -344,6 +398,15 @@ class ElkGraphBuilder:
         # Scan layout chains to determine each label's role
         # A label can be: "source" (first in path), "target" (last in path), or "both"
         label_roles: dict[str, str] = {}  # label_id -> "source" | "target" | "both"
+
+        def merge_label_role(label_id: str, role: str) -> None:
+            if role not in {"source", "target", "both"}:
+                return
+            if label_id in label_roles:
+                if label_roles[label_id] != role:
+                    label_roles[label_id] = "both"
+            else:
+                label_roles[label_id] = role
         
         for chain in layout_chains:
             path = chain.get("path", [])
@@ -355,19 +418,21 @@ class ElkGraphBuilder:
             
             # Check if first item is a label
             if first_item in label_ids:
-                if first_item in label_roles:
-                    if label_roles[first_item] == "target":
-                        label_roles[first_item] = "both"
-                else:
-                    label_roles[first_item] = "source"
+                merge_label_role(first_item, "source")
             
             # Check if last item is a label
             if last_item in label_ids:
-                if last_item in label_roles:
-                    if label_roles[last_item] == "source":
-                        label_roles[last_item] = "both"
-                else:
-                    label_roles[last_item] = "target"
+                merge_label_role(last_item, "target")
+
+        for conn in direct_connections:
+            node_id = conn.get("node")
+            if node_id not in label_ids:
+                continue
+            side = conn.get("side")
+            if side == "left":
+                merge_label_role(node_id, "source")
+            elif side == "right":
+                merge_label_role(node_id, "target")
         
         for nl in net_labels:
             nl_id = nl.get("id")
@@ -381,7 +446,7 @@ class ElkGraphBuilder:
             
             # Calculate label width based on text length
             # KiCad labels have connection point at one end, text extends from there
-            label_width = max(MIN_WIDTH, len(net_name) * CHAR_WIDTH + 2.0)
+            label_width = max(MIN_WIDTH, len(net_name) * CHAR_WIDTH)
             
             # Determine port position based on role in layout chains
             # This makes path order directly control layout position
@@ -448,13 +513,17 @@ class ElkGraphBuilder:
         elk_fields = self._get_elk_support_fields()
         layout_chains = elk_fields.get("layout_chains", [])
         power_symbol_ids = set()
+        power_symbol_net_by_id = {}
         net_label_ids = {}  # id -> net_name mapping
         
         # Collect power symbol IDs
         for ps in elk_fields.get("power_symbols", []):
             ps_id = ps.get("id")
+            ps_type = ps.get("type", "")
             if ps_id:
                 power_symbol_ids.add(ps_id)
+                if isinstance(ps_type, str) and ":" in ps_type:
+                    power_symbol_net_by_id[ps_id] = ps_type.split(":", 1)[1]
         
         # Collect net label IDs and their net names
         for nl in elk_fields.get("net_labels", []):
@@ -478,22 +547,71 @@ class ElkGraphBuilder:
                 target_id = self._resolve_path_item(target_spec)
                 
                 if source_id and target_id:
-                    # Check if this is a GND flow (target is a power symbol)
-                    is_gnd_flow = target_id in power_symbol_ids
+                    # Check if this is a power symbol flow (either side)
+                    is_power_source = source_id in power_symbol_ids
+                    is_power_target = target_id in power_symbol_ids
                     # Check if source or target is a net label
                     is_label_source = source_id in net_label_ids
                     is_label_target = target_id in net_label_ids
                     
-                    if is_gnd_flow:
-                        # Create REAL edge from component's GND pin to power symbol
-                        gnd_pin = self._find_gnd_pin_for_component(source_id)
-                        if gnd_pin:
-                            edge = {
-                                "id": f"gnd_{source_id}_to_{target_id}",
-                                "sources": [f"{source_id}.{gnd_pin}"],
-                                "targets": [f"{target_id}.1"]  # Power symbols have pin 1
-                            }
-                            self.graph["edges"].append(edge)
+                    if is_power_source or is_power_target:
+                        power_id = source_id if is_power_source else target_id
+                        comp_id = target_id if is_power_source else source_id
+                        net_name = power_symbol_net_by_id.get(power_id)
+                        if comp_id in self._component_nodes and net_name:
+                            used_pins = self._power_pin_usage.get((comp_id, net_name), set())
+                            comp_pin = self._find_pin_for_net(
+                                comp_id,
+                                net_name,
+                                exclude=used_pins,
+                            )
+                            if comp_pin:
+                                used_pins.add(comp_pin)
+                                self._power_pin_usage[(comp_id, net_name)] = used_pins
+                                if is_power_source:
+                                    edge = {
+                                        "id": f"power_{power_id}_to_{comp_id}",
+                                        "sources": [f"{power_id}.1"],
+                                        "targets": [f"{comp_id}.{comp_pin}"],
+                                        "layoutOptions": {
+                                            "elk.layered.priority.direction": "10",
+                                            "elk.layered.priority.shortness": "10"
+                                        }
+                                    }
+                                    order_edge = {
+                                        "id": f"chain_power_{power_id}_{comp_id}",
+                                        "sources": [power_id],
+                                        "targets": [comp_id],
+                                        "layoutOptions": {
+                                            "elk.layered.priority.direction": "10"
+                                        }
+                                    }
+                                else:
+                                    edge = {
+                                        "id": f"power_{comp_id}_to_{power_id}",
+                                        "sources": [f"{comp_id}.{comp_pin}"],
+                                        "targets": [f"{power_id}.1"],
+                                        "layoutOptions": {
+                                            "elk.layered.priority.direction": "10",
+                                            "elk.layered.priority.shortness": "10"
+                                        }
+                                    }
+                                    order_edge = {
+                                        "id": f"chain_power_{comp_id}_{power_id}",
+                                        "sources": [comp_id],
+                                        "targets": [power_id],
+                                        "layoutOptions": {
+                                            "elk.layered.priority.direction": "10"
+                                        }
+                                    }
+                                self.graph["edges"].append(edge)
+                                self.graph["edges"].append(order_edge)
+                                self._covered_pins.add(f"{comp_id}.{comp_pin}")
+                                powers = self._component_net_powers.setdefault((comp_id, net_name), [])
+                                if power_id not in powers:
+                                    powers.append(power_id)
+                                side_map = self._component_net_power_sides.setdefault((comp_id, net_name), {})
+                                side_map[power_id] = "left" if is_power_source else "right"
                     elif is_label_source or is_label_target:
                         # Create REAL edge for net label connection
                         # Find the appropriate pin on the component
@@ -502,29 +620,75 @@ class ElkGraphBuilder:
                             label_id = source_id
                             comp_id = target_id
                             net_name = net_label_ids[label_id]
-                            comp_pin = self._find_pin_for_net(comp_id, net_name)
+                            used_pins = self._label_pin_usage.get((comp_id, net_name), set())
+                            comp_pin = self._find_pin_for_net(
+                                comp_id,
+                                net_name,
+                                exclude=used_pins,
+                                preferred_side="left",
+                            )
+                            if comp_pin is None:
+                                # Allow multiple labels to share a single pin if needed.
+                                comp_pin = self._find_pin_for_net(
+                                    comp_id,
+                                    net_name,
+                                    preferred_side="left",
+                                )
                             if comp_pin:
+                                self._label_pin_usage.setdefault((comp_id, net_name), set()).add(comp_pin)
+                                labels = self._component_net_labels.setdefault((comp_id, net_name), [])
+                                if label_id not in labels:
+                                    labels.append(label_id)
+                                side_map = self._component_net_label_sides.setdefault((comp_id, net_name), {})
+                                side_map[label_id] = "left"
                                 edge = {
                                     "id": f"label_{label_id}_to_{comp_id}",
                                     "sources": [f"{label_id}.1"],
-                                    "targets": [f"{comp_id}.{comp_pin}"]
+                                    "targets": [f"{comp_id}.{comp_pin}"],
+                                    "layoutOptions": {
+                                        "elk.layered.priority.shortness": "10"
+                                    }
                                 }
                                 self.graph["edges"].append(edge)
                                 self._covered_pins.add(f"{comp_id}.{comp_pin}")
+                                self._mark_component_net_pins_covered(comp_id, net_name)
                         else:
                             # Component -> Label: find pin on component for this net
                             comp_id = source_id
                             label_id = target_id
                             net_name = net_label_ids[label_id]
-                            comp_pin = self._find_pin_for_net(comp_id, net_name)
+                            used_pins = self._label_pin_usage.get((comp_id, net_name), set())
+                            comp_pin = self._find_pin_for_net(
+                                comp_id,
+                                net_name,
+                                exclude=used_pins,
+                                preferred_side="right",
+                            )
+                            if comp_pin is None:
+                                # Allow multiple labels to share a single pin if needed.
+                                comp_pin = self._find_pin_for_net(
+                                    comp_id,
+                                    net_name,
+                                    preferred_side="right",
+                                )
                             if comp_pin:
+                                self._label_pin_usage.setdefault((comp_id, net_name), set()).add(comp_pin)
+                                labels = self._component_net_labels.setdefault((comp_id, net_name), [])
+                                if label_id not in labels:
+                                    labels.append(label_id)
+                                side_map = self._component_net_label_sides.setdefault((comp_id, net_name), {})
+                                side_map[label_id] = "right"
                                 edge = {
                                     "id": f"{comp_id}_to_label_{label_id}",
                                     "sources": [f"{comp_id}.{comp_pin}"],
-                                    "targets": [f"{label_id}.1"]
+                                    "targets": [f"{label_id}.1"],
+                                    "layoutOptions": {
+                                        "elk.layered.priority.shortness": "10"
+                                    }
                                 }
                                 self.graph["edges"].append(edge)
                                 self._covered_pins.add(f"{comp_id}.{comp_pin}")
+                                self._mark_component_net_pins_covered(comp_id, net_name)
                     else:
                         # Create phantom edge for layout ordering only
                         phantom_edge = {
@@ -537,6 +701,158 @@ class ElkGraphBuilder:
                         }
                         self.graph["edges"].append(phantom_edge)
 
+    def _process_direct_connections(self) -> None:
+        """
+        Process direct_connections to create real edges without layout ordering.
+
+        Each entry should specify a label/power node and a component to connect.
+        Optional "side" hints select left/right pins and label orientation.
+        """
+        elk_fields = self._get_elk_support_fields()
+        direct_connections = elk_fields.get("direct_connections", [])
+        if not direct_connections:
+            return
+
+        power_symbol_ids = set()
+        power_symbol_net_by_id = {}
+        net_label_ids = {}
+
+        for ps in elk_fields.get("power_symbols", []):
+            ps_id = ps.get("id")
+            ps_type = ps.get("type", "")
+            if ps_id:
+                power_symbol_ids.add(ps_id)
+                if isinstance(ps_type, str) and ":" in ps_type:
+                    power_symbol_net_by_id[ps_id] = ps_type.split(":", 1)[1]
+
+        for nl in elk_fields.get("net_labels", []):
+            nl_id = nl.get("id")
+            if nl_id:
+                net_label_ids[nl_id] = nl.get("net_name", nl_id)
+
+        for conn in direct_connections:
+            node_id = conn.get("node")
+            comp_id = conn.get("component")
+            side = conn.get("side")
+            if not node_id or not comp_id:
+                continue
+            if comp_id not in self._component_nodes:
+                continue
+
+            preferred_side = side if side in {"left", "right"} else None
+
+            if node_id in power_symbol_ids:
+                net_name = power_symbol_net_by_id.get(node_id)
+                if not net_name:
+                    continue
+                used_pins = self._power_pin_usage.get((comp_id, net_name), set())
+                comp_pin = self._find_pin_for_net(
+                    comp_id,
+                    net_name,
+                    exclude=used_pins,
+                    preferred_side=preferred_side,
+                )
+                if comp_pin is None and preferred_side:
+                    comp_pin = self._find_pin_for_net(
+                        comp_id,
+                        net_name,
+                        exclude=used_pins,
+                    )
+                if comp_pin:
+                    used_pins.add(comp_pin)
+                    self._power_pin_usage[(comp_id, net_name)] = used_pins
+                    if preferred_side == "left":
+                        edge = {
+                            "id": f"direct_power_{node_id}_to_{comp_id}_{comp_pin}",
+                            "sources": [f"{node_id}.1"],
+                            "targets": [f"{comp_id}.{comp_pin}"],
+                            "layoutOptions": {
+                                "elk.layered.priority.direction": "10",
+                                "elk.layered.priority.shortness": "10"
+                            }
+                        }
+                        order_edge = {
+                            "id": f"chain_power_direct_{node_id}_{comp_id}",
+                            "sources": [node_id],
+                            "targets": [comp_id],
+                            "layoutOptions": {
+                                "elk.layered.priority.direction": "10"
+                            }
+                        }
+                    else:
+                        edge = {
+                            "id": f"direct_power_{comp_id}_{node_id}_{comp_pin}",
+                            "sources": [f"{comp_id}.{comp_pin}"],
+                            "targets": [f"{node_id}.1"],
+                            "layoutOptions": {
+                                "elk.layered.priority.direction": "10",
+                                "elk.layered.priority.shortness": "10"
+                            }
+                        }
+                        order_edge = {
+                            "id": f"chain_power_direct_{comp_id}_{node_id}",
+                            "sources": [comp_id],
+                            "targets": [node_id],
+                            "layoutOptions": {
+                                "elk.layered.priority.direction": "10"
+                            }
+                        }
+                    self.graph["edges"].append(edge)
+                    self.graph["edges"].append(order_edge)
+                    self._covered_pins.add(f"{comp_id}.{comp_pin}")
+                    powers = self._component_net_powers.setdefault((comp_id, net_name), [])
+                    if node_id not in powers:
+                        powers.append(node_id)
+                    if preferred_side:
+                        side_map = self._component_net_power_sides.setdefault((comp_id, net_name), {})
+                        side_map[node_id] = preferred_side
+                continue
+
+            if node_id in net_label_ids:
+                net_name = net_label_ids[node_id]
+                used_pins = self._label_pin_usage.get((comp_id, net_name), set())
+                comp_pin = self._find_pin_for_net(
+                    comp_id,
+                    net_name,
+                    exclude=used_pins,
+                    preferred_side=preferred_side,
+                )
+                if comp_pin is None:
+                    comp_pin = self._find_pin_for_net(
+                        comp_id,
+                        net_name,
+                        preferred_side=preferred_side,
+                    )
+                if comp_pin:
+                    self._label_pin_usage.setdefault((comp_id, net_name), set()).add(comp_pin)
+                    labels = self._component_net_labels.setdefault((comp_id, net_name), [])
+                    if node_id not in labels:
+                        labels.append(node_id)
+                    if preferred_side:
+                        side_map = self._component_net_label_sides.setdefault((comp_id, net_name), {})
+                        side_map[node_id] = preferred_side
+                    if preferred_side == "left":
+                        edge = {
+                            "id": f"direct_label_{node_id}_to_{comp_id}_{comp_pin}",
+                            "sources": [f"{node_id}.1"],
+                            "targets": [f"{comp_id}.{comp_pin}"],
+                            "layoutOptions": {
+                                "elk.layered.priority.shortness": "10"
+                            }
+                        }
+                    else:
+                        edge = {
+                            "id": f"direct_label_{comp_id}_to_{node_id}_{comp_pin}",
+                            "sources": [f"{comp_id}.{comp_pin}"],
+                            "targets": [f"{node_id}.1"],
+                            "layoutOptions": {
+                                "elk.layered.priority.shortness": "10"
+                            }
+                        }
+                    self.graph["edges"].append(edge)
+                    self._covered_pins.add(f"{comp_id}.{comp_pin}")
+                    self._mark_component_net_pins_covered(comp_id, net_name)
+
     def _find_gnd_pin_for_component(self, ref: str):
         """Find the GND pin number for a component from the netlist."""
         for net in self.circuit.nets:
@@ -546,21 +862,69 @@ class ElkGraphBuilder:
                         return pin.num
         return None
 
-    def _find_pin_for_net(self, ref: str, net_name: str):
+    def _get_component_pins_for_net(self, ref: str, net_name: str) -> list[str]:
+        """Return sorted pin numbers for a component on a given net."""
+        for net in self.circuit.nets:
+            if net.name == net_name:
+                pins = {str(pin.num) for pin in net.pins if pin.ref == ref}
+                return sorted(pins, key=str)
+        return []
+
+    def _pin_side(self, ref: str, pin_num: str) -> str | None:
+        """Return 'left' or 'right' for a pin based on symbol geometry."""
+        node = self._component_nodes.get(ref)
+        if not node:
+            return None
+        width = node.get("width")
+        if width is None:
+            return None
+        port_id = f"{ref}.{pin_num}"
+        for port in node.get("ports", []):
+            if port.get("id") == port_id:
+                x = port.get("x")
+                if x is None:
+                    return None
+                return "left" if x < (width / 2) else "right"
+        return None
+
+    def _mark_component_net_pins_covered(self, ref: str, net_name: str) -> None:
+        """Mark all pins on a component's net as covered to avoid pin-to-pin wires."""
+        for pin_num in self._get_component_pins_for_net(ref, net_name):
+            self._covered_pins.add(f"{ref}.{pin_num}")
+
+    def _find_pin_for_net(
+        self,
+        ref: str,
+        net_name: str,
+        *,
+        exclude: set[str] | None = None,
+        preferred_side: str | None = None,
+    ):
         """Find which pin of a component is connected to a specific net.
         
         Args:
             ref: Component reference (e.g., "C1", "U1")
             net_name: Net name to search for (e.g., "VBUS_5V", "BATT_1S")
+            exclude: Optional set of pin numbers to skip.
+            preferred_side: Optional "left" or "right" to bias pin selection.
             
         Returns:
             Pin number if found, None otherwise
         """
-        for net in self.circuit.nets:
-            if net.name == net_name:
-                for pin in net.pins:
-                    if pin.ref == ref:
-                        return pin.num
+        pins = self._get_component_pins_for_net(ref, net_name)
+        if not pins:
+            return None
+        exclude = exclude or set()
+        if preferred_side:
+            preferred = [p for p in pins if self._pin_side(ref, p) == preferred_side]
+            remaining = [p for p in pins if p not in preferred]
+            candidates = preferred + remaining
+        else:
+            candidates = pins
+        for pin_num in candidates:
+            if pin_num in exclude:
+                continue
+            return pin_num
         return None
 
     def _resolve_path_item(self, spec: str) -> Optional[str]:
@@ -650,8 +1014,8 @@ class ElkGraphBuilder:
         Returns:
             ELK-compatible graph dictionary ready for JSON serialization
         """
-        MARGIN_X = 2.54  # mm (100 mil)
-        MARGIN_Y = 2.54 
+        MARGIN_X = 1.27  # mm (50 mil)
+        MARGIN_Y = 1.27
         
         # 1. Build Nodes (Parts) into _component_nodes
         for part in self.circuit.parts:
@@ -780,17 +1144,33 @@ class ElkGraphBuilder:
         # 3. Build net label nodes from net_labels array
         self._build_net_label_nodes()
         
-        # 4. Process layout chains - creates phantom edges AND real GND edges
+        # 4. Process direct connections (real edges without ordering)
+        self._process_direct_connections()
+
+        # 5. Process layout chains - creates phantom edges AND real GND edges
         self._process_layout_chains()
         
-        # 5. Process constraints (alignment, adjacency) - phantom edges only
+        # 6. Process constraints (alignment, adjacency) - phantom edges only
         self._process_constraints()
 
         
-        # 5. Build Edges (Nets) - skip GND (handled by signal flows)
+        # 7. Build Edges (Nets) - skip power nets (handled by power symbols)
+        elk_fields = self._get_elk_support_fields()
+        labeled_net_names = {
+            nl.get("net_name", nl.get("id"))
+            for nl in elk_fields.get("net_labels", [])
+            if nl.get("id")
+        }
+        power_net_names: set[str] = set()
+        for ps in elk_fields.get("power_symbols", []):
+            ps_type = ps.get("type", "")
+            if isinstance(ps_type, str) and ":" in ps_type:
+                power_net_names.add(ps_type.split(":", 1)[1])
+        special_refs = self._special_refs
         for net in self.circuit.nets:
-            # Skip GND net - connections are defined via signal flows
-            if net.name == "GND":
+            net_name = getattr(net, "name", None) or ""
+            # Skip power nets - connections are defined via power symbol flows
+            if net_name in power_net_names:
                 continue
             
             # Sort pins by (ref, num) for deterministic edge ordering
@@ -799,22 +1179,33 @@ class ElkGraphBuilder:
             pins = sorted(net.pins, key=lambda p: (p.ref, p.num))
             if len(pins) < 2:
                 continue
-            
-            source = pins[0]
-            for target in pins[1:]:
+
+            non_special_pins = [pin for pin in pins if pin.ref not in special_refs]
+            if not non_special_pins:
+                continue
+
+            source = non_special_pins[0]
+            for target in non_special_pins[1:]:
                 source_pin_id = f"{source.ref}.{source.num}"
                 target_pin_id = f"{target.ref}.{target.num}"
+
+                # Specials only connect to labels/power symbols, never pin-to-pin wires.
+                if source.ref in special_refs or target.ref in special_refs:
+                    continue
                 
                 # Skip if BOTH pins are already connected via labels (no direct wire needed)
                 if source_pin_id in self._covered_pins and target_pin_id in self._covered_pins:
                     continue
+                # Avoid pin-to-pin wires inside the same component when labels exist
+                if source.ref == target.ref and net_name in labeled_net_names:
+                    continue
                 
                 edge = {
-                    "id": f"e_{net.name}_{source.ref}_{target.ref}",
+                    "id": f"e_{net_name}_{source.ref}_{target.ref}",
                     "sources": [source_pin_id],
                     "targets": [target_pin_id],
                     "properties": {
-                        "net_name": net.name
+                        "net_name": net_name
                     }
                 }
                 self.graph["edges"].append(edge)
@@ -830,17 +1221,21 @@ class ElkGraphBuilder:
             for tgt in edge.get("targets", []):
                 connected_pins.add(tgt)
         
-        elk_fields = self._get_elk_support_fields()
         net_labels = elk_fields.get("net_labels", [])
         power_symbols = elk_fields.get("power_symbols", [])
         layout_chains = elk_fields.get("layout_chains", [])
         
-        # Build mapping: net_name -> label_id (for nets with explicit labels)
-        net_name_to_label: dict[str, str] = {}
+        # Build mapping: net_name -> [label_ids] (for nets with explicit labels)
+        net_name_to_labels: dict[str, list[str]] = {}
         for nl in net_labels:
             net_name = nl.get("net_name", nl.get("id"))
-            if net_name and net_name not in net_name_to_label:
-                net_name_to_label[net_name] = nl.get("id")
+            label_id = nl.get("id")
+            if net_name and label_id:
+                net_name_to_labels.setdefault(net_name, []).append(label_id)
+
+        # Round-robin cursors to distribute orphan pins across labels/power symbols
+        label_cursors: dict[tuple[str, str, str], int] = {}
+        power_cursors: dict[tuple[str, str, str], int] = {}
         
         # Build mapping: power_symbol_id -> net_name (from power symbol type)
         # e.g., {"GND_C1": "GND", "VCC_U1": "VCC"}
@@ -855,19 +1250,39 @@ class ElkGraphBuilder:
                     net_name = ps_type.split(":")[1]  # Extract "GND" from "power:GND"
                     power_symbol_to_net[ps_id] = net_name
         
-        # Build mapping: (component, net_name) -> power_symbol_id (from layout chains)
-        # This tells us which power symbol a component uses for a given net
-        component_net_to_power_symbol: dict[tuple[str, str], str] = {}
+        # Build mapping: (component, net_name) -> [power_symbol_ids] (from layout chains)
+        component_net_to_power_symbols: dict[tuple[str, str], list[str]] = {}
+        for key, powers in self._component_net_powers.items():
+            component_net_to_power_symbols.setdefault(key, []).extend(powers)
         for chain in layout_chains:
             path = chain.get("path", [])
-            if len(path) >= 2:
-                source = path[0]
-                target = path[-1]
-                # Check if target is a power symbol
-                if target in power_symbol_ids and source in self._component_nodes:
-                    net_name = power_symbol_to_net.get(target)
-                    if net_name:
-                        component_net_to_power_symbol[(source, net_name)] = target
+            if not isinstance(path, list):
+                continue
+            for left, right in zip(path, path[1:]):
+                if not isinstance(left, str) or not isinstance(right, str):
+                    continue
+                comp_id = None
+                power_id = None
+                side = None
+                if left in self._component_nodes and right in power_symbol_ids:
+                    comp_id = left
+                    power_id = right
+                    side = "right"
+                elif right in self._component_nodes and left in power_symbol_ids:
+                    comp_id = right
+                    power_id = left
+                    side = "left"
+                if not comp_id or not power_id:
+                    continue
+                net_name = power_symbol_to_net.get(power_id)
+                if not net_name:
+                    continue
+                powers = component_net_to_power_symbols.setdefault((comp_id, net_name), [])
+                if power_id not in powers:
+                    powers.append(power_id)
+                side_map = self._component_net_power_sides.setdefault((comp_id, net_name), {})
+                if power_id not in side_map and side:
+                    side_map[power_id] = side
         
         # Connect orphan pins to their targets
         for net in self.circuit.nets:
@@ -881,29 +1296,60 @@ class ElkGraphBuilder:
                     continue
                 
                 # Priority 1: Connect to net label if one exists
-                if net_name in net_name_to_label:
-                    label_id = net_name_to_label[net_name]
+                labels = self._component_net_labels.get((pin.ref, net_name), [])
+                if labels:
+                    side_map = self._component_net_label_sides.get((pin.ref, net_name), {})
+                    pin_side = self._pin_side(pin.ref, str(pin.num))
+                    if pin_side:
+                        side_labels = [lid for lid in labels if side_map.get(lid) == pin_side]
+                        if side_labels:
+                            labels = side_labels
+                elif net_name in net_name_to_labels:
+                    labels = net_name_to_labels[net_name]
+
+                if labels:
+                    pin_side = self._pin_side(pin.ref, str(pin.num)) or "any"
+                    cursor_key = (pin.ref, net_name, pin_side)
+                    idx = label_cursors.get(cursor_key, 0) % len(labels)
+                    label_id = labels[idx]
+                    label_cursors[cursor_key] = idx + 1
                     edge = {
                         "id": f"insurance_{pin.ref}_{pin.num}_to_{label_id}",
                         "sources": [pin_id],
-                        "targets": [f"{label_id}.1"]
+                        "targets": [f"{label_id}.1"],
+                        "layoutOptions": {
+                            "elk.layered.priority.shortness": "10"
+                        }
                     }
                     self.graph["edges"].append(edge)
                     connected_pins.add(pin_id)
                     print(f"[Insurance] Auto-connected orphan {pin_id} to label {label_id}")
                     continue
                 
-                # Priority 2: Connect to power symbol if component has one for this net
-                power_symbol = component_net_to_power_symbol.get((pin.ref, net_name))
-                if power_symbol:
+                # Priority 2: Connect to power symbols if component has any for this net
+                powers = component_net_to_power_symbols.get((pin.ref, net_name), [])
+                if powers:
+                    side_map = self._component_net_power_sides.get((pin.ref, net_name), {})
+                    pin_side = self._pin_side(pin.ref, str(pin.num))
+                    if pin_side:
+                        side_powers = [pid for pid in powers if side_map.get(pid) == pin_side]
+                        if side_powers:
+                            powers = side_powers
+                    pin_side = pin_side or "any"
+                    cursor_key = (pin.ref, net_name, pin_side)
+                    idx = power_cursors.get(cursor_key, 0) % len(powers)
+                    power_id = powers[idx]
+                    power_cursors[cursor_key] = idx + 1
                     edge = {
-                        "id": f"insurance_{pin.ref}_{pin.num}_to_{power_symbol}",
+                        "id": f"insurance_{pin.ref}_{pin.num}_to_{power_id}",
                         "sources": [pin_id],
-                        "targets": [f"{power_symbol}.1"]
+                        "targets": [f"{power_id}.1"],
+                        "layoutOptions": {
+                            "elk.layered.priority.shortness": "10"
+                        }
                     }
                     self.graph["edges"].append(edge)
                     connected_pins.add(pin_id)
-                    print(f"[Insurance] Auto-connected orphan {pin_id} to power symbol {power_symbol}")
+                    print(f"[Insurance] Auto-connected orphan {pin_id} to power symbol {power_id}")
 
         return self.graph
-
