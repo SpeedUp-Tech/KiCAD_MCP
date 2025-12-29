@@ -23,6 +23,132 @@ OFFSET_X = 148.5  # A4 Center X (297/2)
 OFFSET_Y = 105.0  # A4 Center Y (210/2)
 
 
+def _grid_key(x: float, y: float, grid: float = KICAD_SCHEMATIC_GRID_MM) -> tuple[int, int]:
+    return (int(round(x / grid)), int(round(y / grid)))
+
+
+def _is_axis_aligned(a: tuple[int, int], b: tuple[int, int]) -> bool:
+    return a[0] == b[0] or a[1] == b[1]
+
+
+def _segment_hits_points(
+    a: tuple[int, int],
+    b: tuple[int, int],
+    points: set[tuple[int, int]],
+    *,
+    ignore: set[tuple[int, int]] | None = None,
+) -> bool:
+    """Return True if any point lies on the closed segment a-b (grid coords)."""
+    ignore = ignore or set()
+    if not _is_axis_aligned(a, b):
+        return True
+    ax, ay = a
+    bx, by = b
+    if ay == by:
+        y = ay
+        lo, hi = sorted((ax, bx))
+        for px, py in points:
+            if (px, py) in ignore:
+                continue
+            if py == y and lo <= px <= hi:
+                return True
+        return False
+    x = ax
+    lo, hi = sorted((ay, by))
+    for px, py in points:
+        if (px, py) in ignore:
+            continue
+        if px == x and lo <= py <= hi:
+            return True
+    return False
+
+
+def _route_manhattan_avoiding(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    *,
+    occupied: set[tuple[int, int]],
+    used_vertices: set[tuple[int, int]],
+) -> list[list[float]] | None:
+    """
+    Route a short orthogonal path while avoiding accidental electrical merges.
+
+    Avoid:
+    - Passing through other connection points (pins/labels/power ports).
+    - Touching existing wire vertices (T-junction shorts).
+    """
+    start_x, start_y = start
+    end_x, end_y = end
+    start_key = _grid_key(start_x, start_y)
+    end_key = _grid_key(end_x, end_y)
+
+    if start_key == end_key:
+        return [[start_x, start_y]]
+
+    if start_key[0] == end_key[0] or start_key[1] == end_key[1]:
+        return [[start_x, start_y], [end_x, end_y]]
+
+    forbidden = set(occupied) | set(used_vertices)
+
+    def is_path_safe(path: list[tuple[float, float]]) -> bool:
+        keys = [_grid_key(x, y) for x, y in path]
+        keys = [k for i, k in enumerate(keys) if i == 0 or k != keys[i - 1]]
+        if len(keys) < 2:
+            return True
+        if any(not _is_axis_aligned(a, b) for a, b in zip(keys, keys[1:])):
+            return False
+
+        path_vertices = set(keys)
+        internal_vertices = set(keys[1:-1])
+        if internal_vertices & forbidden:
+            return False
+
+        points_to_avoid = forbidden - path_vertices
+        for a, b in zip(keys, keys[1:]):
+            if _segment_hits_points(a, b, points_to_avoid, ignore=path_vertices):
+                return False
+        return True
+
+    candidates: list[list[tuple[float, float]]] = [
+        [(start_x, start_y), (end_x, start_y), (end_x, end_y)],
+        [(start_x, start_y), (start_x, end_y), (end_x, end_y)],
+    ]
+    for cand in candidates:
+        if is_path_safe(cand):
+            return [[x, y] for x, y in cand]
+
+    # If both L-shapes collide, try adding a small detour column/row.
+    step = KICAD_SCHEMATIC_GRID_MM
+    sx, sy = start_key
+    ex, ey = end_key
+    dir_x = 1 if ex >= sx else -1
+    dir_y = 1 if ey >= sy else -1
+
+    for k in range(1, 5):
+        detour_x = (sx + dir_x * k) * step
+        cand = [(start_x, start_y), (detour_x, start_y), (detour_x, end_y), (end_x, end_y)]
+        if is_path_safe(cand):
+            return [[x, y] for x, y in cand]
+
+        detour_x = (ex - dir_x * k) * step
+        cand = [(start_x, start_y), (detour_x, start_y), (detour_x, end_y), (end_x, end_y)]
+        if is_path_safe(cand):
+            return [[x, y] for x, y in cand]
+
+    for k in range(1, 5):
+        detour_y = (sy + dir_y * k) * step
+        cand = [(start_x, start_y), (start_x, detour_y), (end_x, detour_y), (end_x, end_y)]
+        if is_path_safe(cand):
+            return [[x, y] for x, y in cand]
+
+        detour_y = (ey - dir_y * k) * step
+        cand = [(start_x, start_y), (start_x, detour_y), (end_x, detour_y), (end_x, end_y)]
+        if is_path_safe(cand):
+            return [[x, y] for x, y in cand]
+
+    return None
+
+
 def _add_net_label(
     schematic: Schematic,
     name: str,
@@ -277,6 +403,13 @@ def run_conversion(
         except Exception as e:
             print(f"Failed to add net label {label_id}: {e}")
 
+    label_port_ids: set[str] = set()
+    for node, _, _ in net_label_nodes:
+        for p in node.get("ports", []):
+            pid = p.get("id")
+            if pid:
+                label_port_ids.add(pid)
+
     # Track which nets already have labels (from explicit net_labels in graph)
     labeled_nets: set[str] = set()
     for node, node_x, node_y in net_label_nodes:
@@ -286,6 +419,9 @@ def run_conversion(
     
     # Also track net -> first wire endpoint (for adding labels to unlabeled nets)
     net_first_endpoint: dict[str, tuple[float, float]] = {}
+
+    occupied_points = {_grid_key(x, y) for x, y in pin_positions.values()}
+    used_wire_vertices: set[tuple[int, int]] = set()
 
     # Add Wires using ELK's routed sections
     # Wire endpoints must use exact pin positions from pin_positions map
@@ -325,12 +461,6 @@ def run_conversion(
                 start_y = start.get("y", 0) * SCALE_FACTOR + shift_y
             points.append([start_x, start_y])
 
-            # Bend points from ELK routing - snap these for clean routing
-            for bp in section.get("bendPoints", []):
-                bp_x = snap_to_grid(bp["x"] * SCALE_FACTOR + shift_x)
-                bp_y = snap_to_grid(bp["y"] * SCALE_FACTOR + shift_y)
-                points.append([bp_x, bp_y])
-
             # End point: use exact pin position if available, otherwise transform ELK coords
             if target_port_id and target_port_id in pin_positions:
                 end_x, end_y = pin_positions[target_port_id]
@@ -338,7 +468,34 @@ def run_conversion(
                 end = section.get("endPoint", {})
                 end_x = end.get("x", 0) * SCALE_FACTOR + shift_x
                 end_y = end.get("y", 0) * SCALE_FACTOR + shift_y
-            points.append([end_x, end_y])
+
+            is_label_edge = bool(
+                (source_port_id and source_port_id in label_port_ids)
+                or (target_port_id and target_port_id in label_port_ids)
+            )
+
+            if is_label_edge:
+                routed = _route_manhattan_avoiding(
+                    (start_x, start_y),
+                    (end_x, end_y),
+                    occupied=occupied_points,
+                    used_vertices=used_wire_vertices,
+                )
+                if routed is not None:
+                    points = routed
+                else:
+                    for bp in section.get("bendPoints", []):
+                        bp_x = snap_to_grid(bp["x"] * SCALE_FACTOR + shift_x)
+                        bp_y = snap_to_grid(bp["y"] * SCALE_FACTOR + shift_y)
+                        points.append([bp_x, bp_y])
+                    points.append([end_x, end_y])
+            else:
+                # Bend points from ELK routing - snap these for clean routing
+                for bp in section.get("bendPoints", []):
+                    bp_x = snap_to_grid(bp["x"] * SCALE_FACTOR + shift_x)
+                    bp_y = snap_to_grid(bp["y"] * SCALE_FACTOR + shift_y)
+                    points.append([bp_x, bp_y])
+                points.append([end_x, end_y])
 
             # Track first endpoint for nets that need labels
             if net_name and net_name not in labeled_nets and net_name not in net_first_endpoint:
@@ -346,6 +503,8 @@ def run_conversion(
 
             try:
                 points = _orthogonalize_points(points)
+                for x, y in points[1:-1]:
+                    used_wire_vertices.add(_grid_key(x, y))
                 bend_count = len(section.get("bendPoints", []))
                 print(f"Adding wire {edge_id}: ({start_x:.2f}, {start_y:.2f}) -> ({end_x:.2f}, {end_y:.2f}) [{bend_count} bends]")
                 ConnectionManager.add_wire(

@@ -166,11 +166,11 @@ class ElkGraphBuilder:
                 "elk.algorithm": "layered",
                 "elk.direction": "RIGHT",
                 "elk.randomSeed": "1",  # Fixed seed for deterministic layout
-                "elk.spacing.nodeNode": "1.27",
-                "elk.spacing.edgeEdge": "1.27",
-                "elk.spacing.edgeNode": "1.27",
-                "elk.layered.spacing.baseValue": "1.27",
-                "elk.layered.spacing.edgeNodeBetweenLayers": "1.27",
+                "elk.spacing.nodeNode": "2.54",
+                "elk.spacing.edgeEdge": "2.54",
+                "elk.spacing.edgeNode": "2.54",
+                "elk.layered.spacing.baseValue": "2.54",
+                "elk.layered.spacing.edgeNodeBetweenLayers": "2.54",
                 "elk.layered.spacing.nodeNodeBetweenLayers": "1.27",
                 "elk.padding": "[top=0,left=0,bottom=0,right=0]",
                 "elk.hierarchyHandling": "INCLUDE_CHILDREN",
@@ -291,6 +291,44 @@ class ElkGraphBuilder:
         
         elk_fields = self._get_elk_support_fields()
         power_symbols = elk_fields.get("power_symbols", [])
+        layout_chains = elk_fields.get("layout_chains", [])
+        direct_connections = elk_fields.get("direct_connections", [])
+
+        power_symbol_ids = {ps.get("id") for ps in power_symbols if ps.get("id")}
+
+        # Determine preferred port side for power symbols based on connection direction.
+        # This helps ELK place power symbols on the intended side without relying on
+        # node-to-node phantom edges that can pull symbols toward node corners.
+        power_roles: dict[str, str] = {}  # power_id -> "source" | "target" | "both"
+
+        def merge_power_role(power_id: str, role: str) -> None:
+            if role not in {"source", "target", "both"}:
+                return
+            if power_id in power_roles:
+                if power_roles[power_id] != role:
+                    power_roles[power_id] = "both"
+            else:
+                power_roles[power_id] = role
+
+        for chain in layout_chains:
+            path = chain.get("path", [])
+            if not isinstance(path, list) or len(path) < 2:
+                continue
+            for left, right in zip(path, path[1:]):
+                if left in power_symbol_ids:
+                    merge_power_role(left, "source")
+                if right in power_symbol_ids:
+                    merge_power_role(right, "target")
+
+        for conn in direct_connections:
+            node_id = conn.get("node")
+            if node_id not in power_symbol_ids:
+                continue
+            side = conn.get("side")
+            if side == "left":
+                merge_power_role(node_id, "source")
+            elif side == "right":
+                merge_power_role(node_id, "target")
         
         for ps in power_symbols:
             ps_id = ps.get("id")
@@ -324,6 +362,8 @@ class ElkGraphBuilder:
             
             origin_offset_x = -bbox["min_x"] + MARGIN_X
             origin_offset_y = bbox["max_y"] + MARGIN_Y
+
+            role = power_roles.get(ps_id, "both")
             
             node = {
                 "id": ps_id,
@@ -347,12 +387,22 @@ class ElkGraphBuilder:
             for pin_num, p_geo in pins.items():
                 elk_port_x = origin_offset_x + p_geo["x"]
                 elk_port_y = origin_offset_y - p_geo["y"]
+
+                port_x = elk_port_x
+                # Most KiCad power symbols have a single pin "1" at (0,0).
+                # Place that port on the edge facing the connected component so the
+                # layered algorithm can honor left/right intent more reliably.
+                if str(pin_num) == "1":
+                    if role == "source":
+                        port_x = width  # Right edge: edge goes RIGHT to component.
+                    elif role == "target":
+                        port_x = 0  # Left edge: edge comes from LEFT.
                 
                 port = {
                     "id": f"{ps_id}.{pin_num}",
                     "width": 0,
                     "height": 0,
-                    "x": elk_port_x,
+                    "x": port_x,
                     "y": elk_port_y,
                     "properties": {
                         "kicad_offset_x": p_geo["x"],
@@ -360,6 +410,25 @@ class ElkGraphBuilder:
                     }
                 }
                 node["ports"].append(port)
+
+            if not node["ports"]:
+                # Fallback for missing/unknown power symbol geometry.
+                port_x = origin_offset_x
+                if role == "source":
+                    port_x = width
+                elif role == "target":
+                    port_x = 0
+                node["ports"].append({
+                    "id": f"{ps_id}.1",
+                    "width": 0,
+                    "height": 0,
+                    "x": port_x,
+                    "y": origin_offset_y,
+                    "properties": {
+                        "kicad_offset_x": 0.0,
+                        "kicad_offset_y": 0.0,
+                    },
+                })
             
             # Store in component nodes and add to graph
             self._component_nodes[ps_id] = node
@@ -580,8 +649,8 @@ class ElkGraphBuilder:
                                     }
                                     order_edge = {
                                         "id": f"chain_power_{power_id}_{comp_id}",
-                                        "sources": [power_id],
-                                        "targets": [comp_id],
+                                        "sources": [f"{power_id}.1"],
+                                        "targets": [f"{comp_id}.{comp_pin}"],
                                         "layoutOptions": {
                                             "elk.layered.priority.direction": "10"
                                         }
@@ -598,8 +667,8 @@ class ElkGraphBuilder:
                                     }
                                     order_edge = {
                                         "id": f"chain_power_{comp_id}_{power_id}",
-                                        "sources": [comp_id],
-                                        "targets": [power_id],
+                                        "sources": [f"{comp_id}.{comp_pin}"],
+                                        "targets": [f"{power_id}.1"],
                                         "layoutOptions": {
                                             "elk.layered.priority.direction": "10"
                                         }
@@ -773,8 +842,8 @@ class ElkGraphBuilder:
                         }
                         order_edge = {
                             "id": f"chain_power_direct_{node_id}_{comp_id}",
-                            "sources": [node_id],
-                            "targets": [comp_id],
+                            "sources": [f"{node_id}.1"],
+                            "targets": [f"{comp_id}.{comp_pin}"],
                             "layoutOptions": {
                                 "elk.layered.priority.direction": "10"
                             }
@@ -791,8 +860,8 @@ class ElkGraphBuilder:
                         }
                         order_edge = {
                             "id": f"chain_power_direct_{comp_id}_{node_id}",
-                            "sources": [comp_id],
-                            "targets": [node_id],
+                            "sources": [f"{comp_id}.{comp_pin}"],
+                            "targets": [f"{node_id}.1"],
                             "layoutOptions": {
                                 "elk.layered.priority.direction": "10"
                             }
