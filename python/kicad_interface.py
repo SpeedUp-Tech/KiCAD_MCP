@@ -1978,6 +1978,7 @@ class KiCADInterface:
             keepIntermediate: If True, keep intermediate elk_input.json and elk_output.json files
             useDirectConnections: If True, use direct label/power connections (grid-like layout)
             labelHighFanoutNets: If True, labelize high-fanout nets to reduce crossings
+            highFanoutThreshold: Minimum number of connected component refs for a net to be treated as high-fanout
             
         Returns:
             Dict with success status, file paths, part/net counts, and verification result
@@ -2002,6 +2003,15 @@ class KiCADInterface:
                 params.get("labelHighFanoutNets", False)
                 or params.get("label_high_fanout_nets", False)
             )
+            high_fanout_threshold = None
+            high_fanout_threshold_param = params.get("highFanoutThreshold")
+            if high_fanout_threshold_param is None:
+                high_fanout_threshold_param = params.get("high_fanout_threshold")
+            if high_fanout_threshold_param is not None:
+                try:
+                    high_fanout_threshold = int(high_fanout_threshold_param)
+                except (TypeError, ValueError):
+                    return {"success": False, "message": "highFanoutThreshold must be an integer"}
 
             if not skidl_module_path:
                 return {"success": False, "message": "skidlModulePath is required"}
@@ -2021,6 +2031,7 @@ class KiCADInterface:
                 keep_intermediate=keep_intermediate,
                 use_direct_connections=use_direct_connections,
                 label_high_fanout_nets=label_high_fanout_nets,
+                **({"high_fanout_threshold": high_fanout_threshold} if high_fanout_threshold is not None else {}),
             )
             
             return result

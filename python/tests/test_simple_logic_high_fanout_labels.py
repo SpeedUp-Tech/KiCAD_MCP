@@ -68,3 +68,12 @@ def test_high_fanout_labels_switch() -> None:
     assert all(conn["node"] in label_ids for conn in conns)
     assert {conn["component"] for conn in conns} == {"R1", "R2", "R3"}
 
+    not_triggered = build_simple_logic_hints(
+        circuit,
+        use_direct_connections=True,
+        label_high_fanout_nets=True,
+        high_fanout_threshold=4,
+    )
+    elk_fields = not_triggered["elk_support_fields"]
+    assert elk_fields["net_labels"] == []
+    assert elk_fields["direct_connections"] == []

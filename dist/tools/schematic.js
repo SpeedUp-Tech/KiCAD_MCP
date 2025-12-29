@@ -359,7 +359,24 @@ export function registerSchematicTools(server, callKicadScript) {
         verify: z.boolean().optional().default(true).describe('If true, verify the generated schematic matches the original netlist connectivity'),
         optimizeRotation: z.boolean().optional().default(false).describe('If true, optimize component rotations for minimal wire bends'),
         keepIntermediate: z.boolean().optional().default(false).describe('If true, keep intermediate elk_input.json and elk_output.json files'),
-    }, async ({ skidlModulePath, subcircuitName, outputPath, logicHintsPath, exportSvg, verify, optimizeRotation, keepIntermediate }) => {
+        useDirectConnections: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe('If true, use direct label/power connections without ordering constraints (grid-like layout)'),
+        labelHighFanoutNets: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe('If true, labelize high-fanout nets to reduce wire crossings'),
+        highFanoutThreshold: z
+            .number()
+            .int()
+            .min(2)
+            .optional()
+            .default(3)
+            .describe('Minimum number of connected component refs for a net to be treated as high-fanout (used when labelHighFanoutNets=true)'),
+    }, async ({ skidlModulePath, subcircuitName, outputPath, logicHintsPath, exportSvg, verify, optimizeRotation, keepIntermediate, useDirectConnections, labelHighFanoutNets, highFanoutThreshold, }) => {
         const result = await callKicadScript('generate_schematic_from_netlist', {
             skidlModulePath,
             subcircuitName,
@@ -369,6 +386,9 @@ export function registerSchematicTools(server, callKicadScript) {
             verify,
             optimizeRotation,
             keepIntermediate,
+            useDirectConnections,
+            labelHighFanoutNets,
+            highFanoutThreshold,
         });
         return formatToolResult(result);
     });

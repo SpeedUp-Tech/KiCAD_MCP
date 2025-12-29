@@ -31,6 +31,7 @@ def generate_schematic(
     interface_nets: set[str] | None = None,
     use_direct_connections: bool = False,
     label_high_fanout_nets: bool = False,
+    high_fanout_threshold: int = 3,
 ) -> str:
     """
     Generate a KiCad schematic from a SKiDL circuit.
@@ -45,6 +46,7 @@ def generate_schematic(
         interface_nets: Optional set of interface net names for hierarchical labels
         use_direct_connections: If True, emit direct label/power connections with no ordering hints
         label_high_fanout_nets: If True, labelize high-fanout nets to reduce crossings
+        high_fanout_threshold: Minimum number of connected component refs for a net to be treated as high-fanout
         
     Returns:
         Path to the generated schematic file
@@ -82,6 +84,7 @@ def generate_schematic(
             interface_nets=interface_nets,
             use_direct_connections=use_direct_connections,
             label_high_fanout_nets=label_high_fanout_nets,
+            high_fanout_threshold=high_fanout_threshold,
         )
     
     # Stage 1: Generate ELK graph
@@ -161,6 +164,7 @@ def generate_schematic_svg(
     interface_nets: set[str] | None = None,
     use_direct_connections: bool = False,
     label_high_fanout_nets: bool = False,
+    high_fanout_threshold: int = 3,
 ) -> tuple[str, str]:
     """
     Generate both KiCad schematic and SVG export.
@@ -175,6 +179,7 @@ def generate_schematic_svg(
         interface_nets: Optional set of interface net names for hierarchical labels
         use_direct_connections: If True, emit direct label/power connections with no ordering hints
         label_high_fanout_nets: If True, labelize high-fanout nets to reduce crossings
+        high_fanout_threshold: Minimum number of connected component refs for a net to be treated as high-fanout
         
     Returns:
         Tuple of (schematic_path, svg_path)
@@ -186,6 +191,7 @@ def generate_schematic_svg(
         interface_nets=interface_nets,
         use_direct_connections=use_direct_connections,
         label_high_fanout_nets=label_high_fanout_nets,
+        high_fanout_threshold=high_fanout_threshold,
     )
     
     svg_dir = Path(sch_path).parent / f"{Path(sch_path).stem}_svg"
@@ -222,6 +228,7 @@ def generate_schematic_from_skidl_module(
     keep_intermediate: bool = False,
     use_direct_connections: bool = False,
     label_high_fanout_nets: bool = False,
+    high_fanout_threshold: int = 3,
 ) -> dict:
     """
     Generate a KiCad schematic from a SKiDL module file.
@@ -244,6 +251,7 @@ def generate_schematic_from_skidl_module(
         keep_intermediate: If True, keep intermediate elk_input.json and elk_output.json files.
         use_direct_connections: If True, emit direct label/power connections with no ordering hints.
         label_high_fanout_nets: If True, labelize high-fanout nets to reduce crossings.
+        high_fanout_threshold: Minimum number of connected component refs for a net to be treated as high-fanout.
     
     Returns:
         A dict with keys:
@@ -317,6 +325,7 @@ def generate_schematic_from_skidl_module(
                 interface_nets=set(param_names),
                 use_direct_connections=use_direct_connections,
                 label_high_fanout_nets=label_high_fanout_nets,
+                high_fanout_threshold=high_fanout_threshold,
             )
         else:
             sch_path = generate_schematic(
@@ -327,6 +336,7 @@ def generate_schematic_from_skidl_module(
                 interface_nets=set(param_names),
                 use_direct_connections=use_direct_connections,
                 label_high_fanout_nets=label_high_fanout_nets,
+                high_fanout_threshold=high_fanout_threshold,
             )
         
         result: dict = {
@@ -422,6 +432,12 @@ Examples:
         help="Labelize high-fanout nets to reduce crossings"
     )
     parser.add_argument(
+        "--high-fanout-threshold",
+        type=int,
+        default=3,
+        help="Minimum number of connected component refs for a net to be treated as high-fanout (used with --label-high-fanout-nets)",
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="Verify schematic by comparing netlists with original SKiDL circuit"
@@ -472,6 +488,7 @@ Examples:
             interface_nets=set(param_names),
             use_direct_connections=args.direct_connections,
             label_high_fanout_nets=args.label_high_fanout_nets,
+            high_fanout_threshold=args.high_fanout_threshold,
         )
         print(f"\nOutput schematic: {sch_path}")
         print(f"Output SVG: {svg_path}")
@@ -483,6 +500,7 @@ Examples:
             interface_nets=set(param_names),
             use_direct_connections=args.direct_connections,
             label_high_fanout_nets=args.label_high_fanout_nets,
+            high_fanout_threshold=args.high_fanout_threshold,
         )
         print(f"\nOutput schematic: {sch_path}")
     
