@@ -4,12 +4,14 @@ Rotation Optimizer for Schematic Layout
 Finds optimal rotations for non-primitive components by running ELK
 layout with all rotation combinations and selecting the best result.
 
-Non-primitives are components whose reference prefix is NOT in the 
-PRIMITIVE_PREFIXES set (ICs, MOSFETs, specialized components).
+Rotation optimization is only applied to non-primitive components (see
+`PRIMITIVE_NAMES`) and skips multi-pin parts (pin numbers >= 5) to avoid
+rotating complex symbols like ICs/connectors.
 """
 
 import json
 import math
+import re
 import subprocess
 from itertools import product
 from pathlib import Path
@@ -17,6 +19,7 @@ from typing import Any
 
 # Final schematic layout is produced via clustered layout.
 from python.netlist_to_schematic.elk_cluster_layout import run_clustered_layout
+from python.netlist_to_schematic.elk_graph_adapter import SPECIAL_PIN_THRESHOLD
 
 # Primitive component names - these don't need rotation optimization
 # These are checked against part.name (e.g., "R", "C", "LED"), not reference
@@ -75,6 +78,50 @@ def is_non_primitive(part) -> bool:
 def is_power_symbol_id(node_id: str) -> bool:
     """Check if a node ID represents a power symbol (not rotated)."""
     return node_id.startswith("GND_") or node_id.startswith("VCC_") or node_id.startswith("PWR_")
+
+
+_PIN_NUMBER_RE = re.compile(r"\d+")
+
+
+def _pin_number_value(pin_num: str) -> int | None:
+    """Best-effort parse of a numeric pin number from a KiCad pin identifier."""
+    match = _PIN_NUMBER_RE.search(str(pin_num))
+    if not match:
+        return None
+    try:
+        return int(match.group(0))
+    except ValueError:
+        return None
+
+
+def _has_pin_number_at_least(part, threshold: int = SPECIAL_PIN_THRESHOLD) -> bool:
+    """
+    Return True if a part has any pin whose numeric pin number is >= threshold.
+
+    This intentionally uses pin numbers (not reference prefixes) to identify
+    larger/complex parts that should not be rotated by the optimizer.
+    """
+    pins = getattr(part, "pins", []) or []
+    found_numeric = False
+    for pin in pins:
+        pin_num = getattr(pin, "num", None)
+        if pin_num is None:
+            continue
+        value = _pin_number_value(str(pin_num))
+        if value is None:
+            continue
+        found_numeric = True
+        if value >= threshold:
+            return True
+
+    if found_numeric:
+        return False
+
+    # Fallback for non-numeric pin schemes (rare): treat >=threshold pins as "multi-pin".
+    try:
+        return len(pins) >= threshold
+    except TypeError:
+        return False
 
 
 def rotate_point(x: float, y: float, angle_deg: float) -> tuple[float, float]:
@@ -296,7 +343,7 @@ def find_non_primitive_parts(circuit, skip_prefixes: list[str] | None = None) ->
 
     Args:
         circuit: SKiDL Circuit object
-        skip_prefixes: List of reference prefixes to skip (e.g., ["U"] to skip ICs)
+        skip_prefixes: Deprecated; rotation skipping uses pin numbers now.
 
     Returns:
         List of non-primitive parts eligible for rotation optimization
@@ -306,10 +353,14 @@ def find_non_primitive_parts(circuit, skip_prefixes: list[str] | None = None) ->
     for p in circuit.parts:
         if not is_non_primitive(p):
             continue
-        # Extract prefix (letters at start of reference)
-        prefix = ''.join(c for c in p.ref if c.isalpha())
-        if prefix in skip_prefixes:
+        # Skip multi-pin parts (e.g., ICs/connectors): pin numbers >= 5.
+        if _has_pin_number_at_least(p, SPECIAL_PIN_THRESHOLD):
             continue
+        # Optional legacy skip list for callers that still want prefix-based filtering.
+        if skip_prefixes:
+            prefix = ''.join(c for c in p.ref if c.isalpha())
+            if prefix in skip_prefixes:
+                continue
         parts.append(p)
     return parts
 
@@ -337,12 +388,12 @@ def optimize_rotations(
         Tuple of (best_elk_output, rotation_map)
         rotation_map is {ref: rotation_degrees}
     """
-    # Skip ICs (prefix "U") - they should keep their standard orientation
-    non_primitives = find_non_primitive_parts(circuit, skip_prefixes=["U","J"])
+    # Skip multi-pin parts (pin numbers >= 5); optimize only small non-primitives.
+    non_primitives = find_non_primitive_parts(circuit)
     
     if not non_primitives:
         if verbose:
-            print("  No non-primitive components to optimize")
+            print("  No non-primitive components eligible for rotation optimization")
         # Run single layout with no rotations (final layout uses clustered strategy)
         builder = builder_class(circuit, logic_hints, fetcher, {})
         elk_graph = builder.build_graph()
