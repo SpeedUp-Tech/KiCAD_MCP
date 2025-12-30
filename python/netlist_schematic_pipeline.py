@@ -97,12 +97,14 @@ def generate_schematic(
     if optimize_rotation:
         if verbose:
             print("Stage 2: Optimizing rotations and running ELK layout...")
-        elk_output, rotation_map = optimize_rotations(
+        elk_output, paper_size, rotation_map = optimize_rotations(
             circuit, logic_hints, fetcher, ElkGraphBuilder, work_dir, verbose
         )
         # Save the ELK output for Stage 3
         with open(elk_output_path, "w") as f:
             json.dump(elk_output, f, indent=2)
+        if verbose:
+            print(f"  Paper size: {paper_size}")
         if rotation_map and verbose:
             print(f"  Rotations applied: {rotation_map}")
     else:
@@ -121,7 +123,7 @@ def generate_schematic(
         if verbose:
             print("Stage 2: Running clustered ELK layout...")
 
-        elk_output = run_elk_layout(
+        elk_output, paper_size = run_elk_layout(
             elk_graph,
             work_dir,
             base_name=base_name,
@@ -132,13 +134,13 @@ def generate_schematic(
             json.dump(elk_output, f, indent=2)
 
         if verbose:
-            print("  Layout complete")
+            print(f"  Layout complete (paper: {paper_size})")
     
     # Stage 3: Convert to KiCad schematic
     if verbose:
         print("Stage 3: Converting to KiCad schematic...")
     
-    run_conversion(str(elk_output_path), str(output_file))
+    run_conversion(str(elk_output_path), str(output_file), paper_size=paper_size)
     
     if verbose:
         print(f"  Saved: {output_file}")

@@ -19,8 +19,12 @@ def run_elk_layout(
     *,
     base_name: str = "elk",
     keep_intermediate: bool = False,
-) -> dict[str, Any]:
-    """Run ELK layout and return the output graph."""
+) -> tuple[dict[str, Any], str]:
+    """Run ELK layout and return the output graph with paper size.
+    
+    Returns:
+        Tuple of (laid_out_graph, paper_size) where paper_size is "A4" or "A3".
+    """
     return run_clustered_layout(
         elk_input,
         work_dir,

@@ -18,7 +18,15 @@ from sexpdata import Symbol as SSymbol
 
 
 # KiCad 6+ uses millimeters. ELK adapter outputs millimeters.
-SCALE_FACTOR = 1.0 
+SCALE_FACTOR = 1.0
+
+# Paper size dimensions (width, height in mm)
+PAPER_SIZES = {
+    "A4": (297.0, 210.0),
+    "A3": (420.0, 297.0),
+}
+
+# Default centering offsets (A4)
 OFFSET_X = 148.5  # A4 Center X (297/2)
 OFFSET_Y = 105.0  # A4 Center Y (210/2)
 
@@ -265,7 +273,8 @@ def _collect_component_nodes(
 
 def run_conversion(
     elk_input: Union[Path, str, Dict[str, Any]], 
-    output_sch: Union[Path, str]
+    output_sch: Union[Path, str],
+    paper_size: str = "A4",
 ) -> None:
     """
     Convert ELK layout output to KiCad schematic.
@@ -273,6 +282,7 @@ def run_conversion(
     Args:
         elk_input: Either a path to elk_output.json, or the graph dict directly
         output_sch: Path for the output .kicad_sch file
+        paper_size: Paper size for schematic ("A4" or "A3")
     """
     output_sch = Path(output_sch)
     
@@ -286,17 +296,22 @@ def run_conversion(
         with open(elk_file, 'r') as f:
             graph = json.load(f)
 
-    # Create Schematic
-    print(f"Creating schematic: {output_sch}")
-    schematic = SchematicManager.create_schematic(output_sch.stem, {})
+    # Create Schematic with appropriate paper size
+    print(f"Creating schematic: {output_sch} (paper: {paper_size})")
+    schematic = SchematicManager.create_schematic(output_sch.stem, {"paper": paper_size})
     
     # Calculate Graph Bounding Box to center on page
     root_w = graph.get("width", 0)
     root_h = graph.get("height", 0)
     
-    # Center: Page Center = (148.5, 105). Graph Center = (w/2, h/2).
-    shift_x = OFFSET_X - (root_w / 2)
-    shift_y = OFFSET_Y - (root_h / 2)
+    # Get page center based on paper size
+    page_w, page_h = PAPER_SIZES.get(paper_size, (297.0, 210.0))
+    offset_x = page_w / 2
+    offset_y = page_h / 2
+    
+    # Center: Page Center = offset. Graph Center = (w/2, h/2).
+    shift_x = offset_x - (root_w / 2)
+    shift_y = offset_y - (root_h / 2)
 
     # Build pin position lookup table
     # Key: port_id (e.g., "U1.1"), Value: (absolute_x, absolute_y) in KiCad coordinates

@@ -185,6 +185,13 @@ _A4_LANDSCAPE_WIDTH_MM = 297.0
 _A4_LANDSCAPE_HEIGHT_MM = 210.0
 _A4_LANDSCAPE_ASPECT = _A4_LANDSCAPE_WIDTH_MM / _A4_LANDSCAPE_HEIGHT_MM
 
+_A3_LANDSCAPE_WIDTH_MM = 420.0
+_A3_LANDSCAPE_HEIGHT_MM = 297.0
+_A3_LANDSCAPE_ASPECT = _A3_LANDSCAPE_WIDTH_MM / _A3_LANDSCAPE_HEIGHT_MM
+
+# Overflow threshold for switching to A3 (mm)
+_OVERFLOW_THRESHOLD_MM = 20.0
+
 
 def _pack_clusters_grid(
     rects: list[tuple[str, float, float]],
@@ -247,9 +254,13 @@ def run_clustered_layout(
     base_name: str = "elk",
     keep_intermediate: bool = False,
     cluster_spacing_mm: float = 10.16,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], str]:
     """
-    Run clustered layout and return a single, laid out ELK graph.
+    Run clustered layout and return a single, laid out ELK graph with paper size.
+
+    Returns:
+        Tuple of (laid_out_graph, paper_size) where paper_size is "A4" or "A3".
+        Paper size is automatically selected based on layout dimensions.
 
     - If the graph has only one real connected component, falls back to a single ELK run.
     - Otherwise, layouts each component independently, then places the components using
@@ -272,7 +283,13 @@ def run_clustered_layout(
             if not keep_intermediate:
                 input_path.unlink(missing_ok=True)
                 output_path.unlink(missing_ok=True)
-        return laid_out
+        laid_out = _normalize_graph_coords(laid_out)
+        # Determine paper size for single-component case
+        w = laid_out.get("width", 0) or 0
+        h = laid_out.get("height", 0) or 0
+        single_overflow = max(0.0, w - _A4_LANDSCAPE_WIDTH_MM) + max(0.0, h - _A4_LANDSCAPE_HEIGHT_MM)
+        single_paper = "A3" if single_overflow > _OVERFLOW_THRESHOLD_MM else "A4"
+        return laid_out, single_paper
 
     # Stage A: Layout each cluster independently.
     cluster_layouts: list[dict[str, Any]] = []
@@ -316,20 +333,45 @@ def run_clustered_layout(
         rects.append((cid, float(cl.get("width", 0) or 0), float(cl.get("height", 0) or 0)))
 
     gap_mm = float(cluster_spacing_mm)
-    best_positions: dict[str, tuple[float, float]] = {}
-    best_score = math.inf
+    
+    def _find_best_arrangement(
+        target_w: float, target_h: float, target_aspect: float
+    ) -> tuple[dict[str, tuple[float, float]], float, float, float]:
+        """Find best column arrangement for given target dimensions."""
+        best_pos: dict[str, tuple[float, float]] = {}
+        best_sc = math.inf
+        best_w = 0.0
+        best_h = 0.0
+        for cols in range(1, len(rects) + 1):
+            positions, total_w, total_h = _pack_clusters_grid(rects, columns=cols, gap_mm=gap_mm)
+            overflow = max(0.0, total_w - target_w) + max(0.0, total_h - target_h)
+            area = total_w * total_h
+            ratio = (total_w / total_h) if total_h > 1e-9 else math.inf
+            aspect_penalty = abs(math.log(ratio / target_aspect)) if ratio > 0 and math.isfinite(ratio) else 0.0
+            score = overflow * 1_000_000.0 + area + aspect_penalty * 1_000.0
+            if score < best_sc:
+                best_sc = score
+                best_pos = positions
+                best_w = total_w
+                best_h = total_h
+        return best_pos, best_w, best_h, best_sc
 
-    for cols in range(1, len(rects) + 1):
-        positions, total_w, total_h = _pack_clusters_grid(rects, columns=cols, gap_mm=gap_mm)
-        overflow = max(0.0, total_w - _A4_LANDSCAPE_WIDTH_MM) + max(0.0, total_h - _A4_LANDSCAPE_HEIGHT_MM)
-        area = total_w * total_h
-        ratio = (total_w / total_h) if total_h > 1e-9 else math.inf
-        aspect_penalty = abs(math.log(ratio / _A4_LANDSCAPE_ASPECT)) if ratio > 0 and math.isfinite(ratio) else 0.0
-
-        score = overflow * 1_000_000.0 + area + aspect_penalty * 1_000.0
-        if score < best_score:
-            best_score = score
-            best_positions = positions
+    # Try A4 first
+    best_positions, best_width, best_height, _ = _find_best_arrangement(
+        _A4_LANDSCAPE_WIDTH_MM, _A4_LANDSCAPE_HEIGHT_MM, _A4_LANDSCAPE_ASPECT
+    )
+    
+    # Check if A4 overflows significantly
+    a4_overflow = max(0.0, best_width - _A4_LANDSCAPE_WIDTH_MM) + max(0.0, best_height - _A4_LANDSCAPE_HEIGHT_MM)
+    
+    if a4_overflow > _OVERFLOW_THRESHOLD_MM:
+        # Switch to A3 scoring
+        best_positions, best_width, best_height, _ = _find_best_arrangement(
+            _A3_LANDSCAPE_WIDTH_MM, _A3_LANDSCAPE_HEIGHT_MM, _A3_LANDSCAPE_ASPECT
+        )
+        paper_size = "A3"
+    else:
+        paper_size = "A4"
 
     cluster_positions = best_positions
 
@@ -358,4 +400,4 @@ def run_clustered_layout(
         "children": merged_children,
         "edges": merged_edges,
     }
-    return _normalize_graph_coords(merged_graph)
+    return _normalize_graph_coords(merged_graph), paper_size

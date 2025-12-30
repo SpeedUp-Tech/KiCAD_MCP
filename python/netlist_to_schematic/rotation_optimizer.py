@@ -372,7 +372,7 @@ def optimize_rotations(
     builder_class,
     work_dir: Path,
     verbose: bool = True
-) -> tuple[dict, dict[str, int]]:
+) -> tuple[dict, str, dict[str, int]]:
     """
     Find optimal rotations for non-primitive components.
 
@@ -385,7 +385,7 @@ def optimize_rotations(
         verbose: Print progress
 
     Returns:
-        Tuple of (best_elk_output, rotation_map)
+        Tuple of (best_elk_output, paper_size, rotation_map)
         rotation_map is {ref: rotation_degrees}
     """
     # Skip multi-pin parts (pin numbers >= 5); optimize only small non-primitives.
@@ -397,16 +397,16 @@ def optimize_rotations(
         # Run single layout with no rotations (final layout uses clustered strategy)
         builder = builder_class(circuit, logic_hints, fetcher, {})
         elk_graph = builder.build_graph()
-        elk_output = run_clustered_layout(elk_graph, work_dir, base_name="rotation_final", keep_intermediate=False)
-        return elk_output, {}
+        elk_output, paper_size = run_clustered_layout(elk_graph, work_dir, base_name="rotation_final", keep_intermediate=False)
+        return elk_output, paper_size, {}
     
     if len(non_primitives) > MAX_NON_PRIMITIVES:
         if verbose:
             print(f"  {len(non_primitives)} non-primitives > max {MAX_NON_PRIMITIVES}, skipping optimization")
         builder = builder_class(circuit, logic_hints, fetcher, {})
         elk_graph = builder.build_graph()
-        elk_output = run_clustered_layout(elk_graph, work_dir, base_name="rotation_final", keep_intermediate=False)
-        return elk_output, {}
+        elk_output, paper_size = run_clustered_layout(elk_graph, work_dir, base_name="rotation_final", keep_intermediate=False)
+        return elk_output, paper_size, {}
     
     refs = [p.ref for p in non_primitives]
     rotations = [0, 90, 180, 270]
@@ -445,5 +445,5 @@ def optimize_rotations(
     # Re-run final layout using the best rotations, using clustered strategy.
     builder = builder_class(circuit, logic_hints, fetcher, best_rotation_map)
     elk_graph = builder.build_graph()
-    final_output = run_clustered_layout(elk_graph, work_dir, base_name="rotation_final", keep_intermediate=False)
-    return final_output, best_rotation_map
+    final_output, paper_size = run_clustered_layout(elk_graph, work_dir, base_name="rotation_final", keep_intermediate=False)
+    return final_output, paper_size, best_rotation_map

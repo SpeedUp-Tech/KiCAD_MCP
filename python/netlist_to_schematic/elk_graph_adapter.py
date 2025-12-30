@@ -170,15 +170,15 @@ class ElkGraphBuilder:
                 "elk.spacing.edgeEdge": "2.54",
                 "elk.spacing.edgeNode": "1.27",
                 "elk.layered.spacing.baseValue": "2.54",
-                "elk.layered.spacing.edgeNodeBetweenLayers": "5.08",
-                "elk.layered.spacing.nodeNodeBetweenLayers": "2.54",
+                "elk.layered.spacing.edgeNodeBetweenLayers": "1.27",
+                "elk.layered.spacing.nodeNodeBetweenLayers": "1.27",
                 "elk.padding": "[top=0,left=0,bottom=0,right=0]",
                 "elk.hierarchyHandling": "INCLUDE_CHILDREN",
                 "elk.layered.edgeRouting": "ORTHOGONAL",
                 "elk.layered.unnecessaryBendpoints": "false",
                 "elk.layered.mergeEdges": "true",
                 # Crossing minimization configuration
-                "elk.layered.thoroughness": "10",
+                "elk.layered.thoroughness": "20",
                 "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
                 "elk.layered.crossingMinimization.greedySwitch.type": "TWO_SIDED"
             },
