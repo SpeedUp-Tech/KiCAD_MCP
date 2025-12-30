@@ -246,7 +246,7 @@ def run_clustered_layout(
     *,
     base_name: str = "elk",
     keep_intermediate: bool = False,
-    cluster_spacing_mm: float = 5.08,
+    cluster_spacing_mm: float = 10.16,
 ) -> dict[str, Any]:
     """
     Run clustered layout and return a single, laid out ELK graph.

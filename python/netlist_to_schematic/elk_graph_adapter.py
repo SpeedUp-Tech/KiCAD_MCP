@@ -166,17 +166,21 @@ class ElkGraphBuilder:
                 "elk.algorithm": "layered",
                 "elk.direction": "RIGHT",
                 "elk.randomSeed": "1",  # Fixed seed for deterministic layout
-                "elk.spacing.nodeNode": "2.54",
+                "elk.spacing.nodeNode": "1.27",
                 "elk.spacing.edgeEdge": "2.54",
-                "elk.spacing.edgeNode": "2.54",
+                "elk.spacing.edgeNode": "1.27",
                 "elk.layered.spacing.baseValue": "2.54",
-                "elk.layered.spacing.edgeNodeBetweenLayers": "2.54",
-                "elk.layered.spacing.nodeNodeBetweenLayers": "1.27",
+                "elk.layered.spacing.edgeNodeBetweenLayers": "5.08",
+                "elk.layered.spacing.nodeNodeBetweenLayers": "2.54",
                 "elk.padding": "[top=0,left=0,bottom=0,right=0]",
                 "elk.hierarchyHandling": "INCLUDE_CHILDREN",
                 "elk.layered.edgeRouting": "ORTHOGONAL",
                 "elk.layered.unnecessaryBendpoints": "false",
-                "elk.layered.mergeEdges": "true"
+                "elk.layered.mergeEdges": "true",
+                # Crossing minimization configuration
+                "elk.layered.thoroughness": "10",
+                "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
+                "elk.layered.crossingMinimization.greedySwitch.type": "TWO_SIDED"
             },
             "properties": {
                 # Store power symbol mappings for elk_to_kicad.py
@@ -1101,6 +1105,10 @@ class ElkGraphBuilder:
             
             # Apply rotation if specified
             rotation = self.rotation_map.get(part.ref, 0)
+            # Default R and C to 270° (vertical) if no explicit rotation specified
+            # This aligns their pins vertically with the horizontal ELK flow direction
+            if rotation == 0 and symbol_name in ("R"):
+                rotation = 270
             if rotation != 0:
                 # Rotate pin positions
                 rotated_pins = {}
