@@ -32,6 +32,12 @@ def generate_schematic(
     use_direct_connections: bool = False,
     label_high_fanout_nets: bool = False,
     high_fanout_threshold: int = 3,
+    cluster_components: bool = False,
+    cluster_max_connections: int = 12,
+    cluster_min_size: int = 4,
+    cluster_max_size: int = 0,
+    cluster_ignore_fanout_ge: int = 8,
+    cluster_ignore_nets: set[str] | None = None,
 ) -> str:
     """
     Generate a KiCad schematic from a SKiDL circuit.
@@ -47,6 +53,12 @@ def generate_schematic(
         use_direct_connections: If True, emit direct label/power connections with no ordering hints
         label_high_fanout_nets: If True, labelize high-fanout nets to reduce crossings
         high_fanout_threshold: Minimum number of connected component refs for a net to be treated as high-fanout
+        cluster_components: If True, split dense circuits into visually separated clusters on one sheet
+        cluster_max_connections: Max "connection complexity" per cluster (branching + cycles; used with cluster_components)
+        cluster_min_size: Merge clusters smaller than this (used with cluster_components)
+        cluster_max_size: Optional hard cap on parts per cluster (0 disables; used with cluster_components)
+        cluster_ignore_fanout_ge: Ignore nets with fanout >= this when computing clusters (used with cluster_components)
+        cluster_ignore_nets: Optional set of net names to ignore when computing clusters (used with cluster_components)
         
     Returns:
         Path to the generated schematic file
@@ -85,6 +97,12 @@ def generate_schematic(
             use_direct_connections=use_direct_connections,
             label_high_fanout_nets=label_high_fanout_nets,
             high_fanout_threshold=high_fanout_threshold,
+            cluster_components=cluster_components,
+            cluster_max_connections=cluster_max_connections,
+            cluster_min_size=cluster_min_size,
+            cluster_max_size=cluster_max_size,
+            cluster_ignore_fanout_ge=cluster_ignore_fanout_ge,
+            cluster_ignore_nets=cluster_ignore_nets,
         )
     
     # Stage 1: Generate ELK graph
@@ -167,6 +185,12 @@ def generate_schematic_svg(
     use_direct_connections: bool = False,
     label_high_fanout_nets: bool = False,
     high_fanout_threshold: int = 3,
+    cluster_components: bool = False,
+    cluster_max_connections: int = 12,
+    cluster_min_size: int = 4,
+    cluster_max_size: int = 0,
+    cluster_ignore_fanout_ge: int = 8,
+    cluster_ignore_nets: set[str] | None = None,
 ) -> tuple[str, str]:
     """
     Generate both KiCad schematic and SVG export.
@@ -182,6 +206,12 @@ def generate_schematic_svg(
         use_direct_connections: If True, emit direct label/power connections with no ordering hints
         label_high_fanout_nets: If True, labelize high-fanout nets to reduce crossings
         high_fanout_threshold: Minimum number of connected component refs for a net to be treated as high-fanout
+        cluster_components: If True, split dense circuits into visually separated clusters on one sheet
+        cluster_max_connections: Max "connection complexity" per cluster (branching + cycles; used with cluster_components)
+        cluster_min_size: Merge clusters smaller than this (used with cluster_components)
+        cluster_max_size: Optional hard cap on parts per cluster (0 disables; used with cluster_components)
+        cluster_ignore_fanout_ge: Ignore nets with fanout >= this when computing clusters (used with cluster_components)
+        cluster_ignore_nets: Optional set of net names to ignore when computing clusters (used with cluster_components)
         
     Returns:
         Tuple of (schematic_path, svg_path)
@@ -194,6 +224,12 @@ def generate_schematic_svg(
         use_direct_connections=use_direct_connections,
         label_high_fanout_nets=label_high_fanout_nets,
         high_fanout_threshold=high_fanout_threshold,
+        cluster_components=cluster_components,
+        cluster_max_connections=cluster_max_connections,
+        cluster_min_size=cluster_min_size,
+        cluster_max_size=cluster_max_size,
+        cluster_ignore_fanout_ge=cluster_ignore_fanout_ge,
+        cluster_ignore_nets=cluster_ignore_nets,
     )
     
     svg_dir = Path(sch_path).parent / f"{Path(sch_path).stem}_svg"
@@ -231,6 +267,12 @@ def generate_schematic_from_skidl_module(
     use_direct_connections: bool = False,
     label_high_fanout_nets: bool = False,
     high_fanout_threshold: int = 3,
+    cluster_components: bool = False,
+    cluster_max_connections: int = 12,
+    cluster_min_size: int = 4,
+    cluster_max_size: int = 0,
+    cluster_ignore_fanout_ge: int = 8,
+    cluster_ignore_nets: set[str] | None = None,
 ) -> dict:
     """
     Generate a KiCad schematic from a SKiDL module file.
@@ -254,6 +296,12 @@ def generate_schematic_from_skidl_module(
         use_direct_connections: If True, emit direct label/power connections with no ordering hints.
         label_high_fanout_nets: If True, labelize high-fanout nets to reduce crossings.
         high_fanout_threshold: Minimum number of connected component refs for a net to be treated as high-fanout.
+        cluster_components: If True, split dense circuits into visually separated clusters on one sheet.
+        cluster_max_connections: Max "connection complexity" per cluster (branching + cycles; used with cluster_components).
+        cluster_min_size: Merge clusters smaller than this (used with cluster_components).
+        cluster_max_size: Optional hard cap on parts per cluster (0 disables; used with cluster_components).
+        cluster_ignore_fanout_ge: Ignore nets with fanout >= this when computing clusters (used with cluster_components).
+        cluster_ignore_nets: Optional set of net names to ignore when computing clusters (used with cluster_components).
     
     Returns:
         A dict with keys:
@@ -328,6 +376,12 @@ def generate_schematic_from_skidl_module(
                 use_direct_connections=use_direct_connections,
                 label_high_fanout_nets=label_high_fanout_nets,
                 high_fanout_threshold=high_fanout_threshold,
+                cluster_components=cluster_components,
+                cluster_max_connections=cluster_max_connections,
+                cluster_min_size=cluster_min_size,
+                cluster_max_size=cluster_max_size,
+                cluster_ignore_fanout_ge=cluster_ignore_fanout_ge,
+                cluster_ignore_nets=cluster_ignore_nets,
             )
         else:
             sch_path = generate_schematic(
@@ -339,6 +393,12 @@ def generate_schematic_from_skidl_module(
                 use_direct_connections=use_direct_connections,
                 label_high_fanout_nets=label_high_fanout_nets,
                 high_fanout_threshold=high_fanout_threshold,
+                cluster_components=cluster_components,
+                cluster_max_connections=cluster_max_connections,
+                cluster_min_size=cluster_min_size,
+                cluster_max_size=cluster_max_size,
+                cluster_ignore_fanout_ge=cluster_ignore_fanout_ge,
+                cluster_ignore_nets=cluster_ignore_nets,
             )
         
         result: dict = {
@@ -440,6 +500,41 @@ Examples:
         help="Minimum number of connected component refs for a net to be treated as high-fanout (used with --label-high-fanout-nets)",
     )
     parser.add_argument(
+        "--cluster-components",
+        action="store_true",
+        help="Split dense circuits into visually separated clusters on one sheet by cutting inter-cluster nets into labels",
+    )
+    parser.add_argument(
+        "--cluster-max-connections",
+        type=int,
+        default=12,
+        help="Max connection complexity per cluster (branching + cycles; used with --cluster-components)",
+    )
+    parser.add_argument(
+        "--cluster-min-size",
+        type=int,
+        default=4,
+        help="Merge clusters smaller than this (used with --cluster-components)",
+    )
+    parser.add_argument(
+        "--cluster-max-size",
+        type=int,
+        default=0,
+        help="Optional hard cap on parts per cluster; 0 disables (used with --cluster-components)",
+    )
+    parser.add_argument(
+        "--cluster-ignore-fanout-ge",
+        type=int,
+        default=8,
+        help="Ignore nets with fanout >= this when computing clusters (used with --cluster-components)",
+    )
+    parser.add_argument(
+        "--cluster-ignore-net",
+        action="append",
+        default=[],
+        help="Net name to ignore when computing clusters (repeatable; used with --cluster-components)",
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="Verify schematic by comparing netlists with original SKiDL circuit"
@@ -491,6 +586,12 @@ Examples:
             use_direct_connections=args.direct_connections,
             label_high_fanout_nets=args.label_high_fanout_nets,
             high_fanout_threshold=args.high_fanout_threshold,
+            cluster_components=args.cluster_components,
+            cluster_max_connections=args.cluster_max_connections,
+            cluster_min_size=args.cluster_min_size,
+            cluster_max_size=args.cluster_max_size,
+            cluster_ignore_fanout_ge=args.cluster_ignore_fanout_ge,
+            cluster_ignore_nets=set(args.cluster_ignore_net or []),
         )
         print(f"\nOutput schematic: {sch_path}")
         print(f"Output SVG: {svg_path}")
@@ -503,6 +604,12 @@ Examples:
             use_direct_connections=args.direct_connections,
             label_high_fanout_nets=args.label_high_fanout_nets,
             high_fanout_threshold=args.high_fanout_threshold,
+            cluster_components=args.cluster_components,
+            cluster_max_connections=args.cluster_max_connections,
+            cluster_min_size=args.cluster_min_size,
+            cluster_max_size=args.cluster_max_size,
+            cluster_ignore_fanout_ge=args.cluster_ignore_fanout_ge,
+            cluster_ignore_nets=set(args.cluster_ignore_net or []),
         )
         print(f"\nOutput schematic: {sch_path}")
     
