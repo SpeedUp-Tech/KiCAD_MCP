@@ -18,6 +18,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 
+from kicad_catalog.config import resolve_repo_root
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_write_db_path
+
 from .constants import FILTERED_FTS_TABLE
 from .db import _default_db_path, _get_connection
 from .normalize import (
@@ -29,6 +33,7 @@ from .normalize import (
 from .search_utils import _compose_fts_query, _extract_key_attributes, _value_or_none
 
 logger = logging.getLogger("component_search")
+REPO_ROOT = resolve_repo_root()
 
 
 @dataclass(slots=True)
@@ -498,9 +503,14 @@ def add_searchable_part(
         extra_data["attributes"] = attributes
     extra_json = json.dumps(extra_data) if extra_data else None
 
-    # Get a fresh connection for writing (don't use cached read-only connection)
-    conn = sqlite3.connect(str(resolved_db_path))
-    conn.row_factory = sqlite3.Row
+    # Get a fresh connection for writing (don't use cached read-only connection).
+    # Writes are redirected to a working copy when the DB path is protected.
+    effective_db_path = resolve_write_db_path(
+        resolved_db_path,
+        prefix="component",
+        repo_root=REPO_ROOT,
+    )
+    conn = connect_sqlite(effective_db_path)
 
     try:
         # Find or create category
@@ -577,7 +587,7 @@ def add_searchable_part(
             "mpn": mpn,
             "library": library,
             "package": package,
-            "dbPath": str(resolved_db_path),
+            "dbPath": str(effective_db_path),
         }
 
     except sqlite3.Error as err:

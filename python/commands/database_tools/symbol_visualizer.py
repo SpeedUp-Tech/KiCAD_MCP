@@ -32,6 +32,9 @@ from matplotlib.lines import Line2D
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 
+from kicad_catalog.config import load_catalog_paths
+from kicad_catalog.sqlite import connect_sqlite
+
 # Default database path
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SYMBOL_DB = PROJECT_ROOT / 'symbol_lib' / 'kicad_symbols.sqlite3'
@@ -509,9 +512,10 @@ def visualize_by_mpn(
         >>> fig = visualize_by_mpn("HX711", "ADC_DAC_Data_Conversion")
     """
     if db_path is None:
-        db_path = DEFAULT_SYMBOL_DB
+        candidates = load_catalog_paths(repo_root=PROJECT_ROOT).symbol_dbs
+        db_path = candidates[0] if candidates else DEFAULT_SYMBOL_DB
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(Path(db_path), readonly=True)
     try:
         cursor = conn.execute(
             "SELECT mpn, library, sexp FROM symbol_index WHERE mpn = ? AND library = ?",
@@ -632,9 +636,10 @@ def list_symbols_by_prefix(
         ...     print(f"{m['library']}/{m['mpn']}")
     """
     if db_path is None:
-        db_path = DEFAULT_SYMBOL_DB
+        candidates = load_catalog_paths(repo_root=PROJECT_ROOT).symbol_dbs
+        db_path = candidates[0] if candidates else DEFAULT_SYMBOL_DB
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(Path(db_path), readonly=True)
     try:
         cursor = conn.execute(
             "SELECT mpn, library FROM symbol_index WHERE mpn LIKE ? LIMIT ?",

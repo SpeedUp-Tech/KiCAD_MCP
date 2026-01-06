@@ -14,6 +14,9 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import sexpdata
 from sexpdata import Symbol as SSymbol
 
+from kicad_catalog.config import load_catalog_paths
+from kicad_catalog.sqlite import connect_sqlite
+
 from skip.eeschema.lib_symbol import LibSymbolsListWrapper
 from skip.eeschema.schematic.symbol import Symbol, SymbolCollection
 from skip.sexp.parser import ParsedValue
@@ -84,35 +87,14 @@ def _get_symbol_db_paths() -> List[Path]:
     if _SYMBOL_DB_PATHS_CACHE is not None:
         return _SYMBOL_DB_PATHS_CACHE
 
-    paths: List[Path] = []
-    if LIBRARY_PATHS_CONFIG.exists():
-        try:
-            config_data = json.loads(LIBRARY_PATHS_CONFIG.read_text(encoding='utf-8'))
-            db_entry = config_data.get('symbolDbPath')
-            if isinstance(db_entry, str):
-                _collect_db_path_entry(db_entry, paths)
-            db_list = config_data.get('symbolDbPaths')
-            if isinstance(db_list, list):
-                for entry in db_list:
-                    if isinstance(entry, str):
-                        _collect_db_path_entry(entry, paths)
-            search_entries = config_data.get('symbolSearchPaths', [])
-            if isinstance(search_entries, list):
-                for entry in search_entries:
-                    if not isinstance(entry, str):
-                        continue
-                    lowered = entry.strip().lower()
-                    if lowered.endswith(('.db', '.sqlite', '.sqlite3')):
-                        _collect_db_path_entry(entry, paths)
-        except Exception as exc:
-            logger.warning("Unable to parse %s for symbol DB paths: %s", LIBRARY_PATHS_CONFIG, exc)
-
-    if not paths:
-        default_db = PROJECT_ROOT / 'symbol_lib' / 'kicad_symbols.sqlite3'
-        paths.append(default_db)
+    try:
+        paths = list(load_catalog_paths(repo_root=PROJECT_ROOT).symbol_dbs)
+    except Exception as exc:
+        logger.warning("Unable to resolve symbol DB paths via catalog config: %s", exc)
+        paths = [PROJECT_ROOT / 'symbol_lib' / 'kicad_symbols.sqlite3']
 
     _SYMBOL_DB_PATHS_CACHE = paths
-    return paths
+    return _SYMBOL_DB_PATHS_CACHE
 
 
 def _load_symbol_from_db(library_name: str, symbol_name: str) -> Optional[List[Any]]:
@@ -122,8 +104,7 @@ def _load_symbol_from_db(library_name: str, symbol_name: str) -> Optional[List[A
         conn = _SYMBOL_DB_CONNECTIONS.get(db_path)
         if conn is None:
             try:
-                conn = sqlite3.connect(str(db_path))
-                conn.row_factory = sqlite3.Row
+                conn = connect_sqlite(db_path, readonly=True)
                 _SYMBOL_DB_CONNECTIONS[db_path] = conn
             except Exception as exc:
                 logger.warning("Failed to open symbol DB %s: %s", db_path, exc)

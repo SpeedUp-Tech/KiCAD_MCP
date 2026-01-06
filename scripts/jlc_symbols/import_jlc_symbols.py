@@ -27,11 +27,23 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 # Repository paths and module setup
 # ---------------------------------------------------------------------------
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-EASYEDA_ROOT = PROJECT_ROOT / "easyeda2kicad.py"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = REPO_ROOT
 
-if str(EASYEDA_ROOT) not in sys.path:
-    sys.path.insert(0, str(EASYEDA_ROOT))
+EASYEDA_ROOT_CANDIDATES = (
+    PROJECT_ROOT / "easyeda2kicad.py",
+    SCRIPTS_ROOT / "easyeda2kicad.py",
+)
+EASYEDA_ROOT = next(
+    (candidate for candidate in EASYEDA_ROOT_CANDIDATES if candidate.exists()),
+    EASYEDA_ROOT_CANDIDATES[0],
+)
+
+PYTHON_ROOT = PROJECT_ROOT / "python"
+for path in (EASYEDA_ROOT, PYTHON_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 from easyeda2kicad.easyeda.easyeda_api import EasyedaApi  # type: ignore
 from easyeda2kicad.easyeda.easyeda_importer import (  # type: ignore
@@ -46,6 +58,9 @@ from easyeda2kicad.helpers import (  # type: ignore
 from easyeda2kicad.kicad.export_kicad_footprint import ExporterFootprintKicad  # type: ignore
 from easyeda2kicad.kicad.export_kicad_symbol import ExporterSymbolKicad  # type: ignore
 from easyeda2kicad.kicad.parameters_kicad_symbol import KicadVersion  # type: ignore
+
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_read_db_path
 
 
 # ---------------------------------------------------------------------------
@@ -200,8 +215,8 @@ def fetch_candidates(
     scan_limit: Optional[int] = None,
 ) -> List[ComponentCandidate]:
     """Load candidate parts from the database using heuristic filters."""
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    db_path = resolve_read_db_path(db_path, prefix="component", repo_root=PROJECT_ROOT)
+    conn = connect_sqlite(db_path, readonly=True)
     base_query = """
         SELECT lcsc, category, mfr
         FROM v_components
@@ -418,7 +433,13 @@ def process_category_batch(
     )
     api = EasyedaApi()
     output_path = Path(output_dir)
-    cache_conn = sqlite3.connect(cache_db) if cache_db else None
+    cache_conn: Optional[sqlite3.Connection] = None
+    if cache_db:
+        try:
+            cache_conn = connect_sqlite(Path(cache_db), readonly=True)
+        except Exception as exc:  # noqa: BLE001
+            logging.error("Unable to open cache DB %s: %s", cache_db, exc)
+            cache_conn = None
     added = updated = skipped = 0
     total = len(candidates)
     pending_updates = 0
@@ -649,7 +670,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         cache_conn: Optional[sqlite3.Connection] = None
         if args.cache_db:
             try:
-                cache_conn = sqlite3.connect(args.cache_db)
+                cache_conn = connect_sqlite(args.cache_db, readonly=True)
             except sqlite3.Error as exc:
                 print(f"ERROR: Unable to open cache database {args.cache_db}: {exc}", file=sys.stderr)
                 return 1

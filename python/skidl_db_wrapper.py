@@ -12,13 +12,15 @@ stored S-expression instead of forcing SKiDL to scan .kicad_sym files.
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 import site
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from kicad_catalog.config import load_catalog_paths
+from kicad_catalog.sqlite import connect_sqlite
 
 # -----------------------------------------------------------------------------
 # Make sure the pip-installed SKiDL package is imported even when running from
@@ -48,20 +50,6 @@ DEFAULT_LIB_CONFIG = PROJECT_ROOT / "config" / "library-paths.json"
 DEFAULT_DB_PATH = PROJECT_ROOT / "symbol_lib" / "kicad_symbols.sqlite3"
 
 
-def _resolve_config_path(entry: str) -> Optional[Path]:
-    """Resolve a path entry from the library config file."""
-    if not entry:
-        return None
-    try:
-        path_obj = Path(entry).expanduser()
-        if not path_obj.is_absolute():
-            path_obj = (PROJECT_ROOT / path_obj).resolve()
-        return path_obj
-    except Exception as exc:
-        logger.warning("Invalid library path %s: %s", entry, exc)
-        return None
-
-
 class SymbolDatabase:
     """
     Lazy SQLite-backed symbol provider.
@@ -76,51 +64,25 @@ class SymbolDatabase:
     ) -> None:
         self._config_path = config_path
         self._default_db = default_db
-        self._db_paths: Optional[List[Path]] = None
         self._connections: Dict[Path, sqlite3.Connection] = {}
         self._sexp_cache: Dict[Tuple[str, str], Optional[str]] = {}
 
     # ------------------------------------------------------------------ #
     # Configuration helpers.
     # ------------------------------------------------------------------ #
-    def _collect_db_entry(self, entry: str, paths: List[Path]) -> None:
-        resolved = _resolve_config_path(entry)
-        if resolved and resolved not in paths:
-            paths.append(resolved)
-
     def _load_configured_paths(self) -> List[Path]:
-        paths: List[Path] = []
-        if self._config_path.exists():
-            try:
-                config_data = json.loads(self._config_path.read_text(encoding="utf-8"))
-            except Exception as exc:
-                logger.warning("Failed to parse %s: %s", self._config_path, exc)
-            else:
-                db_entry = config_data.get("symbolDbPath")
-                if isinstance(db_entry, str):
-                    self._collect_db_entry(db_entry, paths)
-                db_list = config_data.get("symbolDbPaths")
-                if isinstance(db_list, list):
-                    for entry in db_list:
-                        if isinstance(entry, str):
-                            self._collect_db_entry(entry, paths)
-                extra_search_paths = config_data.get("symbolSearchPaths", [])
-                if isinstance(extra_search_paths, list):
-                    for entry in extra_search_paths:
-                        if not isinstance(entry, str):
-                            continue
-                        lowered = entry.strip().lower()
-                        if lowered.endswith((".db", ".sqlite", ".sqlite3")):
-                            self._collect_db_entry(entry, paths)
-        if not paths:
-            paths.append(self._default_db)
-        return paths
+        paths = list(
+            load_catalog_paths(
+                repo_root=PROJECT_ROOT,
+                library_paths_config=self._config_path,
+            ).symbol_dbs
+        )
+        return paths or [self._default_db]
 
     @property
     def db_paths(self) -> List[Path]:
-        if self._db_paths is None:
-            self._db_paths = self._load_configured_paths()
-        return self._db_paths
+        # Re-evaluate each time so newly created working copies are picked up.
+        return self._load_configured_paths()
 
     # ------------------------------------------------------------------ #
     # DB querying.
@@ -132,8 +94,7 @@ class SymbolDatabase:
         if conn:
             return conn
         try:
-            conn = sqlite3.connect(str(path))
-            conn.row_factory = sqlite3.Row
+            conn = connect_sqlite(path, readonly=True)
         except Exception as exc:
             logger.warning("Unable to open symbol DB %s: %s", path, exc)
             return None

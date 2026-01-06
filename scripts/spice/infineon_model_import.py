@@ -21,6 +21,14 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable, List, Sequence, Tuple
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ROOT = PROJECT_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_write_db_path
+
 
 DEFAULT_ROOT = Path("spice_lib/infineon/LTspiceInfineonNMOSLibrary-master")
 DEFAULT_SUBDIR = DEFAULT_ROOT / "sub"
@@ -184,10 +192,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     db_path = Path(args.db)
-    if db_path.parent and str(db_path.parent) not in ("", "."):
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_db_path = resolve_write_db_path(db_path, prefix="spice", repo_root=PROJECT_ROOT)
+    if safe_db_path != db_path:
+        print(
+            f"Destination DB is protected; writing to working copy instead: {safe_db_path}",
+            file=sys.stderr,
+        )
+    db_path = safe_db_path
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(str(db_path))
+    conn = connect_sqlite(db_path)
     ensure_schema(conn)
     inserted = store_blocks(conn, blocks)
 

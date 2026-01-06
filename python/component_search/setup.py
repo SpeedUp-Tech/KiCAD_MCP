@@ -13,7 +13,12 @@ import sys
 from pathlib import Path
 from typing import Optional, Sequence, Union
 
+from kicad_catalog.config import resolve_repo_root
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_write_db_path
+
 DatabasePath = Union[str, Path]
+REPO_ROOT = resolve_repo_root()
 
 
 def _normalize_db_path(db_path: DatabasePath) -> Path:
@@ -22,7 +27,7 @@ def _normalize_db_path(db_path: DatabasePath) -> Path:
 
 def create_components_search_view(db_path: DatabasePath) -> None:
     path = _normalize_db_path(db_path)
-    conn = sqlite3.connect(str(path))
+    conn = connect_sqlite(path)
     cursor = conn.cursor()
 
     cursor.execute("DROP VIEW IF EXISTS v_components_search")
@@ -58,7 +63,7 @@ def create_components_search_view(db_path: DatabasePath) -> None:
 
 def create_fts_search_table(db_path: DatabasePath) -> None:
     path = _normalize_db_path(db_path)
-    conn = sqlite3.connect(str(path))
+    conn = connect_sqlite(path)
     cursor = conn.cursor()
 
     cursor.execute("DROP TABLE IF EXISTS v_components_search_fts")
@@ -94,7 +99,7 @@ def create_fts_search_table(db_path: DatabasePath) -> None:
 
 def verify_setup(db_path: DatabasePath) -> None:
     path = _normalize_db_path(db_path)
-    conn = sqlite3.connect(str(path))
+    conn = connect_sqlite(path, readonly=True)
     cursor = conn.cursor()
 
     cursor.execute("SELECT COUNT(*) FROM v_components_search")
@@ -150,10 +155,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print(f"Error: Database file not found: {db_path}")
         return 1
 
-    print(f"Setting up component search for database: {db_path}\n")
+    effective_db_path = resolve_write_db_path(db_path, prefix="component", repo_root=REPO_ROOT)
+
+    if effective_db_path != db_path:
+        print(f"Using working copy for setup (original is protected): {effective_db_path}")
+
+    print(f"Setting up component search for database: {effective_db_path}\n")
 
     try:
-        setup_component_search(db_path)
+        setup_component_search(effective_db_path)
     except Exception as exc:  # pragma: no cover - CLI guard
         print(f"\n✗ Error during setup: {exc}")
         import traceback

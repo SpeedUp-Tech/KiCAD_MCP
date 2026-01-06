@@ -18,7 +18,7 @@ import os
 
 from skidl import Circuit, Net
 
-from .model_db import search_spice_model, DEFAULT_MODEL_DB
+from .model_db import resolve_model_db_path, search_spice_model
 from .utils import disable_inspice_cache, disable_skidl_file_logging
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -232,7 +232,7 @@ def convert_skidl_module(
     model_specs.update(PRIMITIVE_MODELS)
 
     db_models: Dict[str, dict] = {}
-    model_db = model_db_path or DEFAULT_MODEL_DB
+    model_db = resolve_model_db_path(model_db_path, for_write=False)
     for part in parts:
         key = f"{part.library}::{part.name}"
         if key in model_specs or key in db_models:

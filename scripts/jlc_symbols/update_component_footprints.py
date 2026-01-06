@@ -17,6 +17,12 @@ from typing import Dict, Iterator, Optional, Tuple, List
 import sys
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ROOT = PROJECT_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_read_db_path, resolve_write_db_path
 
 DEFAULT_COMPONENTS_DB = PROJECT_ROOT / "part_lib" / "jlcpcb-components.sqlite3"
 DEFAULT_SYMBOL_DB = PROJECT_ROOT / "symbol_lib" / "kicad_symbols.sqlite3"
@@ -142,13 +148,30 @@ def backfill_footprints(
 def main() -> int:
     args = parse_args()
 
-    if not args.components_db.exists():
-        raise FileNotFoundError(f"Components database not found: {args.components_db}")
-    if not args.symbol_db.exists():
-        raise FileNotFoundError(f"Symbol database not found: {args.symbol_db}")
+    components_db = args.components_db.expanduser()
+    if not components_db.is_absolute():
+        components_db = (PROJECT_ROOT / components_db).resolve()
+    symbol_db = args.symbol_db.expanduser()
+    if not symbol_db.is_absolute():
+        symbol_db = (PROJECT_ROOT / symbol_db).resolve()
 
-    components_conn = sqlite3.connect(str(args.components_db))
-    symbol_conn = sqlite3.connect(str(args.symbol_db))
+    if not components_db.exists():
+        raise FileNotFoundError(f"Components database not found: {components_db}")
+    if not symbol_db.exists():
+        raise FileNotFoundError(f"Symbol database not found: {symbol_db}")
+
+    effective_components_db = resolve_write_db_path(
+        components_db,
+        prefix="component",
+        repo_root=PROJECT_ROOT,
+    )
+    effective_symbol_db = resolve_read_db_path(symbol_db, prefix="symbol", repo_root=PROJECT_ROOT)
+
+    if effective_components_db != components_db:
+        print(f"Using working copy for updates (original is protected): {effective_components_db}")
+
+    components_conn = connect_sqlite(effective_components_db)
+    symbol_conn = connect_sqlite(effective_symbol_db, readonly=True)
     try:
         stats = backfill_footprints(components_conn, symbol_conn, args.batch_size)
     finally:

@@ -17,7 +17,15 @@ import sys
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
-DEFAULT_DB = Path("part_lib/jlcpcb-components.sqlite3")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ROOT = PROJECT_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_write_db_path
+
+DEFAULT_DB = PROJECT_ROOT / "part_lib" / "jlcpcb-components.sqlite3"
 
 NEW_VIEW_SQL = """
 CREATE VIEW v_components_search AS
@@ -253,7 +261,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     symbol_mpns = load_mpn_list(args.symbol_list, args.normalize_lowercase)
     spice_mpns = load_mpn_list(args.spice_list, args.normalize_lowercase)
 
-    conn = sqlite3.connect(args.db)
+    db_path = args.db.expanduser()
+    if not db_path.is_absolute():
+        db_path = (PROJECT_ROOT / db_path).resolve()
+    if not db_path.exists():
+        raise FileNotFoundError(f"Component database not found: {db_path}")
+
+    effective_db_path = resolve_write_db_path(db_path, prefix="component", repo_root=PROJECT_ROOT)
+    if effective_db_path != db_path:
+        print(f"Using working copy for updates (original is protected): {effective_db_path}")
+
+    conn = connect_sqlite(effective_db_path)
     try:
         ensure_component_columns(conn)
         summary = apply_flags(conn, symbol_mpns, spice_mpns, args.dry_run)

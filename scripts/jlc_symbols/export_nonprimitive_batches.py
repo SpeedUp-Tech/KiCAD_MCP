@@ -13,8 +13,17 @@ import argparse
 import logging
 import math
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ROOT = PROJECT_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_read_db_path
 
 # Keep the primitive category list in sync with import_jlc_symbols.py
 PRIMITIVE_CATEGORY_ROOTS: set[str] = {
@@ -67,8 +76,8 @@ def fetch_candidates(
     db_path: Path,
     limit: Optional[int],
 ) -> List[Tuple[int, str]]:
-    conn = sqlite3.connect(db_path)
-    conn.row_factory = sqlite3.Row
+    db_path = resolve_read_db_path(db_path, prefix="component", repo_root=PROJECT_ROOT)
+    conn = connect_sqlite(db_path, readonly=True)
     query = """
         SELECT lcsc, category
         FROM v_components

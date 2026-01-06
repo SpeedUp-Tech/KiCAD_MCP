@@ -19,9 +19,18 @@ import dataclasses
 import logging
 import re
 import sqlite3
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Set, Tuple
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+PYTHON_ROOT = PROJECT_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_read_db_path, resolve_write_db_path
 
 # Suffixes that commonly appear on either models or MPNs and can be safely removed
 # when searching for a base part number. The list is intentionally conservative
@@ -188,7 +197,7 @@ class SpiceModelMatcher:
         self._load_models()
 
     def _load_models(self) -> None:
-        conn = sqlite3.connect(self.spice_db_path)
+        conn = connect_sqlite(self.spice_db_path, readonly=True)
         try:
             rows = conn.execute("SELECT model_name FROM models")
             for (model_name,) in rows:
@@ -551,7 +560,8 @@ def write_output_db(
     if output_path.exists():
         output_path.unlink()
 
-    conn = sqlite3.connect(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = connect_sqlite(output_path)
     try:
         conn.execute(
             """
@@ -662,10 +672,16 @@ def main() -> None:
         format="%(message)s",
     )
 
-    logging.info("Loading SPICE models from %s", args.spice_db)
-    matcher = SpiceModelMatcher(args.spice_db)
+    spice_db = resolve_read_db_path(args.spice_db, prefix="spice", repo_root=PROJECT_ROOT)
+    components_db = resolve_read_db_path(args.components_db, prefix="component", repo_root=PROJECT_ROOT)
+    output_db = resolve_write_db_path(args.output, prefix="component", repo_root=PROJECT_ROOT)
+    if output_db != args.output:
+        logging.info("Output DB is protected; writing to working copy instead: %s", output_db)
 
-    conn = sqlite3.connect(args.components_db)
+    logging.info("Loading SPICE models from %s", spice_db)
+    matcher = SpiceModelMatcher(spice_db)
+
+    conn = connect_sqlite(components_db, readonly=True)
     try:
         rows = list(fetch_component_rows(conn, args.include_all_mpns, args.limit))
     finally:
@@ -679,8 +695,8 @@ def main() -> None:
     for match_type, count in sorted(stats.items(), key=lambda item: item[0]):
         logging.info("  %-18s %6d", match_type, count)
 
-    write_output_db(args.output, records)
-    logging.info("Wrote mapping to %s", args.output)
+    write_output_db(output_db, records)
+    logging.info("Wrote mapping to %s", output_db)
 
 
 if __name__ == "__main__":

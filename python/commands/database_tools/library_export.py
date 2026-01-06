@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import logging
 import os
 import shutil
@@ -15,44 +14,21 @@ from sexpdata import Symbol as SSymbol
 from skip import Schematic
 from skip.sexp.util import writeTree
 
+from kicad_catalog.config import load_catalog_paths
+from kicad_catalog.sqlite import connect_sqlite
+
 LOGGER = logging.getLogger("library_export")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-LIBRARY_PATHS_CONFIG = PROJECT_ROOT / "config" / "library-paths.json"
 DEFAULT_SYMBOL_VERSION = 20211014
 SYMBOL_GENERATOR = "KiCAD-MCP-ProjectLibs"
 DEFAULT_FOOTPRINT_DB = PROJECT_ROOT / "symbol_lib" / "kicad_footprints.sqlite3"
 DEFAULT_FOOTPRINT_DIR = PROJECT_ROOT / "symbol_lib" / "footprints"
 DEFAULT_KICAD_MAJOR_VERSION = os.environ.get("KICAD_MAJOR_VERSION", "9.0")
 
-_CONFIG_CACHE: Optional[dict] = None
 _FOOTPRINT_DB_PATHS: Optional[List[Path]] = None
 _FOOTPRINT_SEARCH_PATHS: Optional[List[Path]] = None
 _FOOTPRINT_DB_CONNECTIONS: Dict[Path, sqlite3.Connection] = {}
-
-
-def _load_library_paths_config() -> dict:
-    global _CONFIG_CACHE
-    if _CONFIG_CACHE is not None:
-        return _CONFIG_CACHE
-    if LIBRARY_PATHS_CONFIG.exists():
-        try:
-            _CONFIG_CACHE = json.loads(LIBRARY_PATHS_CONFIG.read_text(encoding="utf-8"))
-        except Exception as exc:  # noqa: BLE001
-            LOGGER.warning("Failed to parse %s: %s", LIBRARY_PATHS_CONFIG, exc)
-            _CONFIG_CACHE = {}
-    else:
-        _CONFIG_CACHE = {}
-    return _CONFIG_CACHE
-
-
-def _resolve_path(entry: str) -> Optional[Path]:
-    if not entry:
-        return None
-    path_obj = Path(entry).expanduser()
-    if not path_obj.is_absolute():
-        path_obj = (PROJECT_ROOT / path_obj).resolve()
-    return path_obj
 
 
 def _get_footprint_db_paths() -> List[Path]:
@@ -60,27 +36,7 @@ def _get_footprint_db_paths() -> List[Path]:
     if _FOOTPRINT_DB_PATHS is not None:
         return _FOOTPRINT_DB_PATHS
 
-    data = _load_library_paths_config()
-    paths: List[Path] = []
-
-    single = data.get("footprintDbPath")
-    if isinstance(single, str):
-        resolved = _resolve_path(single)
-        if resolved:
-            paths.append(resolved)
-
-    multi = data.get("footprintDbPaths")
-    if isinstance(multi, Sequence):
-        for entry in multi:
-            if not isinstance(entry, str):
-                continue
-            resolved = _resolve_path(entry)
-            if resolved and resolved not in paths:
-                paths.append(resolved)
-
-    if not paths:
-        paths.append(DEFAULT_FOOTPRINT_DB)
-
+    paths = list(load_catalog_paths(repo_root=PROJECT_ROOT).footprint_dbs) or [DEFAULT_FOOTPRINT_DB]
     _FOOTPRINT_DB_PATHS = paths
     return paths
 
@@ -90,17 +46,7 @@ def _get_footprint_search_paths() -> List[Path]:
     if _FOOTPRINT_SEARCH_PATHS is not None:
         return _FOOTPRINT_SEARCH_PATHS
 
-    data = _load_library_paths_config()
-    paths: List[Path] = []
-
-    configured = data.get("footprintSearchPaths")
-    if isinstance(configured, Sequence):
-        for entry in configured:
-            if not isinstance(entry, str):
-                continue
-            resolved = _resolve_path(entry)
-            if resolved and resolved not in paths:
-                paths.append(resolved)
+    paths = list(load_catalog_paths(repo_root=PROJECT_ROOT).footprint_search_paths)
 
     defaults = [
         DEFAULT_FOOTPRINT_DIR,
@@ -311,8 +257,7 @@ def _fetch_footprint_text(library: str, candidates: Sequence[str]) -> Tuple[Opti
         conn = _FOOTPRINT_DB_CONNECTIONS.get(db_path)
         if conn is None:
             try:
-                conn = sqlite3.connect(str(db_path))
-                conn.row_factory = sqlite3.Row
+                conn = connect_sqlite(db_path, readonly=True)
             except Exception as exc:  # noqa: BLE001
                 LOGGER.warning("Unable to open footprint DB %s: %s", db_path, exc)
                 continue

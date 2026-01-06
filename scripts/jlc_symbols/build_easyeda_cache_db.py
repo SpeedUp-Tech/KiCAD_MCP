@@ -15,9 +15,18 @@ import argparse
 import json
 import logging
 import sqlite3
+import sys
 import time
 from pathlib import Path
 from typing import Iterable, List, Optional, Sequence, Tuple
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ROOT = PROJECT_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_write_db_path
 
 LCSC_SUFFIX = ".json"
 
@@ -61,9 +70,13 @@ def read_payload(path: Path) -> Tuple[str, str]:
 
 
 def ensure_schema(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(db_path)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn = connect_sqlite(
+        db_path,
+        pragmas={
+            "journal_mode": "WAL",
+            "synchronous": "NORMAL",
+        },
+    )
     conn.execute(SCHEMA)
     return conn
 
@@ -145,14 +158,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
 
     logging.info("Found %d JSON files under %s", len(files), args.input)
-    conn = ensure_schema(args.db)
+    db_path = resolve_write_db_path(args.db, prefix="cache", repo_root=PROJECT_ROOT)
+    if db_path != args.db:
+        logging.warning(
+            "Output DB path is protected; writing to working copy instead: %s",
+            db_path,
+        )
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = ensure_schema(db_path)
 
     try:
         entries = (read_payload(path) for path in files)
         insert_payloads(conn, entries, total=len(files))
     finally:
         conn.close()
-    logging.info("All records inserted into %s", args.db)
+    logging.info("All records inserted into %s", db_path)
     return 0
 
 

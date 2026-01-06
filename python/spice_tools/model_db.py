@@ -8,8 +8,21 @@ import sqlite3
 from pathlib import Path
 from typing import Optional, Dict
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
+from kicad_catalog.config import resolve_repo_root
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_read_db_path, resolve_write_db_path
+
+REPO_ROOT = resolve_repo_root()
 DEFAULT_MODEL_DB = REPO_ROOT / "spice_lib" / "spice_models.db"
+
+
+def resolve_model_db_path(db_path: Optional[Path | str] = None, *, for_write: bool) -> Path:
+    resolved = Path(db_path).expanduser() if db_path else DEFAULT_MODEL_DB
+    if db_path is None and not for_write:
+        resolved = resolve_read_db_path(resolved, prefix="spice", repo_root=REPO_ROOT)
+    if for_write:
+        resolved = resolve_write_db_path(resolved, prefix="spice", repo_root=REPO_ROOT)
+    return resolved
 
 
 def _ensure_table(conn: sqlite3.Connection) -> None:
@@ -35,9 +48,9 @@ def save_part_model(
 ) -> None:
     """Insert or update a model entry."""
 
-    target_db = Path(db_path) if db_path else DEFAULT_MODEL_DB
+    target_db = resolve_model_db_path(db_path, for_write=True)
     target_db.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(target_db)
+    conn = connect_sqlite(target_db)
     try:
         _ensure_table(conn)
         conn.execute(
@@ -64,14 +77,12 @@ def search_spice_model(
 ) -> Optional[Dict[str, object]]:
     """Return matching model entry or None if missing."""
 
-    target_db = Path(db_path) if db_path else DEFAULT_MODEL_DB
+    target_db = resolve_model_db_path(db_path, for_write=False)
     if not target_db.exists():
         return None
 
-    conn = sqlite3.connect(target_db)
-    conn.row_factory = sqlite3.Row
+    conn = connect_sqlite(target_db, readonly=True)
     try:
-        _ensure_table(conn)
         cur = conn.execute(
             """
             SELECT name, library, model_content, vendor_provided
@@ -89,8 +100,10 @@ def search_spice_model(
             "model_content": row["model_content"],
             "vendor_provided": bool(row["vendor_provided"]),
         }
+    except sqlite3.Error:
+        return None
     finally:
         conn.close()
 
 
-__all__ = ["save_part_model", "search_spice_model", "DEFAULT_MODEL_DB"]
+__all__ = ["save_part_model", "search_spice_model", "resolve_model_db_path", "DEFAULT_MODEL_DB"]

@@ -14,12 +14,20 @@ import argparse
 import logging
 import re
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Dict, Iterator, List, NamedTuple, Sequence
 
 import sexpdata
 
 LOGGER = logging.getLogger("export_symbol_db")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ROOT = PROJECT_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from kicad_catalog.workdir import resolve_write_db_path
+from kicad_catalog.sqlite import connect_sqlite
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -646,9 +654,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     symbols_dirs = [Path(p).resolve() for p in args.symbols_dirs]
     dest = args.dest.resolve()
+    safe_dest = resolve_write_db_path(dest, prefix="symbol", repo_root=PROJECT_ROOT)
+    if safe_dest != dest:
+        print(f"Destination DB is protected; writing to working copy instead: {safe_dest}")
+    dest = safe_dest
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    conn = sqlite3.connect(dest)
+    conn = connect_sqlite(dest)
     try:
         ensure_schema(conn)
         total_inserted = 0

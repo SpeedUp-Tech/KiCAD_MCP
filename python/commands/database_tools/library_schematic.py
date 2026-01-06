@@ -10,6 +10,10 @@ from typing import Dict, Any, List, Optional, Tuple
 
 import sexpdata
 
+from kicad_catalog.config import load_catalog_paths
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_write_db_path
+
 logger = logging.getLogger('kicad_interface')
 
 
@@ -224,34 +228,44 @@ class LibraryManager:
                 "message": "Both 'symbol' (or mpn/type) and 'library' are required inputs"
             }
 
-        db_path = DEFAULT_SYMBOL_DB
         if db_override:
             candidate = Path(str(db_override)).expanduser()
             if not candidate.is_absolute():
                 candidate = (PROJECT_ROOT / candidate).resolve()
-            db_path = candidate
-
-        if not db_path.exists():
-            return {
-                "success": False,
-                "message": f"Symbol database not found at {db_path}"
-            }
+            db_paths = [candidate]
+        else:
+            db_paths = list(load_catalog_paths(repo_root=PROJECT_ROOT).symbol_dbs) or [DEFAULT_SYMBOL_DB]
 
         row: Optional[sqlite3.Row] = None
-        try:
-            with sqlite3.connect(str(db_path)) as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.execute(
-                    "SELECT mpn, library, sexp FROM symbol_index WHERE library = ? AND mpn = ?",
-                    (library_name, symbol_name),
-                )
-                row = cursor.fetchone()
-        except sqlite3.Error as exc:
-            logger.error("Failed to query symbol index at %s: %s", db_path, exc)
+        last_error: Optional[str] = None
+
+        for db_path in db_paths:
+            if not db_path.exists():
+                if db_override:
+                    return {
+                        "success": False,
+                        "message": f"Symbol database not found at {db_path}",
+                    }
+                continue
+            try:
+                with connect_sqlite(db_path, readonly=True) as conn:
+                    cursor = conn.execute(
+                        "SELECT mpn, library, sexp FROM symbol_index WHERE library = ? AND mpn = ?",
+                        (library_name, symbol_name),
+                    )
+                    row = cursor.fetchone()
+                    if row is not None:
+                        break
+            except sqlite3.Error as exc:
+                last_error = str(exc)
+                continue
+
+        if last_error and row is None:
+            logger.error("Failed to query symbol index: %s", last_error)
             return {
                 "success": False,
                 "message": "Unable to query symbol database",
-                "errorDetails": str(exc),
+                "errorDetails": last_error,
             }
 
         if row is None:
@@ -555,24 +569,42 @@ class LibraryManager:
         library = library.strip()
         sexp = sexp.strip()
 
-        # Resolve database path
+        # Resolve database path (writes are redirected to a working copy when the target is protected).
         db_path = DEFAULT_SYMBOL_DB
+        db_index = 0
+        total_dbs = 1
+
         if db_override:
             candidate = Path(str(db_override)).expanduser()
             if not candidate.is_absolute():
                 candidate = (PROJECT_ROOT / candidate).resolve()
             db_path = candidate
+        else:
+            configured = list(load_catalog_paths(repo_root=PROJECT_ROOT).symbol_dbs)
+            if configured:
+                db_path = configured[0]
+                total_dbs = len(configured)
 
-        if not db_path.exists():
-            return {
-                "success": False,
-                "message": f"Symbol database not found at {db_path}",
-                "errorDetails": "Ensure the database exists",
-            }
+        effective_db_path = resolve_write_db_path(
+            db_path,
+            prefix="symbol",
+            index=db_index,
+            total=total_dbs,
+            repo_root=PROJECT_ROOT,
+        )
 
         try:
-            conn = sqlite3.connect(str(db_path))
-            conn.row_factory = sqlite3.Row
+            effective_db_path.parent.mkdir(parents=True, exist_ok=True)
+            conn = connect_sqlite(effective_db_path)
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS symbol_index (
+                    mpn TEXT NOT NULL,
+                    library TEXT NOT NULL,
+                    sexp TEXT NOT NULL
+                )
+                """
+            )
 
             # Check if entry already exists
             cursor = conn.execute(
@@ -615,7 +647,7 @@ class LibraryManager:
                 "message": f"{action} symbol {mpn} in library {library}",
                 "mpn": mpn,
                 "library": library,
-                "dbPath": str(db_path),
+                "dbPath": str(effective_db_path),
             }
 
         except sqlite3.Error as err:

@@ -19,6 +19,14 @@ import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ROOT = PROJECT_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from kicad_catalog.sqlite import connect_sqlite
+from kicad_catalog.workdir import resolve_write_db_path
+
 
 DEFAULT_SOURCE = Path("spice_lib/diodes/diodes-spice-models.txt")
 
@@ -160,13 +168,19 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"Source file not found: {source_path}")
 
     db_path = Path(args.db)
-    if db_path.parent and not db_path.parent.exists():
-        db_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_db_path = resolve_write_db_path(db_path, prefix="spice", repo_root=PROJECT_ROOT)
+    if safe_db_path != db_path:
+        print(
+            f"Destination DB is protected; writing to working copy instead: {safe_db_path}",
+            file=sys.stderr,
+        )
+    db_path = safe_db_path
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
     text = source_path.read_text(encoding="utf-8", errors="ignore")
     blocks, duplicate_stats = extract_blocks(text)
 
-    conn = sqlite3.connect(db_path)
+    conn = connect_sqlite(db_path)
     ensure_schema(conn)
     inserted = store_blocks(conn, blocks, str(source_path.name))
 

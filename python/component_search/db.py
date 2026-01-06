@@ -5,21 +5,22 @@ import sqlite3
 from functools import lru_cache
 from pathlib import Path
 
+from kicad_catalog.config import load_catalog_paths, resolve_repo_root
+from kicad_catalog.sqlite import connect_sqlite
+
 
 def _resolve_repo_root() -> Path:
-    return Path(__file__).resolve().parents[2]
+    return resolve_repo_root()
 
 
 def _default_db_path() -> Path:
+    # Keep historical precedence: explicit env var wins.
     env_path = os.environ.get("JLCPCB_DB_PATH")
     if env_path:
         return Path(env_path).expanduser()
-    return _resolve_repo_root() / "part_lib" / "jlcpcb-components.sqlite3"
+    return load_catalog_paths(repo_root=_resolve_repo_root()).component_db
 
 
 @lru_cache(maxsize=4)
 def _get_connection(db_path: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(str(db_path))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = OFF")
-    return conn
+    return connect_sqlite(db_path, readonly=True)

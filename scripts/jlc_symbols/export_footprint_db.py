@@ -14,10 +14,18 @@ import argparse
 import logging
 import re
 import sqlite3
+import sys
 from pathlib import Path
 from typing import List, Sequence, Tuple
 
 LOGGER = logging.getLogger("export_footprint_db")
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+PYTHON_ROOT = PROJECT_ROOT / "python"
+if str(PYTHON_ROOT) not in sys.path:
+    sys.path.insert(0, str(PYTHON_ROOT))
+
+from kicad_catalog.workdir import resolve_write_db_path
+from kicad_catalog.sqlite import connect_sqlite
 
 _FOOTPRINT_HEADER_REGEX = re.compile(
     r'\((?:footprint|module)\s+(?:"([^"]+)"|([^\s()]+))',
@@ -140,13 +148,17 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     roots = [Path(p).resolve() for p in args.footprint_dirs]
     dest = args.dest.resolve()
+    safe_dest = resolve_write_db_path(dest, prefix="footprint", repo_root=PROJECT_ROOT)
+    if safe_dest != dest:
+        print(f"Destination DB is protected; writing to working copy instead: {safe_dest}")
+    dest = safe_dest
     dest.parent.mkdir(parents=True, exist_ok=True)
 
     footprint_files = _gather_footprint_files(roots)
     total_files = len(footprint_files)
     LOGGER.info("Found %d footprints to process.", total_files)
 
-    conn = sqlite3.connect(dest)
+    conn = connect_sqlite(dest)
     try:
         ensure_schema(conn)
         inserted = 0

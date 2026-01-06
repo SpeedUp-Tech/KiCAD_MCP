@@ -137,7 +137,12 @@ try:
     from python.spice_tools.testbench_runner import run_use_case
     from python.spice_tools.harness_sanity import harness_sanity_check
     from python.spice_tools.pyspice_converter import convert_skidl_module
-    from python.spice_tools.model_db import DEFAULT_MODEL_DB, save_part_model, search_spice_model
+    from python.spice_tools.model_db import (
+        DEFAULT_MODEL_DB,
+        resolve_model_db_path,
+        save_part_model,
+        search_spice_model,
+    )
     from python.spice_tools.utils import validate_spice_model
     from python.netlist_schematic_pipeline import generate_schematic_from_skidl_module
     logger.info("Successfully imported all command handlers")
@@ -1677,7 +1682,7 @@ class KiCADInterface:
 
             model_lib_path = output_path.with_suffix(".spice.lib")
             model_lib = str(model_lib_path) if model_lib_path.exists() else None
-            resolved_model_db = str(model_db_path or DEFAULT_MODEL_DB)
+            resolved_model_db = str(resolve_model_db_path(model_db_path, for_write=False))
 
             message = (
                 f"Converted {input_path} -> {output_path} "
@@ -1726,13 +1731,14 @@ class KiCADInterface:
                 Path(os.path.expanduser(str(db_path_raw))).resolve() if db_path_raw else None
             )
 
-            if model_db_path and not model_db_path.exists():
+            if model_db_path and model_db_path.exists() and model_db_path.is_dir():
                 return {
                     "success": False,
-                    "message": f"Model database not found: {model_db_path}",
+                    "message": f"modelDbPath must be a file, got directory: {model_db_path}",
                 }
 
-            resolved_db_path = str(model_db_path) if model_db_path else str(DEFAULT_MODEL_DB)
+            effective_db_path = resolve_model_db_path(model_db_path, for_write=True)
+            resolved_db_path = str(effective_db_path)
 
             vendor_raw = params.get("vendorProvided")
             if vendor_raw is None:
@@ -1751,7 +1757,7 @@ class KiCADInterface:
                 library=str(library_value),
                 model_content=str(content_value),
                 vendor_provided=vendor_provided,
-                db_path=model_db_path,
+                db_path=effective_db_path,
             )
 
             return {
@@ -1834,12 +1840,13 @@ class KiCADInterface:
                     "message": f"Model database not found: {model_db_path}",
                 }
 
-            resolved_db_path = str(model_db_path) if model_db_path else str(DEFAULT_MODEL_DB)
+            effective_db_path = resolve_model_db_path(model_db_path, for_write=False)
+            resolved_db_path = str(effective_db_path)
 
             entry = search_spice_model(
                 name=str(name_value),
                 library=str(library_value),
-                db_path=model_db_path,
+                db_path=effective_db_path,
             )
 
             if not entry:
@@ -1903,39 +1910,35 @@ class KiCADInterface:
             Dict with success status and list of matching footprints
             Each result includes library name and footprint name
         """
-        import sqlite3
-        
+        from kicad_catalog.config import load_catalog_paths
+        from kicad_catalog.sqlite import connect_sqlite
+
         query = params.get("query", "")
         if not query:
             return {"success": False, "message": "'query' is required"}
         
         max_results = params.get("maxResults", 20)
         
-        # Path to footprint database
-        db_path = os.path.join(os.path.dirname(__file__), "symbol_lib", "kicad_footprints.sqlite3")
-        if not os.path.exists(db_path):
-            # Try alternate path
-            db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "symbol_lib", "kicad_footprints.sqlite3")
-        
-        if not os.path.exists(db_path):
-            return {"success": False, "message": f"Footprint database not found at {db_path}"}
+        db_candidates = list(load_catalog_paths(repo_root=PROJECT_ROOT).footprint_dbs)
+        db_path = next((candidate for candidate in db_candidates if candidate.exists()), None)
+        if db_path is None:
+            return {
+                "success": False,
+                "message": "Footprint database not found",
+                "errorDetails": f"Tried: {[str(p) for p in db_candidates]}",
+            }
         
         try:
-            conn = sqlite3.connect(db_path)
-            cursor = conn.cursor()
-            
             # Build SQL LIKE pattern - search with wildcards between terms
             # e.g., "QFN-32 5x5" -> "%QFN%32%5x5%"
             query_parts = query.replace("-", "%").replace("_", "%").replace(" ", "%")
             like_pattern = f"%{query_parts}%"
-            
-            cursor.execute(
-                "SELECT name, library FROM footprint_index WHERE name LIKE ? LIMIT ?",
-                (like_pattern, max_results)
-            )
-            
-            rows = cursor.fetchall()
-            conn.close()
+
+            with connect_sqlite(db_path, readonly=True) as conn:
+                rows = conn.execute(
+                    "SELECT name, library FROM footprint_index WHERE name LIKE ? LIMIT ?",
+                    (like_pattern, max_results),
+                ).fetchall()
             
             matches = []
             for name, library in rows:
