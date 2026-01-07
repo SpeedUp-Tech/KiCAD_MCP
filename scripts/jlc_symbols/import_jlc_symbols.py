@@ -59,8 +59,8 @@ from easyeda2kicad.kicad.export_kicad_footprint import ExporterFootprintKicad  #
 from easyeda2kicad.kicad.export_kicad_symbol import ExporterSymbolKicad  # type: ignore
 from easyeda2kicad.kicad.parameters_kicad_symbol import KicadVersion  # type: ignore
 
-from kicad_catalog.sqlite import connect_sqlite
-from kicad_catalog.workdir import resolve_read_db_path
+from db_tools.sqlite import connect_sqlite
+from db_tools.workdir import resolve_read_db_path
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +215,7 @@ def fetch_candidates(
     scan_limit: Optional[int] = None,
 ) -> List[ComponentCandidate]:
     """Load candidate parts from the database using heuristic filters."""
-    db_path = resolve_read_db_path(db_path, prefix="component", repo_root=PROJECT_ROOT)
+    db_path = resolve_read_db_path(db_path, prefix="component")
     conn = connect_sqlite(db_path, readonly=True)
     base_query = """
         SELECT lcsc, category, mfr

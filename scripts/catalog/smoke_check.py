@@ -6,6 +6,7 @@ import json
 import sqlite3
 import sys
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -13,8 +14,9 @@ PYTHON_ROOT = REPO_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from kicad_catalog.config import load_catalog_paths, resolve_repo_root
-from kicad_catalog.sqlite import connect_sqlite
+from db_tools.postgres import connect_postgres
+from db_tools.settings import get_settings, get_sqlite_db_path
+from db_tools.sqlite import connect_sqlite
 
 
 def _list_sqlite_objects(conn: sqlite3.Connection) -> set[str]:
@@ -43,7 +45,7 @@ def _try_scalar(conn: sqlite3.Connection, sql: str, args: Tuple[Any, ...] = ()) 
     return row[0]
 
 
-def check_component_db(path: Path) -> Dict[str, Any]:
+def check_unified_sqlite_db(path: Path) -> Dict[str, Any]:
     out: Dict[str, Any] = {"path": str(path)}
     if not path.exists():
         out.update({"ok": False, "error": "missing_db"})
@@ -58,14 +60,20 @@ def check_component_db(path: Path) -> Dict[str, Any]:
                 "categories",
                 "v_components_search",
                 "v_components_search_filtered_fts",
+                "symbol_index",
+                "footprint_index",
+                "part_models",
             ],
         )
-        sample = _try_scalar(conn, "SELECT lcsc FROM components LIMIT 1")
+
         out.update(
             {
                 "ok": len(missing) == 0,
                 "missingObjects": missing,
-                "sampleLcsc": sample,
+                "sampleLcsc": _try_scalar(conn, "SELECT lcsc FROM components LIMIT 1"),
+                "sampleMpn": _try_scalar(conn, "SELECT mpn FROM symbol_index LIMIT 1"),
+                "sampleFootprint": _try_scalar(conn, "SELECT name FROM footprint_index LIMIT 1"),
+                "sampleModelName": _try_scalar(conn, "SELECT name FROM part_models LIMIT 1"),
             }
         )
         return out
@@ -73,73 +81,62 @@ def check_component_db(path: Path) -> Dict[str, Any]:
         conn.close()
 
 
-def check_symbol_db(path: Path) -> Dict[str, Any]:
-    out: Dict[str, Any] = {"path": str(path)}
-    if not path.exists():
-        out.update({"ok": False, "error": "missing_db"})
-        return out
-
-    conn = connect_sqlite(path, readonly=True)
+def _try_scalar_pg(cur: Any, sql: str, args: Tuple[Any, ...] = ()) -> Optional[Any]:
     try:
-        missing = _check_required_objects(conn=conn, required=["symbol_index"])
-        sample = _try_scalar(
-            conn,
-            "SELECT mpn FROM symbol_index LIMIT 1",
-        )
-        out.update(
-            {
-                "ok": len(missing) == 0,
-                "missingObjects": missing,
-                "sampleMpn": sample,
-            }
-        )
-        return out
-    finally:
-        conn.close()
+        cur.execute(sql, args)
+        row = cur.fetchone()
+    except Exception:  # noqa: BLE001
+        return None
+    if not row:
+        return None
+    if isinstance(row, dict):
+        return next(iter(row.values()), None)
+    return row[0]
 
 
-def check_footprint_db(path: Path) -> Dict[str, Any]:
-    out: Dict[str, Any] = {"path": str(path)}
-    if not path.exists():
-        out.update({"ok": False, "error": "missing_db"})
-        return out
+def _pg_missing(cur: Any, required: Sequence[str]) -> List[str]:
+    missing: List[str] = []
+    for name in required:
+        cur.execute("SELECT to_regclass(%s)", (name,))
+        row = cur.fetchone()
+        value = row.get("to_regclass") if isinstance(row, dict) else row[0]
+        if value is None:
+            missing.append(name)
+    return missing
 
-    conn = connect_sqlite(path, readonly=True)
+
+def check_unified_postgres_db(dsn: str) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"dsn": dsn}
+
+    required = [
+        "components",
+        "categories",
+        "symbol_index",
+        "footprint_index",
+        "part_models",
+        "mpn_model_map",
+    ]
+
     try:
-        missing = _check_required_objects(conn=conn, required=["footprint_index"])
-        sample = _try_scalar(conn, "SELECT name FROM footprint_index LIMIT 1")
-        out.update(
-            {
-                "ok": len(missing) == 0,
-                "missingObjects": missing,
-                "sampleFootprint": sample,
-            }
-        )
-        return out
-    finally:
-        conn.close()
+        with connect_postgres(dsn, readonly=True) as conn:
+            with conn.cursor() as cur:
+                missing = _pg_missing(cur, required)
+                out.update(
+                    {
+                        "ok": len(missing) == 0,
+                        "missingObjects": missing,
+                        "sampleLcsc": _try_scalar_pg(cur, "SELECT lcsc FROM components LIMIT 1"),
+                        "sampleMpn": _try_scalar_pg(cur, "SELECT mpn FROM symbol_index LIMIT 1"),
+                        "sampleFootprint": _try_scalar_pg(
+                            cur, "SELECT name FROM footprint_index LIMIT 1"
+                        ),
+                        "sampleModelName": _try_scalar_pg(cur, "SELECT name FROM part_models LIMIT 1"),
+                    }
+                )
+    except Exception as exc:  # noqa: BLE001
+        out.update({"ok": False, "error": str(exc)})
 
-
-def check_spice_model_db(path: Path) -> Dict[str, Any]:
-    out: Dict[str, Any] = {"path": str(path)}
-    if not path.exists():
-        out.update({"ok": True, "note": "db_missing_ok"})
-        return out
-
-    conn = connect_sqlite(path, readonly=True)
-    try:
-        missing = _check_required_objects(conn=conn, required=["part_models"])
-        sample = _try_scalar(conn, "SELECT name FROM part_models LIMIT 1")
-        out.update(
-            {
-                "ok": len(missing) == 0,
-                "missingObjects": missing,
-                "sampleModelName": sample,
-            }
-        )
-        return out
-    finally:
-        conn.close()
+    return out
 
 
 def main() -> int:
@@ -153,24 +150,19 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    repo_root = resolve_repo_root()
-    paths = load_catalog_paths(repo_root=repo_root)
+    scheme = urlparse(get_settings().db_url).scheme.lower()
 
-    results: Dict[str, Any] = {
-        "componentDb": check_component_db(paths.component_db),
-        "symbolDbs": [check_symbol_db(path) for path in paths.symbol_dbs],
-        "footprintDbs": [check_footprint_db(path) for path in paths.footprint_dbs],
-        "spiceModelDb": check_spice_model_db(paths.spice_model_db),
-    }
+    results: Dict[str, Any] = {}
+    if scheme == "sqlite":
+        db_path = get_sqlite_db_path(for_write=False)
+        results["db"] = check_unified_sqlite_db(db_path)
+    elif scheme in {"postgres", "postgresql"}:
+        results["db"] = check_unified_postgres_db(get_settings().db_url)
+    else:
+        results["db"] = {"ok": False, "error": f"Unsupported db_url scheme: {scheme!r}"}
 
     ok = True
-    if not results["componentDb"]["ok"]:
-        ok = False
-    if any(not entry["ok"] for entry in results["symbolDbs"]):
-        ok = False
-    if any(not entry["ok"] for entry in results["footprintDbs"]):
-        ok = False
-    if not results["spiceModelDb"]["ok"]:
+    if not results["db"]["ok"]:
         ok = False
 
     results["ok"] = ok

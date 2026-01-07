@@ -2,7 +2,7 @@
 
 ## Core Idea
 - Maintain a single **netlist source of truth** (SKiDL modules backed by DB symbols).
-- Keep every SPICE model centralized in `spice_lib/spice_models.db`. Each entry stores `(library, name, raw model text, vendor_provided)`.
+- Keep every SPICE model centralized in the configured DB (`db_tools/settings.json` → `db_url`). Each entry stores `(library, name, raw model text, vendor_provided)`.
 - Auto-convert any SKiDL module into a PySpice subcircuit by pulling the same topology and binding each `(library, name)` to its SPICE model from the DB.
 - Use the generated PySpice module (`*_pyspice.py`) as the interface for all simulations and testbenches.
 
@@ -29,10 +29,10 @@
 
 ## Current Progress
 - Implemented `python/spice_tools` package:
-  - DB helpers (`save_part_model`, `search_spice_model`, `DEFAULT_MODEL_DB`).
+  - DB helpers (`save_part_model`, `search_spice_model`).
   - Updated converter that relies fully on the DB rather than JSON mappings.
 - Added behavior models for the `Battery_Protection` module (PFET + AP9101) and stored them via `save_part_model`.
-- Converter now emits modules that reference a local `.spice.lib` sibling file; CLI exposes `--model-db` override.
+- Converter now emits modules that reference a local `.spice.lib` sibling file.
 - Verified conversion + simulation path end-to-end for `Battery_Protection` inside `test_spice.ipynb`.
 
 ## Next Steps

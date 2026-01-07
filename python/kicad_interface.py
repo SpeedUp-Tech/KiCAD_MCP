@@ -138,7 +138,6 @@ try:
     from python.spice_tools.harness_sanity import harness_sanity_check
     from python.spice_tools.pyspice_converter import convert_skidl_module
     from python.spice_tools.model_db import (
-        DEFAULT_MODEL_DB,
         resolve_model_db_path,
         save_part_model,
         search_spice_model,
@@ -1649,7 +1648,6 @@ class KiCADInterface:
             subckt_name = params.get("subcktName") or params.get("subckt_name")
             output_path_raw = params.get("outputPath") or params.get("output_path")
             subckt_output = params.get("subcktOutput") or params.get("subckt_output")
-            model_db_raw = params.get("modelDbPath") or params.get("model_db_path")
 
             missing = [
                 name
@@ -1668,22 +1666,15 @@ class KiCADInterface:
             if not input_path.exists():
                 return {"success": False, "message": f"SKiDL module not found: {input_path}"}
 
-            model_db_path = (
-                Path(os.path.expanduser(str(model_db_raw))).resolve() if model_db_raw else None
-            )
-
             generated_subckt = convert_skidl_module(
                 input_path=input_path,
                 subckt_name=str(subckt_name),
                 output_path=output_path,
                 subckt_output=str(subckt_output) if subckt_output else None,
-                model_db_path=model_db_path,
             )
 
             model_lib_path = output_path.with_suffix(".spice.lib")
             model_lib = str(model_lib_path) if model_lib_path.exists() else None
-            resolved_model_db = str(resolve_model_db_path(model_db_path, for_write=False))
-
             message = (
                 f"Converted {input_path} -> {output_path} "
                 f"(exported subcircuit {generated_subckt})"
@@ -1695,7 +1686,6 @@ class KiCADInterface:
                 "subcktName": generated_subckt,
                 "outputPath": str(output_path),
                 "modelLibraryPath": model_lib,
-                "modelDbPath": resolved_model_db,
             }
         except Exception as exc:
             logger.error(f"Error converting SKiDL module: {exc}")
@@ -1706,6 +1696,8 @@ class KiCADInterface:
         """Persist or update a SPICE model entry in the shared database."""
         logger.info("Saving SPICE model entry")
         try:
+            from db_tools.client import DbToolsClient
+
             name_value = params.get("name")
             library_value = params.get("library")
             content_value = params.get("modelContent") or params.get("model_content")
@@ -1722,24 +1714,6 @@ class KiCADInterface:
             if missing:
                 return {"success": False, "message": f"Missing required parameter(s): {', '.join(missing)}"}
 
-            db_path_raw = (
-                params.get("modelDbPath")
-                or params.get("dbPath")
-                or params.get("model_db_path")
-            )
-            model_db_path = (
-                Path(os.path.expanduser(str(db_path_raw))).resolve() if db_path_raw else None
-            )
-
-            if model_db_path and model_db_path.exists() and model_db_path.is_dir():
-                return {
-                    "success": False,
-                    "message": f"modelDbPath must be a file, got directory: {model_db_path}",
-                }
-
-            effective_db_path = resolve_model_db_path(model_db_path, for_write=True)
-            resolved_db_path = str(effective_db_path)
-
             vendor_raw = params.get("vendorProvided")
             if vendor_raw is None:
                 vendor_raw = params.get("vendor_provided")
@@ -1752,18 +1726,17 @@ class KiCADInterface:
                 else:
                     vendor_provided = str(vendor_raw).strip().lower() in {"1", "true", "yes", "y"}
 
-            save_part_model(
+            client = DbToolsClient.from_settings()
+            saved_path = client.save_spice_model(
                 name=str(name_value),
                 library=str(library_value),
                 model_content=str(content_value),
                 vendor_provided=vendor_provided,
-                db_path=effective_db_path,
             )
 
             return {
                 "success": True,
-                "message": f"Saved SPICE model {name_value} into {resolved_db_path}",
-                "modelDbPath": resolved_db_path,
+                "message": f"Saved SPICE model {name_value}",
             }
         except Exception as exc:
             logger.error(f"Error saving SPICE model entry: {exc}")
@@ -1811,6 +1784,8 @@ class KiCADInterface:
         """Look up a stored SPICE model entry by library and name."""
         logger.info("Searching SPICE model database")
         try:
+            from db_tools.client import DbToolsClient
+
             name_value = params.get("name")
             library_value = params.get("library")
 
@@ -1825,39 +1800,20 @@ class KiCADInterface:
             if missing:
                 return {"success": False, "message": f"Missing required parameter(s): {', '.join(missing)}"}
 
-            db_path_raw = (
-                params.get("modelDbPath")
-                or params.get("dbPath")
-                or params.get("model_db_path")
-            )
-            model_db_path = (
-                Path(os.path.expanduser(str(db_path_raw))).resolve() if db_path_raw else None
-            )
-
-            if model_db_path and not model_db_path.exists():
-                return {
-                    "success": False,
-                    "message": f"Model database not found: {model_db_path}",
-                }
-
-            effective_db_path = resolve_model_db_path(model_db_path, for_write=False)
-            resolved_db_path = str(effective_db_path)
-
-            entry = search_spice_model(
+            client = DbToolsClient.from_settings()
+            entry = client.search_spice_model(
                 name=str(name_value),
                 library=str(library_value),
-                db_path=effective_db_path,
             )
 
             if not entry:
                 return {
                     "success": False,
-                    "message": f"SPICE model not found in {resolved_db_path}",
+                    "message": "SPICE model not found",
                 }
 
             return {
                 "success": True,
-                "modelDbPath": resolved_db_path,
                 "entry": entry,
             }
         except Exception as exc:
@@ -1910,54 +1866,17 @@ class KiCADInterface:
             Dict with success status and list of matching footprints
             Each result includes library name and footprint name
         """
-        from kicad_catalog.config import load_catalog_paths
-        from kicad_catalog.sqlite import connect_sqlite
+        from db_tools.client import DbToolsClient
 
         query = params.get("query", "")
         if not query:
             return {"success": False, "message": "'query' is required"}
         
         max_results = params.get("maxResults", 20)
-        
-        db_candidates = list(load_catalog_paths(repo_root=PROJECT_ROOT).footprint_dbs)
-        db_path = next((candidate for candidate in db_candidates if candidate.exists()), None)
-        if db_path is None:
-            return {
-                "success": False,
-                "message": "Footprint database not found",
-                "errorDetails": f"Tried: {[str(p) for p in db_candidates]}",
-            }
-        
-        try:
-            # Build SQL LIKE pattern - search with wildcards between terms
-            # e.g., "QFN-32 5x5" -> "%QFN%32%5x5%"
-            query_parts = query.replace("-", "%").replace("_", "%").replace(" ", "%")
-            like_pattern = f"%{query_parts}%"
 
-            with connect_sqlite(db_path, readonly=True) as conn:
-                rows = conn.execute(
-                    "SELECT name, library FROM footprint_index WHERE name LIKE ? LIMIT ?",
-                    (like_pattern, max_results),
-                ).fetchall()
-            
-            matches = []
-            for name, library in rows:
-                matches.append({
-                    "library": library,
-                    "footprint": name,
-                    "fullName": f"{library}:{name}"
-                })
-            
-            # Sort matches by footprint name length (shorter = more specific)
-            matches.sort(key=lambda x: len(x["footprint"]))
-            
-            return {
-                "success": True,
-                "query": query,
-                "matchCount": len(matches),
-                "matches": matches
-            }
-            
+        try:
+            client = DbToolsClient.from_settings()
+            return client.search_footprints(query, max_results=max_results)
         except Exception as exc:
             logger.error(f"Error searching footprints: {exc}")
             return {"success": False, "message": str(exc)}

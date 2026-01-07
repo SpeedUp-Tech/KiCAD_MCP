@@ -19,8 +19,8 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from kicad_catalog.config import load_catalog_paths
-from kicad_catalog.sqlite import connect_sqlite
+from db_tools.settings import get_sqlite_db_path
+from db_tools.sqlite import connect_sqlite
 
 # -----------------------------------------------------------------------------
 # Make sure the pip-installed SKiDL package is imported even when running from
@@ -45,10 +45,6 @@ from skidl.tools.kicad9.lib import Sexp
 
 logger = logging.getLogger(__name__)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_LIB_CONFIG = PROJECT_ROOT / "config" / "library-paths.json"
-DEFAULT_DB_PATH = PROJECT_ROOT / "symbol_lib" / "kicad_symbols.sqlite3"
-
 
 class SymbolDatabase:
     """
@@ -57,32 +53,14 @@ class SymbolDatabase:
     The DB is expected to expose a ``symbol_index`` table with (library, mpn, sexp).
     """
 
-    def __init__(
-        self,
-        config_path: Path = DEFAULT_LIB_CONFIG,
-        default_db: Path = DEFAULT_DB_PATH,
-    ) -> None:
-        self._config_path = config_path
-        self._default_db = default_db
+    def __init__(self) -> None:
         self._connections: Dict[Path, sqlite3.Connection] = {}
         self._sexp_cache: Dict[Tuple[str, str], Optional[str]] = {}
-
-    # ------------------------------------------------------------------ #
-    # Configuration helpers.
-    # ------------------------------------------------------------------ #
-    def _load_configured_paths(self) -> List[Path]:
-        paths = list(
-            load_catalog_paths(
-                repo_root=PROJECT_ROOT,
-                library_paths_config=self._config_path,
-            ).symbol_dbs
-        )
-        return paths or [self._default_db]
 
     @property
     def db_paths(self) -> List[Path]:
         # Re-evaluate each time so newly created working copies are picked up.
-        return self._load_configured_paths()
+        return [get_sqlite_db_path(for_write=False)]
 
     # ------------------------------------------------------------------ #
     # DB querying.

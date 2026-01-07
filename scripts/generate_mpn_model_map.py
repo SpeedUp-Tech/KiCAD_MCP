@@ -29,8 +29,8 @@ PYTHON_ROOT = PROJECT_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from kicad_catalog.sqlite import connect_sqlite
-from kicad_catalog.workdir import resolve_read_db_path, resolve_write_db_path
+from db_tools.sqlite import connect_sqlite
+from db_tools.workdir import resolve_read_db_path, resolve_write_db_path
 
 # Suffixes that commonly appear on either models or MPNs and can be safely removed
 # when searching for a base part number. The list is intentionally conservative
@@ -672,9 +672,9 @@ def main() -> None:
         format="%(message)s",
     )
 
-    spice_db = resolve_read_db_path(args.spice_db, prefix="spice", repo_root=PROJECT_ROOT)
-    components_db = resolve_read_db_path(args.components_db, prefix="component", repo_root=PROJECT_ROOT)
-    output_db = resolve_write_db_path(args.output, prefix="component", repo_root=PROJECT_ROOT)
+    spice_db = resolve_read_db_path(args.spice_db, prefix="spice")
+    components_db = resolve_read_db_path(args.components_db, prefix="component")
+    output_db = resolve_write_db_path(args.output, prefix="component")
     if output_db != args.output:
         logging.info("Output DB is protected; writing to working copy instead: %s", output_db)
 

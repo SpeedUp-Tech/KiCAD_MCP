@@ -25,8 +25,8 @@ PYTHON_ROOT = PROJECT_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from kicad_catalog.sqlite import connect_sqlite
-from kicad_catalog.workdir import resolve_write_db_path
+from db_tools.sqlite import connect_sqlite
+from db_tools.workdir import resolve_write_db_path
 
 LCSC_SUFFIX = ".json"
 
@@ -158,7 +158,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
 
     logging.info("Found %d JSON files under %s", len(files), args.input)
-    db_path = resolve_write_db_path(args.db, prefix="cache", repo_root=PROJECT_ROOT)
+    db_path = resolve_write_db_path(args.db, prefix="cache")
     if db_path != args.db:
         logging.warning(
             "Output DB path is protected; writing to working copy instead: %s",

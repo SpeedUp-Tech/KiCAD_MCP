@@ -8,13 +8,14 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Sequence, Tuple
+from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYTHON_ROOT = REPO_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from kicad_catalog.config import load_catalog_paths, resolve_repo_root
+from db_tools.settings import get_settings, resolve_sqlite_path
 
 
 def _timestamp() -> str:
@@ -52,7 +53,7 @@ def _copy_many(
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Copy KiCAD_MCP SQLite databases to a writable working directory (never modify originals in-place)."
+        description="Copy the configured SQLite DB to a writable working directory (never modify originals in-place)."
     )
     parser.add_argument(
         "--dest",
@@ -66,13 +67,6 @@ def main() -> int:
         help="When --dest is not provided, copy into exported/db_work/<timestamp>/ instead of exported/db_work/active/.",
     )
     parser.add_argument(
-        "--include",
-        nargs="+",
-        default=["symbol", "footprint", "spice"],
-        choices=["component", "symbol", "footprint", "spice"],
-        help="Which databases to copy (default: symbol footprint spice).",
-    )
-    parser.add_argument(
         "--overwrite",
         action="store_true",
         help="Overwrite existing files in destination.",
@@ -84,29 +78,35 @@ def main() -> int:
     )
     args = parser.parse_args()
 
-    repo_root = resolve_repo_root()
+    repo_root = REPO_ROOT
     export_root = repo_root / "exported" / "db_work"
     dest_dir = args.dest or (export_root / (_timestamp() if args.timestamped else "active"))
     dest_dir.mkdir(parents=True, exist_ok=True)
 
-    paths = load_catalog_paths(repo_root=repo_root)
-    plan: Dict[str, Sequence[Path]] = {
-        "component": [paths.component_db],
-        "symbol": list(paths.symbol_dbs),
-        "footprint": list(paths.footprint_dbs),
-        "spice": [paths.spice_model_db],
-    }
-
-    copied_all: Dict[str, List[Dict[str, str]]] = {}
-    for key in args.include:
-        sources = plan.get(key, [])
-        copies = _copy_many(
-            prefix=key,
-            sources=sources,
-            dest_dir=dest_dir,
-            overwrite=args.overwrite,
+    settings = get_settings()
+    scheme = urlparse(settings.db_url).scheme.lower()
+    if scheme != "sqlite":
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": f"copy_dbs.py only supports sqlite db_url (got {scheme!r})",
+                },
+                indent=2,
+            )
         )
-        copied_all[key] = [{"src": str(src), "dest": str(dest)} for src, dest in copies]
+        return 2
+    source_db = resolve_sqlite_path(settings.db_url)
+
+    copies = _copy_many(
+        prefix="db",
+        sources=[source_db],
+        dest_dir=dest_dir,
+        overwrite=args.overwrite,
+    )
+    copied_all: Dict[str, List[Dict[str, str]]] = {
+        "db": [{"src": str(src), "dest": str(dest)} for src, dest in copies]
+    }
 
     manifest = {
         "destDir": str(dest_dir),

@@ -9,15 +9,9 @@ files.
 from __future__ import annotations
 
 import logging
-from pathlib import Path
-from typing import Any, Dict, Optional, Union, List
+from typing import Any, Dict, List
 
-from component_search import (
-    ComponentSearchConfig,
-    add_searchable_part as insert_part,
-    search_datasheet as lookup_datasheet,
-    search_mpn_part as execute_search,
-)
+from db_tools.client import DbToolsClient
 
 logger = logging.getLogger("kicad_interface")
 
@@ -25,17 +19,8 @@ logger = logging.getLogger("kicad_interface")
 class ComponentSearchCommands:
     """Expose component search as MCP commands."""
 
-    def __init__(self, default_db_path: Optional[Union[str, Path]] = None) -> None:
-        if default_db_path:
-            resolved = Path(default_db_path).expanduser()
-            self._config = ComponentSearchConfig(db_path=resolved)
-        else:
-            self._config = ComponentSearchConfig()
-
-    def _resolve_db_path(self, override: Optional[Union[str, Path]]) -> Optional[Path]:
-        if override:
-            return Path(override).expanduser()
-        return None
+    def __init__(self) -> None:
+        self._client = DbToolsClient.from_settings()
 
     def search_mpn_part(self, params: Dict[str, Any]) -> Dict[str, Any]:
         """Search the component catalog using free-form part specs.
@@ -54,15 +39,12 @@ class ComponentSearchCommands:
 
         limit = params.get("limit")
         offset = params.get("offset", 0)
-        db_path = params.get("dbPath")
 
         try:
-            result = execute_search(
+            result = self._client.search_mpn_part(
                 query,
                 limit=limit,
                 offset=offset,
-                db_path=self._resolve_db_path(db_path),
-                config=self._config,
             )
             if isinstance(result, dict) and result.get("results"):
                 enriched: List[Dict[str, Any]] = []
@@ -88,7 +70,6 @@ class ComponentSearchCommands:
 
         mpn = params.get("mpn")
         library = params.get("library")
-        db_path = params.get("dbPath")
 
         if not isinstance(mpn, str) or not mpn.strip():
             return {
@@ -105,11 +86,9 @@ class ComponentSearchCommands:
             }
 
         try:
-            return lookup_datasheet(
+            return self._client.search_datasheet(
                 mpn,
                 library,
-                db_path=self._resolve_db_path(db_path),
-                config=self._config,
             )
         except Exception as exc:  # pragma: no cover - defensive guard
             logger.error("Unhandled error during datasheet lookup: %s", exc, exc_info=True)
@@ -138,7 +117,6 @@ class ComponentSearchCommands:
         footprint = params.get("footprint", "")
         datasheet = params.get("datasheet", "")
         attributes = params.get("attributes")
-        db_path = params.get("dbPath")
 
         if not isinstance(mpn, str) or not mpn.strip():
             return {
@@ -170,16 +148,15 @@ class ComponentSearchCommands:
             }
 
         try:
-            return insert_part(
-                mpn,
-                library,
-                package,
-                footprint=footprint if isinstance(footprint, str) else "",
-                datasheet=datasheet if isinstance(datasheet, str) else "",
-                attributes=attributes,
-                db_path=self._resolve_db_path(db_path),
-                config=self._config,
-            )
+            request: Dict[str, Any] = {
+                "mpn": mpn,
+                "library": library,
+                "package": package,
+                "footprint": footprint if isinstance(footprint, str) else "",
+                "datasheet": datasheet if isinstance(datasheet, str) else "",
+                "attributes": attributes,
+            }
+            return self._client.add_searchable_part(request)
         except Exception as exc:  # pragma: no cover - defensive guard
             logger.error("Unhandled error adding searchable part: %s", exc, exc_info=True)
             return {

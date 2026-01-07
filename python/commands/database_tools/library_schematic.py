@@ -3,16 +3,14 @@ from skip import Schematic
 import os
 import glob
 import logging
-import sqlite3
 import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 import sexpdata
 
-from kicad_catalog.config import load_catalog_paths
-from kicad_catalog.sqlite import connect_sqlite
-from kicad_catalog.workdir import resolve_write_db_path
+from db_tools.symbols import add_symbol_entry as db_add_symbol_entry
+from db_tools.symbols import get_symbol_pinout as db_get_symbol_pinout
 
 logger = logging.getLogger('kicad_interface')
 
@@ -27,7 +25,6 @@ def symbol_name_from_qualified(qualified: str) -> str:
     return qualified.split(':', 1)[1] if ':' in qualified else qualified
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_SYMBOL_DB = PROJECT_ROOT / 'symbol_lib' / 'kicad_symbols.sqlite3'
 _PIN_SORT_PATTERN = re.compile(r'(-?\d+(?:\.\d+)?)')
 
 class LibraryManager:
@@ -217,7 +214,6 @@ class LibraryManager:
         """Return pin name/type mappings for a symbol stored in the SQLite symbol index."""
         symbol_input = params.get("symbol") or params.get("symbolName") or params.get("mpn") or params.get("type")
         library_input = params.get("library") or params.get("libraryName")
-        db_override = params.get("symbolDbPath")
 
         symbol_name = str(symbol_input).strip() if symbol_input else ""
         library_name = str(library_input).strip() if library_input else ""
@@ -228,93 +224,7 @@ class LibraryManager:
                 "message": "Both 'symbol' (or mpn/type) and 'library' are required inputs"
             }
 
-        if db_override:
-            candidate = Path(str(db_override)).expanduser()
-            if not candidate.is_absolute():
-                candidate = (PROJECT_ROOT / candidate).resolve()
-            db_paths = [candidate]
-        else:
-            db_paths = list(load_catalog_paths(repo_root=PROJECT_ROOT).symbol_dbs) or [DEFAULT_SYMBOL_DB]
-
-        row: Optional[sqlite3.Row] = None
-        last_error: Optional[str] = None
-
-        for db_path in db_paths:
-            if not db_path.exists():
-                if db_override:
-                    return {
-                        "success": False,
-                        "message": f"Symbol database not found at {db_path}",
-                    }
-                continue
-            try:
-                with connect_sqlite(db_path, readonly=True) as conn:
-                    cursor = conn.execute(
-                        "SELECT mpn, library, sexp FROM symbol_index WHERE library = ? AND mpn = ?",
-                        (library_name, symbol_name),
-                    )
-                    row = cursor.fetchone()
-                    if row is not None:
-                        break
-            except sqlite3.Error as exc:
-                last_error = str(exc)
-                continue
-
-        if last_error and row is None:
-            logger.error("Failed to query symbol index: %s", last_error)
-            return {
-                "success": False,
-                "message": "Unable to query symbol database",
-                "errorDetails": last_error,
-            }
-
-        if row is None:
-            return {
-                "success": False,
-                "message": f"Symbol '{symbol_name}' not found in library '{library_name}'",
-            }
-
-        sexp_text = row["sexp"] if isinstance(row, sqlite3.Row) else row[2]
-        try:
-            parsed = sexpdata.loads(sexp_text)
-        except Exception as exc:
-            logger.error("Failed to parse symbol %s:%s S-expression: %s", library_name, symbol_name, exc)
-            return {
-                "success": False,
-                "message": f"Unable to parse symbol data for {library_name}:{symbol_name}",
-                "errorDetails": str(exc),
-            }
-
-        symbol_node: Optional[Any] = None
-        if LibraryManager._is_entry(parsed, 'symbol'):
-            symbol_node = parsed
-        elif isinstance(parsed, list):
-            for entry in parsed:
-                if LibraryManager._is_entry(entry, 'symbol'):
-                    symbol_node = entry
-                    break
-
-        if symbol_node is None:
-            return {
-                "success": False,
-                "message": f"Symbol definition for {library_name}:{symbol_name} does not contain pin data",
-            }
-
-        pin_map = LibraryManager._extract_pin_map_from_symbol_tree(symbol_node)
-        ordered_keys = sorted(pin_map.keys(), key=LibraryManager._pin_sort_key)
-        ordered_pins = [
-            {"number": key, "name": pin_map[key]["name"], "type": pin_map[key]["type"]}
-            for key in ordered_keys
-        ]
-
-        return {
-            "success": True,
-            "message": f"Retrieved pinout for {library_name}:{symbol_name}",
-            "symbol": row["mpn"] if isinstance(row, sqlite3.Row) else symbol_name,
-            "library": row["library"] if isinstance(row, sqlite3.Row) else library_name,
-            "pinCount": len(ordered_keys),
-            "pins": ordered_pins,
-        }
+        return db_get_symbol_pinout(library=library_name, mpn=symbol_name)
 
     @staticmethod
     def _build_symbol_entry(
@@ -531,7 +441,6 @@ class LibraryManager:
             sexp: Symbol S-expression definition
 
         Optional parameters:
-            symbolDbPath: Override the default symbol database path
             overwrite: If True, overwrite existing entry (default False)
 
         Returns:
@@ -540,7 +449,6 @@ class LibraryManager:
         mpn = params.get("mpn")
         library = params.get("library")
         sexp = params.get("sexp")
-        db_override = params.get("symbolDbPath")
         overwrite = params.get("overwrite", False)
 
         # Validate required parameters
@@ -569,94 +477,15 @@ class LibraryManager:
         library = library.strip()
         sexp = sexp.strip()
 
-        # Resolve database path (writes are redirected to a working copy when the target is protected).
-        db_path = DEFAULT_SYMBOL_DB
-        db_index = 0
-        total_dbs = 1
-
-        if db_override:
-            candidate = Path(str(db_override)).expanduser()
-            if not candidate.is_absolute():
-                candidate = (PROJECT_ROOT / candidate).resolve()
-            db_path = candidate
-        else:
-            configured = list(load_catalog_paths(repo_root=PROJECT_ROOT).symbol_dbs)
-            if configured:
-                db_path = configured[0]
-                total_dbs = len(configured)
-
-        effective_db_path = resolve_write_db_path(
-            db_path,
-            prefix="symbol",
-            index=db_index,
-            total=total_dbs,
-            repo_root=PROJECT_ROOT,
+        result = db_add_symbol_entry(
+            mpn=mpn,
+            library=library,
+            sexp=sexp,
+            overwrite=bool(overwrite),
         )
-
-        try:
-            effective_db_path.parent.mkdir(parents=True, exist_ok=True)
-            conn = connect_sqlite(effective_db_path)
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS symbol_index (
-                    mpn TEXT NOT NULL,
-                    library TEXT NOT NULL,
-                    sexp TEXT NOT NULL
-                )
-                """
-            )
-
-            # Check if entry already exists
-            cursor = conn.execute(
-                "SELECT mpn, library FROM symbol_index WHERE mpn = ? AND library = ?",
-                (mpn, library),
-            )
-            existing = cursor.fetchone()
-
-            if existing and not overwrite:
-                conn.close()
-                return {
-                    "success": False,
-                    "message": f"Symbol {mpn} already exists in library {library}",
-                    "errorDetails": "Use overwrite=True to replace the existing entry",
-                    "mpn": mpn,
-                    "library": library,
-                }
-
-            if existing and overwrite:
-                # Update existing entry
-                conn.execute(
-                    "UPDATE symbol_index SET sexp = ? WHERE mpn = ? AND library = ?",
-                    (sexp, mpn, library),
-                )
-                action = "Updated"
-            else:
-                # Insert new entry
-                conn.execute(
-                    "INSERT INTO symbol_index (mpn, library, sexp) VALUES (?, ?, ?)",
-                    (mpn, library, sexp),
-                )
-                action = "Added"
-
-            conn.commit()
-            conn.close()
-
-            logger.info(f"{action} symbol {mpn} in library {library}")
-            return {
-                "success": True,
-                "message": f"{action} symbol {mpn} in library {library}",
-                "mpn": mpn,
-                "library": library,
-                "dbPath": str(effective_db_path),
-            }
-
-        except sqlite3.Error as err:
-            logger.error("SQLite error adding symbol entry: %s", err)
-            return {
-                "success": False,
-                "message": "Failed to add symbol entry",
-                "errorDetails": str(err),
-            }
+        if result.get("success"):
+            logger.info("%s", result.get("message", "Updated symbol entry"))
+        return result
 
 if __name__ == '__main__':
     # Example Usage (for testing)

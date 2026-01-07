@@ -1,9 +1,9 @@
 """
-Compatibility shim for the extracted component search package.
+Compatibility shim for `component_search` imports.
 
 The canonical implementation now lives under `db_tools.component_search`
-so it can ship with the standalone catalog library. This package preserves
-existing imports such as `import component_search` and `python -m component_search.setup`.
+as part of the extracted catalog library. This shim keeps historical imports
+working when the repository root is on `sys.path`.
 """
 
 from __future__ import annotations

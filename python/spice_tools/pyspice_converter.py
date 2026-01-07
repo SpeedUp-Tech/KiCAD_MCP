@@ -18,7 +18,7 @@ import os
 
 from skidl import Circuit, Net
 
-from .model_db import resolve_model_db_path, search_spice_model
+from .model_db import search_spice_model
 from .utils import disable_inspice_cache, disable_skidl_file_logging
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -212,7 +212,6 @@ def convert_skidl_module(
     subckt_name: str,
     output_path: Path,
     subckt_output: str | None = None,
-    model_db_path: Path | None = None,
 ) -> str:
     """
     Convert a SKiDL module/subcircuit into a PySpice-ready Python module.
@@ -232,12 +231,11 @@ def convert_skidl_module(
     model_specs.update(PRIMITIVE_MODELS)
 
     db_models: Dict[str, dict] = {}
-    model_db = resolve_model_db_path(model_db_path, for_write=False)
     for part in parts:
         key = f"{part.library}::{part.name}"
         if key in model_specs or key in db_models:
             continue
-        entry = search_spice_model(name=part.name, library=part.library, db_path=model_db)
+        entry = search_spice_model(name=part.name, library=part.library)
         if entry is None:
             raise KeyError(f"No SPICE model found in database for {key}.")
         model_content = str(entry["model_content"])

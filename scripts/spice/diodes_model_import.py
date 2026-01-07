@@ -24,8 +24,8 @@ PYTHON_ROOT = PROJECT_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from kicad_catalog.sqlite import connect_sqlite
-from kicad_catalog.workdir import resolve_write_db_path
+from db_tools.sqlite import connect_sqlite
+from db_tools.workdir import resolve_write_db_path
 
 
 DEFAULT_SOURCE = Path("spice_lib/diodes/diodes-spice-models.txt")
@@ -168,7 +168,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parser.error(f"Source file not found: {source_path}")
 
     db_path = Path(args.db)
-    safe_db_path = resolve_write_db_path(db_path, prefix="spice", repo_root=PROJECT_ROOT)
+    safe_db_path = resolve_write_db_path(db_path, prefix="spice")
     if safe_db_path != db_path:
         print(
             f"Destination DB is protected; writing to working copy instead: {safe_db_path}",

@@ -7,15 +7,13 @@ import json
 import math
 import uuid
 import logging
-import sqlite3
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import sexpdata
 from sexpdata import Symbol as SSymbol
 
-from kicad_catalog.config import load_catalog_paths
-from kicad_catalog.sqlite import connect_sqlite
+from db_tools.symbols import get_symbol_sexp
 
 from skip.eeschema.lib_symbol import LibSymbolsListWrapper
 from skip.eeschema.schematic.symbol import Symbol, SymbolCollection
@@ -31,8 +29,6 @@ DEFAULT_SYMBOL_SEARCH_PATHS = [
     Path('/mnt/shared/symbol_lib/symbols'),
 ]
 _LIBRARY_PATHS_CACHE: Dict[str, List[Path]] = {}
-_SYMBOL_DB_PATHS_CACHE: Optional[List[Path]] = None
-_SYMBOL_DB_CONNECTIONS: Dict[Path, sqlite3.Connection] = {}
 logger = logging.getLogger('kicad_interface')
 
 
@@ -82,51 +78,15 @@ def _collect_db_path_entry(entry: str, paths: List[Path]) -> None:
         paths.append(resolved)
 
 
-def _get_symbol_db_paths() -> List[Path]:
-    global _SYMBOL_DB_PATHS_CACHE
-    if _SYMBOL_DB_PATHS_CACHE is not None:
-        return _SYMBOL_DB_PATHS_CACHE
-
-    try:
-        paths = list(load_catalog_paths(repo_root=PROJECT_ROOT).symbol_dbs)
-    except Exception as exc:
-        logger.warning("Unable to resolve symbol DB paths via catalog config: %s", exc)
-        paths = [PROJECT_ROOT / 'symbol_lib' / 'kicad_symbols.sqlite3']
-
-    _SYMBOL_DB_PATHS_CACHE = paths
-    return _SYMBOL_DB_PATHS_CACHE
-
-
 def _load_symbol_from_db(library_name: str, symbol_name: str) -> Optional[List[Any]]:
-    for db_path in _get_symbol_db_paths():
-        if not db_path or not db_path.exists():
-            continue
-        conn = _SYMBOL_DB_CONNECTIONS.get(db_path)
-        if conn is None:
-            try:
-                conn = connect_sqlite(db_path, readonly=True)
-                _SYMBOL_DB_CONNECTIONS[db_path] = conn
-            except Exception as exc:
-                logger.warning("Failed to open symbol DB %s: %s", db_path, exc)
-                continue
-        try:
-            cursor = conn.execute(
-                "SELECT sexp FROM symbol_index WHERE library = ? AND mpn = ?",
-                (library_name, symbol_name),
-            )
-            row = cursor.fetchone()
-        except Exception as exc:
-            logger.warning("Symbol DB query failed for %s:%s in %s: %s", library_name, symbol_name, db_path, exc)
-            continue
-
-        if row:
-            sexp_text = row["sexp"] if isinstance(row, sqlite3.Row) else row[0]
-            try:
-                return sexpdata.loads(sexp_text)
-            except Exception as exc:
-                logger.error("Failed to parse symbol %s:%s from DB %s: %s", library_name, symbol_name, db_path, exc)
-                raise
-
+    sexp_text = get_symbol_sexp(library=library_name, mpn=symbol_name)
+    if not sexp_text:
+        return None
+    try:
+        return sexpdata.loads(sexp_text)
+    except Exception as exc:
+        logger.error("Failed to parse symbol %s:%s from configured DB: %s", library_name, symbol_name, exc)
+        raise
     return None
 
 ConnectionManager: Any | None = None

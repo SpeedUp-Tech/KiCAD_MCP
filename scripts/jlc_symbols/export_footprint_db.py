@@ -24,8 +24,8 @@ PYTHON_ROOT = PROJECT_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from kicad_catalog.workdir import resolve_write_db_path
-from kicad_catalog.sqlite import connect_sqlite
+from db_tools.workdir import resolve_write_db_path
+from db_tools.sqlite import connect_sqlite
 
 _FOOTPRINT_HEADER_REGEX = re.compile(
     r'\((?:footprint|module)\s+(?:"([^"]+)"|([^\s()]+))',
@@ -148,7 +148,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     roots = [Path(p).resolve() for p in args.footprint_dirs]
     dest = args.dest.resolve()
-    safe_dest = resolve_write_db_path(dest, prefix="footprint", repo_root=PROJECT_ROOT)
+    safe_dest = resolve_write_db_path(dest, prefix="footprint")
     if safe_dest != dest:
         print(f"Destination DB is protected; writing to working copy instead: {safe_dest}")
     dest = safe_dest

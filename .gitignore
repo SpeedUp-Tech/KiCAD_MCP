@@ -16,3 +16,5 @@ easyeda_cache/
 AGENTS.md
 GEMINI.md
 .agent/
+db_tools/
+database_tools/

@@ -22,8 +22,8 @@ PYTHON_ROOT = PROJECT_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from kicad_catalog.sqlite import connect_sqlite
-from kicad_catalog.workdir import resolve_write_db_path
+from db_tools.sqlite import connect_sqlite
+from db_tools.workdir import resolve_write_db_path
 
 DEFAULT_DB = PROJECT_ROOT / "part_lib" / "jlcpcb-components.sqlite3"
 
@@ -267,7 +267,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not db_path.exists():
         raise FileNotFoundError(f"Component database not found: {db_path}")
 
-    effective_db_path = resolve_write_db_path(db_path, prefix="component", repo_root=PROJECT_ROOT)
+    effective_db_path = resolve_write_db_path(db_path, prefix="component")
     if effective_db_path != db_path:
         print(f"Using working copy for updates (original is protected): {effective_db_path}")
 

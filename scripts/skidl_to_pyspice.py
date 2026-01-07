@@ -23,12 +23,6 @@ def main() -> None:
         default=None,
         help="Optional override for the generated subcircuit name.",
     )
-    parser.add_argument(
-        "--model-db",
-        type=Path,
-        default=None,
-        help="Override path to the SPICE model database.",
-    )
     args = parser.parse_args()
 
     subckt_name = convert_skidl_module(
@@ -36,7 +30,6 @@ def main() -> None:
         subckt_name=args.subckt,
         output_path=args.output,
         subckt_output=args.subckt_output,
-        model_db_path=args.model_db,
     )
     print(
         textwrap.dedent(

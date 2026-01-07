@@ -21,8 +21,8 @@ PYTHON_ROOT = PROJECT_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from kicad_catalog.sqlite import connect_sqlite
-from kicad_catalog.workdir import resolve_read_db_path, resolve_write_db_path
+from db_tools.sqlite import connect_sqlite
+from db_tools.workdir import resolve_read_db_path, resolve_write_db_path
 
 DEFAULT_COMPONENTS_DB = PROJECT_ROOT / "part_lib" / "jlcpcb-components.sqlite3"
 DEFAULT_SYMBOL_DB = PROJECT_ROOT / "symbol_lib" / "kicad_symbols.sqlite3"
@@ -163,9 +163,8 @@ def main() -> int:
     effective_components_db = resolve_write_db_path(
         components_db,
         prefix="component",
-        repo_root=PROJECT_ROOT,
     )
-    effective_symbol_db = resolve_read_db_path(symbol_db, prefix="symbol", repo_root=PROJECT_ROOT)
+    effective_symbol_db = resolve_read_db_path(symbol_db, prefix="symbol")
 
     if effective_components_db != components_db:
         print(f"Using working copy for updates (original is protected): {effective_components_db}")

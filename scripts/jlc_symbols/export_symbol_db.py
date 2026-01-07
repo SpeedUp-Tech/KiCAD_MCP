@@ -26,8 +26,8 @@ PYTHON_ROOT = PROJECT_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from kicad_catalog.workdir import resolve_write_db_path
-from kicad_catalog.sqlite import connect_sqlite
+from db_tools.workdir import resolve_write_db_path
+from db_tools.sqlite import connect_sqlite
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -654,7 +654,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     symbols_dirs = [Path(p).resolve() for p in args.symbols_dirs]
     dest = args.dest.resolve()
-    safe_dest = resolve_write_db_path(dest, prefix="symbol", repo_root=PROJECT_ROOT)
+    safe_dest = resolve_write_db_path(dest, prefix="symbol")
     if safe_dest != dest:
         print(f"Destination DB is protected; writing to working copy instead: {safe_dest}")
     dest = safe_dest

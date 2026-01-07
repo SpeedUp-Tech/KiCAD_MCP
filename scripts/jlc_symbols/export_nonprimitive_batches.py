@@ -22,8 +22,8 @@ PYTHON_ROOT = PROJECT_ROOT / "python"
 if str(PYTHON_ROOT) not in sys.path:
     sys.path.insert(0, str(PYTHON_ROOT))
 
-from kicad_catalog.sqlite import connect_sqlite
-from kicad_catalog.workdir import resolve_read_db_path
+from db_tools.sqlite import connect_sqlite
+from db_tools.workdir import resolve_read_db_path
 
 # Keep the primitive category list in sync with import_jlc_symbols.py
 PRIMITIVE_CATEGORY_ROOTS: set[str] = {
@@ -76,7 +76,7 @@ def fetch_candidates(
     db_path: Path,
     limit: Optional[int],
 ) -> List[Tuple[int, str]]:
-    db_path = resolve_read_db_path(db_path, prefix="component", repo_root=PROJECT_ROOT)
+    db_path = resolve_read_db_path(db_path, prefix="component")
     conn = connect_sqlite(db_path, readonly=True)
     query = """
         SELECT lcsc, category

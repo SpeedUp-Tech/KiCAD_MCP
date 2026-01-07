@@ -14,15 +14,14 @@ from sexpdata import Symbol as SSymbol
 from skip import Schematic
 from skip.sexp.util import writeTree
 
-from kicad_catalog.config import load_catalog_paths
-from kicad_catalog.sqlite import connect_sqlite
+from db_tools.settings import get_sqlite_db_path
+from db_tools.sqlite import connect_sqlite
 
 LOGGER = logging.getLogger("library_export")
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_SYMBOL_VERSION = 20211014
 SYMBOL_GENERATOR = "KiCAD-MCP-ProjectLibs"
-DEFAULT_FOOTPRINT_DB = PROJECT_ROOT / "symbol_lib" / "kicad_footprints.sqlite3"
 DEFAULT_FOOTPRINT_DIR = PROJECT_ROOT / "symbol_lib" / "footprints"
 DEFAULT_KICAD_MAJOR_VERSION = os.environ.get("KICAD_MAJOR_VERSION", "9.0")
 
@@ -36,9 +35,8 @@ def _get_footprint_db_paths() -> List[Path]:
     if _FOOTPRINT_DB_PATHS is not None:
         return _FOOTPRINT_DB_PATHS
 
-    paths = list(load_catalog_paths(repo_root=PROJECT_ROOT).footprint_dbs) or [DEFAULT_FOOTPRINT_DB]
-    _FOOTPRINT_DB_PATHS = paths
-    return paths
+    _FOOTPRINT_DB_PATHS = [get_sqlite_db_path(for_write=False)]
+    return _FOOTPRINT_DB_PATHS
 
 
 def _get_footprint_search_paths() -> List[Path]:
@@ -46,7 +44,7 @@ def _get_footprint_search_paths() -> List[Path]:
     if _FOOTPRINT_SEARCH_PATHS is not None:
         return _FOOTPRINT_SEARCH_PATHS
 
-    paths = list(load_catalog_paths(repo_root=PROJECT_ROOT).footprint_search_paths)
+    paths: List[Path] = []
 
     defaults = [
         DEFAULT_FOOTPRINT_DIR,

@@ -32,12 +32,11 @@ from matplotlib.lines import Line2D
 from matplotlib.figure import Figure
 from matplotlib.axes import Axes
 
-from kicad_catalog.config import load_catalog_paths
-from kicad_catalog.sqlite import connect_sqlite
+from db_tools.settings import get_sqlite_db_path
+from db_tools.sqlite import connect_sqlite
 
 # Default database path
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_SYMBOL_DB = PROJECT_ROOT / 'symbol_lib' / 'kicad_symbols.sqlite3'
 
 # Pin type colors (matching KiCad visual conventions)
 PIN_TYPE_COLORS = {
@@ -491,7 +490,6 @@ def visualize_symbol(
 def visualize_by_mpn(
     mpn: str,
     library: str,
-    db_path: Optional[Path] = None,
     figsize: Tuple[float, float] = (10, 8),
     show: bool = True,
 ) -> Figure:
@@ -501,7 +499,6 @@ def visualize_by_mpn(
     Args:
         mpn: Manufacturer part number / symbol name to look up.
         library: Library name (required - same MPN can exist in different libraries).
-        db_path: Path to the symbols database. Defaults to symbol_lib/kicad_symbols.sqlite3.
         figsize: Figure size in inches.
         show: If True, display immediately.
 
@@ -511,9 +508,7 @@ def visualize_by_mpn(
     Example:
         >>> fig = visualize_by_mpn("HX711", "ADC_DAC_Data_Conversion")
     """
-    if db_path is None:
-        candidates = load_catalog_paths(repo_root=PROJECT_ROOT).symbol_dbs
-        db_path = candidates[0] if candidates else DEFAULT_SYMBOL_DB
+    db_path = get_sqlite_db_path(for_write=False)
 
     conn = connect_sqlite(Path(db_path), readonly=True)
     try:
@@ -526,7 +521,8 @@ def visualize_by_mpn(
         if row is None:
             raise ValueError(f"Symbol '{library}/{mpn}' not found in database")
 
-        _, lib_name, sexp = row
+        lib_name = row["library"] if hasattr(row, "__getitem__") else row[1]
+        sexp = row["sexp"] if hasattr(row, "__getitem__") else row[2]
 
         # Call with show=False to avoid double display, we'll handle show after updating title
         fig = visualize_symbol(sexp, figsize=figsize, show=False)
@@ -616,7 +612,6 @@ def compare_symbols(
 
 def list_symbols_by_prefix(
     prefix: str,
-    db_path: Optional[Path] = None,
     limit: int = 20,
 ) -> List[Dict[str, str]]:
     """
@@ -624,7 +619,6 @@ def list_symbols_by_prefix(
 
     Args:
         prefix: MPN prefix to search for.
-        db_path: Path to the symbols database.
         limit: Maximum number of results.
 
     Returns:
@@ -635,9 +629,7 @@ def list_symbols_by_prefix(
         >>> for m in matches:
         ...     print(f"{m['library']}/{m['mpn']}")
     """
-    if db_path is None:
-        candidates = load_catalog_paths(repo_root=PROJECT_ROOT).symbol_dbs
-        db_path = candidates[0] if candidates else DEFAULT_SYMBOL_DB
+    db_path = get_sqlite_db_path(for_write=False)
 
     conn = connect_sqlite(Path(db_path), readonly=True)
     try:
