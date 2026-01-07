@@ -98,13 +98,6 @@ export function registerLibraryTools(server, callKicadScript) {
         const result = await callKicadScript('create_footprint', params);
         return formatToolResult(result);
     });
-    server.tool('get_symbol_pinout', {
-        library: z.string().describe('Name of the KiCAD symbol library (e.g., Device, MCU_Microchip)'),
-        symbol: z.string().describe('Symbol or MPN identifier to match exactly inside the library'),
-    }, async (params) => {
-        const result = await callKicadScript('get_symbol_pinout', params);
-        return formatToolResult(result);
-    });
     server.tool('build_symbol_from_template', {
         json: z
             .string()
@@ -121,32 +114,6 @@ export function registerLibraryTools(server, callKicadScript) {
             };
         }
         const result = await callKicadScript('build_symbol_from_template', parsed);
-        return formatToolResult(result);
-    });
-    server.tool('search_footprint', {
-        query: z
-            .string()
-            .describe('Search term for footprint (e.g., "QFN-32 5x5", "SOT-23", "SOIC-8 3.9mm"). Supports partial matching.'),
-        maxResults: z
-            .number()
-            .optional()
-            .default(20)
-            .describe('Maximum number of results to return (default: 20)'),
-    }, async (params) => {
-        const result = await callKicadScript('search_footprint', params);
-        return formatToolResult(result);
-    });
-    server.tool('add_symbol_entry', {
-        mpn: z.string().min(1).describe('Manufacturer part number / symbol name'),
-        library: z.string().min(1).describe('Library name for grouping'),
-        sexp: z.string().min(1).describe('Symbol S-expression definition'),
-        overwrite: z
-            .boolean()
-            .optional()
-            .default(false)
-            .describe('If true, overwrite existing entry (default: false)'),
-    }, async (params) => {
-        const result = await callKicadScript('add_symbol_entry', params);
         return formatToolResult(result);
     });
     logger.info('Library tools registered');

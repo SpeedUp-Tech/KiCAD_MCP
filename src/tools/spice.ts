@@ -69,46 +69,6 @@ export function registerSpiceTools(
   );
 
   server.tool(
-    'save_part_model',
-    toolDescription('save_part_model'),
-    {
-      name: z.string().describe('Part name for the SPICE model entry'),
-      library: z.string().describe('Library namespace containing the part'),
-      modelContent: z.string().describe('Raw SPICE model text to store'),
-      vendorProvided: z.boolean().optional().describe('Whether the model comes from a vendor'),
-      modelDbPath: z.string().optional().describe('Optional path to a SPICE model database file'),
-    },
-    async ({ name, library, modelContent, vendorProvided, modelDbPath }) => {
-      const result = await callKicadScript('save_part_model', {
-        name,
-        library,
-        modelContent,
-        vendorProvided,
-        modelDbPath,
-      });
-      return formatToolResult(result);
-    }
-  );
-
-  server.tool(
-    'search_spice_model',
-    toolDescription('search_spice_model'),
-    {
-      name: z.string().describe('Part name to look up in the SPICE model database'),
-      library: z.string().describe('Library name to scope the lookup'),
-      modelDbPath: z.string().optional().describe('Optional path to an alternate SPICE model database file'),
-    },
-    async ({ name, library, modelDbPath }) => {
-      const result = await callKicadScript('search_spice_model', {
-        name,
-        library,
-        modelDbPath,
-      });
-      return formatToolResult(result);
-    }
-  );
-
-  server.tool(
     'validate_spice_model',
     toolDescription('validate_spice_model'),
     {

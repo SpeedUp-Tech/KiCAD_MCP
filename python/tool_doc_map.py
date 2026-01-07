@@ -59,10 +59,6 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/commands/database_tools/library_schematic.py",
         ("LibraryManager", "list_available_libraries"),
     ),
-    "add_symbol_entry": (
-        "python/commands/database_tools/library_schematic.py",
-        ("LibraryManager", "add_symbol_entry"),
-    ),
     "export_schematic_pdf": ("python/commands/pcb/export.py", ("ExportCommands", "export_pdf")),
     "export_schematic_svg": ("python/commands/pcb/export.py", ("ExportCommands", "export_svg")),
     "run_erc": ("python/kicad_interface.py", ("KiCADInterface", "_handle_run_erc")),
@@ -73,9 +69,6 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         ("KiCADInterface", "_handle_generate_hierarchical_schematic"),
     ),
     "get_schematic_state": ("python/commands/kicad_schematics/schematic_state.py", ("get_schematic_state",)),
-    "search_mpn_part": ("python/commands/database_tools/component_search.py", ("ComponentSearchCommands", "search_mpn_part")),
-    "search_datasheet": ("python/commands/database_tools/component_search.py", ("ComponentSearchCommands", "search_datasheet")),
-    "add_searchable_part": ("python/commands/database_tools/component_search.py", ("ComponentSearchCommands", "add_searchable_part")),
     "run_spice_simulation_testcase": (
         "python/spice_tools/testbench_runner.py",
         ("run_use_case",),
@@ -92,14 +85,6 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/spice_tools/utils.py",
         ("validate_spice_model",),
     ),
-    "search_spice_model": (
-        "python/kicad_interface.py",
-        ("KiCADInterface", "_handle_search_spice_model"),
-    ),
-    "save_part_model": (
-        "python/kicad_interface.py",
-        ("KiCADInterface", "_handle_save_part_model"),
-    ),
     "generate_schematic_from_netlist": (
         "python/netlist_schematic_pipeline.py",
         ("generate_schematic_from_skidl_module",),
@@ -107,10 +92,6 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
     "build_symbol_from_template": (
         "python/kicad_interface.py",
         ("KiCADInterface", "_handle_build_symbol_from_template"),
-    ),
-    "search_footprint": (
-        "python/kicad_interface.py",
-        ("KiCADInterface", "_handle_search_footprint"),
     ),
 }
 

@@ -68,7 +68,7 @@ All responses are structured JSON; no human-in-the-loop parsing is required.
 ```
 
 - **TypeScript server** (`src/`) owns MCP protocol handling, logging, and process management. Tools live in modular files under `src/tools/` (board, schematic, library, etc.).
-- **Python command modules** (`python/commands/`) are organized into subpackages (`pcb/`, `kicad_schematics/`, `database_tools/`, `skidl_tools/`) that isolate board ops, schematic manipulation, library/search tooling, and SKiDL helpers. The central router is `python/kicad_interface.py`.
+- **Python command modules** (`python/commands/`) are organized into subpackages (`pcb/`, `kicad_schematics/`, `skidl_tools/`) that isolate board ops, schematic manipulation, and SKiDL helpers. The central router is `python/kicad_interface.py`.
 - **Resources & prompts** (`src/resources/`, `src/prompts/`) provide contextual info and guided prompt templates to the agent.
 
 ---
@@ -130,17 +130,26 @@ Below is a condensed summary; see the TypeScript sources under `src/tools/` for 
 - `import_project` (placeholder warning for unsupported formats)
 
 ### Schematic (`schematic.ts`)
-- `create_schematic`, `load_schematic`
-- `add_schematic_component`, `add_schematic_wire`
+- `create_schematic`, `load_schematic`, `get_schematic_state`
+- `add_schematic_component`, `update_schematic_component`, `remove_schematic_component`
+- `add_schematic_wire`, `connect_schematic_pins`, `remove_schematic_connection`
+- `compile_schematic` – attaches labels to unlabeled wire nets
 - `list_schematic_libraries`
-- `export_schematic_pdf` *(kicad-cli)*
-- `run_erc` *(kicad-cli)*
-- `export_schematic_netlist` *(kicad-cli)*
-- `export_schematic_bom` *(kicad-cli)*
+- `generate_hierarchical_schematic` – generate hierarchical schematic from JSON blueprint
+- `generate_schematic_from_netlist` – generate schematic from SKiDL module with ELK auto-layout
+- `export_schematic_pdf`, `export_schematic_svg` *(kicad-cli)*
+- `run_erc`, `run_module_erc` *(kicad-cli)*
+- `export_schematic_netlist`, `export_schematic_bom` *(kicad-cli)*
+
+### SKiDL Tools (`schematic.ts`)
+- `run_skidl_erc` – execute SKiDL ERC harness script
+- `execute_skidl_netlist` – execute SKiDL module and return generated netlist
+- `execute_skidl_netlist_json` – generate structured netlist summary from SKiDL module
 
 ### Library Authoring (`library.ts`)
 - `create_symbol` – writes a KiCad `.kicad_sym` file (creates or appends symbol). You provide library path, symbol name, pins, and optional metadata.
 - `create_footprint` – writes a `.kicad_mod` into a `.pretty` directory, given pad geometry, outlines, and attributes.
+- `build_symbol_from_template` – generates a symbol S-expression from a JSON template.
 
 ### Board Layout (`board.ts`)
 - `set_board_size`, `add_board_outline`, `add_mounting_hole`, `add_board_text`
@@ -166,6 +175,12 @@ Below is a condensed summary; see the TypeScript sources under `src/tools/` for 
 ### Exports (`export.ts`)
 - `export_gerber` *(Gerber + optional drill/map files)*
 - `export_pdf`, `export_svg`, `export_3d`, `export_bom`
+
+### SPICE Simulation (`spice.ts`)
+- `validate_spice_model` – validate a SPICE model file by parsing and smoke-instantiating its subcircuit
+- `convert_skidl_module` – convert a SKiDL module/subcircuit into a PySpice-ready Python module
+- `run_spice_simulation_testcase` – load testbench JSON and execute a named use-case via harness file
+- `run_spice_harness_sanity_check` – run a short transient using the harness with a dummy DUT
 
 Resources (`src/resources/…`) expose project, board, library, and component data via URIs like `kicad://board/info`. Prompts under `src/prompts/` give the agent instructions for common design operations.
 

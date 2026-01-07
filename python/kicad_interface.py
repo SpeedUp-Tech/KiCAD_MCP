@@ -130,7 +130,7 @@ try:
     from commands.database_tools.footprint import FootprintManager
     from commands.kicad_schematics.blueprint_to_hierarchical import generate_hierarchical_schematic
     from commands.kicad_schematics.schematic_state import get_schematic_state
-    from commands.database_tools.component_search import ComponentSearchCommands
+
     from commands.kicad_schematics.erc_utils import prepare_module_erc_artifacts
     from commands.database_tools.library_export import export_project_libraries
     from commands.skidl_tools.netlist_json import generate_skidl_netlist_json
@@ -206,7 +206,6 @@ class KiCADInterface:
         self.export_commands = ExportCommands(self.board)
         self.symbol_library = LibraryManager()
         self.footprint_manager = FootprintManager()
-        self.component_search_commands = ComponentSearchCommands()
 
         # Schematic-related classes don't need board reference
         # as they operate directly on schematic files
@@ -245,9 +244,6 @@ class KiCADInterface:
             "place_component_array": self.component_commands.place_component_array,
             "align_components": self.component_commands.align_components,
             "duplicate_component": self.component_commands.duplicate_component,
-            "search_mpn_part": self.component_search_commands.search_mpn_part,
-            "search_datasheet": self.component_search_commands.search_datasheet,
-            "add_searchable_part": self.component_search_commands.add_searchable_part,
 
             # Routing commands
             "add_net": self.routing_commands.add_net,
@@ -275,10 +271,7 @@ class KiCADInterface:
             # Library commands
             "create_symbol": self.symbol_library.create_symbol,
             "create_footprint": self.footprint_manager.create_footprint,
-            "get_symbol_pinout": self.symbol_library.get_symbol_pinout,
-            "add_symbol_entry": self.symbol_library.add_symbol_entry,
             "build_symbol_from_template": self._handle_build_symbol_from_template,
-            "search_footprint": self._handle_search_footprint,
 
             # Schematic commands
             "create_schematic": self._handle_create_schematic,
@@ -307,8 +300,6 @@ class KiCADInterface:
             "run_spice_simulation_testcase": self._handle_run_spice_simulation_testcase,
             "run_spice_harness_sanity_check": self._handle_run_spice_harness_sanity_check,
             "convert_skidl_module": self._handle_convert_skidl_module,
-            "save_part_model": self._handle_save_part_model,
-            "search_spice_model": self._handle_search_spice_model,
             "validate_spice_model": self._handle_validate_spice_model,
 
             # Netlist to schematic pipeline
@@ -1692,57 +1683,6 @@ class KiCADInterface:
             logger.error(traceback.format_exc())
             return {"success": False, "message": str(exc)}
 
-    def _handle_save_part_model(self, params):
-        """Persist or update a SPICE model entry in the shared database."""
-        logger.info("Saving SPICE model entry")
-        try:
-            from db_tools.client import DbToolsClient
-
-            name_value = params.get("name")
-            library_value = params.get("library")
-            content_value = params.get("modelContent") or params.get("model_content")
-
-            missing = [
-                label
-                for label, value in (
-                    ("name", name_value),
-                    ("library", library_value),
-                    ("modelContent", content_value),
-                )
-                if not value
-            ]
-            if missing:
-                return {"success": False, "message": f"Missing required parameter(s): {', '.join(missing)}"}
-
-            vendor_raw = params.get("vendorProvided")
-            if vendor_raw is None:
-                vendor_raw = params.get("vendor_provided")
-            vendor_provided = False
-            if vendor_raw is not None:
-                if isinstance(vendor_raw, bool):
-                    vendor_provided = vendor_raw
-                elif isinstance(vendor_raw, (int, float)):
-                    vendor_provided = bool(vendor_raw)
-                else:
-                    vendor_provided = str(vendor_raw).strip().lower() in {"1", "true", "yes", "y"}
-
-            client = DbToolsClient.from_settings()
-            saved_path = client.save_spice_model(
-                name=str(name_value),
-                library=str(library_value),
-                model_content=str(content_value),
-                vendor_provided=vendor_provided,
-            )
-
-            return {
-                "success": True,
-                "message": f"Saved SPICE model {name_value}",
-            }
-        except Exception as exc:
-            logger.error(f"Error saving SPICE model entry: {exc}")
-            logger.error(traceback.format_exc())
-            return {"success": False, "message": str(exc)}
-
     def _handle_validate_spice_model(self, params):
         """Validate a SPICE model by parsing and instantiating its subcircuit."""
         logger.info("Validating SPICE model file")
@@ -1780,47 +1720,6 @@ class KiCADInterface:
             logger.error(traceback.format_exc())
             return {"success": False, "message": str(exc)}
 
-    def _handle_search_spice_model(self, params):
-        """Look up a stored SPICE model entry by library and name."""
-        logger.info("Searching SPICE model database")
-        try:
-            from db_tools.client import DbToolsClient
-
-            name_value = params.get("name")
-            library_value = params.get("library")
-
-            missing = [
-                label
-                for label, value in (
-                    ("name", name_value),
-                    ("library", library_value),
-                )
-                if not value
-            ]
-            if missing:
-                return {"success": False, "message": f"Missing required parameter(s): {', '.join(missing)}"}
-
-            client = DbToolsClient.from_settings()
-            entry = client.search_spice_model(
-                name=str(name_value),
-                library=str(library_value),
-            )
-
-            if not entry:
-                return {
-                    "success": False,
-                    "message": "SPICE model not found",
-                }
-
-            return {
-                "success": True,
-                "entry": entry,
-            }
-        except Exception as exc:
-            logger.error(f"Error searching SPICE model database: {exc}")
-            logger.error(traceback.format_exc())
-            return {"success": False, "message": str(exc)}
-
     def _handle_build_symbol_from_template(self, params):
         """
         Build a KiCad symbol S-expression from JSON input.
@@ -1852,33 +1751,6 @@ class KiCADInterface:
         except Exception as exc:
             logger.error(f"Error building symbol from template: {exc}")
             logger.error(traceback.format_exc())
-            return {"success": False, "message": str(exc)}
-
-    def _handle_search_footprint(self, params):
-        """
-        Search KiCad footprint database for matching footprints.
-        
-        Args (via params dict):
-            query: Search term (e.g., "QFN-32 5x5", "SOT-23", "SOIC-8")
-            maxResults: Maximum number of results to return (default: 20)
-            
-        Returns:
-            Dict with success status and list of matching footprints
-            Each result includes library name and footprint name
-        """
-        from db_tools.client import DbToolsClient
-
-        query = params.get("query", "")
-        if not query:
-            return {"success": False, "message": "'query' is required"}
-        
-        max_results = params.get("maxResults", 20)
-
-        try:
-            client = DbToolsClient.from_settings()
-            return client.search_footprints(query, max_results=max_results)
-        except Exception as exc:
-            logger.error(f"Error searching footprints: {exc}")
             return {"success": False, "message": str(exc)}
 
     def _handle_generate_schematic_from_netlist(self, params):
