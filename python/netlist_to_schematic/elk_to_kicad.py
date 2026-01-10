@@ -6,6 +6,7 @@ KiCad schematic file with correctly positioned components and wires.
 """
 
 import json
+import logging
 import uuid
 from pathlib import Path
 from typing import Union, Dict, Any, Tuple, List
@@ -15,6 +16,8 @@ from python.commands.kicad_schematics.component_schematic import ComponentManage
 from python.commands.kicad_schematics.connection_schematic import ConnectionManager, SchematicCompiler
 from python.commands.kicad_schematics.grid_utils import snap_to_grid, KICAD_SCHEMATIC_GRID_MM
 from sexpdata import Symbol as SSymbol
+
+logger = logging.getLogger(__name__)
 
 
 # KiCad 6+ uses millimeters. ELK adapter outputs millimeters.
@@ -297,7 +300,6 @@ def run_conversion(
             graph = json.load(f)
 
     # Create Schematic with appropriate paper size
-    print(f"Creating schematic: {output_sch} (paper: {paper_size})")
     schematic = SchematicManager.create_schematic(output_sch.stem, {"paper": paper_size})
     
     # Calculate Graph Bounding Box to center on page
@@ -379,10 +381,9 @@ def run_conversion(
         }
         
         try:
-            print(f"Adding Component {ref} at ({pos_x:.2f}, {pos_y:.2f})")
             ComponentManager.add_component(schematic, comp_def)
         except Exception as e:
-            print(f"Failed to add component {ref}: {e}")
+            logger.error(f"Failed to add component {ref}: {e}")
 
     # Add Net Labels
     for node, node_x, node_y in net_label_nodes:
@@ -413,10 +414,9 @@ def run_conversion(
             pin_positions[port_id] = (label_x, label_y)
         
         try:
-            print(f"Adding Net Label '{net_name}' ({label_type}, {label_shape}, {label_role}) at ({label_x:.2f}, {label_y:.2f})")
             _add_net_label(schematic, net_name, label_x, label_y, label_type, label_shape, label_role)
         except Exception as e:
-            print(f"Failed to add net label {label_id}: {e}")
+            logger.error(f"Failed to add net label {label_id}: {e}")
 
     label_port_ids: set[str] = set()
     for node, _, _ in net_label_nodes:
@@ -451,7 +451,6 @@ def run_conversion(
         sections = edge.get("sections", [])
 
         if not sections:
-            print(f"Skipping edge {edge_id}: no routing sections")
             continue
 
         # Get net_name from edge properties if available
@@ -520,8 +519,6 @@ def run_conversion(
                 points = _orthogonalize_points(points)
                 for x, y in points[1:-1]:
                     used_wire_vertices.add(_grid_key(x, y))
-                bend_count = len(section.get("bendPoints", []))
-                print(f"Adding wire {edge_id}: ({start_x:.2f}, {start_y:.2f}) -> ({end_x:.2f}, {end_y:.2f}) [{bend_count} bends]")
                 ConnectionManager.add_wire(
                     schematic,
                     start_point=None,
@@ -529,24 +526,20 @@ def run_conversion(
                     properties={"points": points}
                 )
             except Exception as e:
-                print(f"Failed to add wire {edge_id}: {e}")
+                logger.error(f"Failed to add wire {edge_id}: {e}")
     
     # Add local labels for unlabeled nets using their SKiDL net names
     for net_name, (label_x, label_y) in net_first_endpoint.items():
         try:
-            print(f"Adding auto net label '{net_name}' at ({label_x:.2f}, {label_y:.2f})")
             _add_net_label(schematic, net_name, label_x, label_y, label_type="local")
         except Exception as e:
-            print(f"Failed to add net label {net_name}: {e}")
+            logger.error(f"Failed to add net label {net_name}: {e}")
 
     # Compile: add labels to any remaining unlabeled nets (e.g., GND connections to power symbols)
-    compile_result = SchematicCompiler.compile(schematic)
-    if compile_result.get("generatedLabelCount", 0) > 0:
-        print(f"Added {compile_result['generatedLabelCount']} auto-generated net labels")
+    SchematicCompiler.compile(schematic)
 
     # Save
     SchematicManager.save_schematic(schematic, str(output_sch))
-    print(f"Schematic saved: {output_sch}")
 
 
 def _orthogonalize_points(points: List[List[float]]) -> List[List[float]]:
