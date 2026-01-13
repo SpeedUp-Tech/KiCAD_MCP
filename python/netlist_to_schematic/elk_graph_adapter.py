@@ -1400,7 +1400,6 @@ class ElkGraphBuilder:
                     }
                     self.graph["edges"].append(edge)
                     connected_pins.add(pin_id)
-                    print(f"[Insurance] Auto-connected orphan {pin_id} to label {label_id}")
                     continue
                 
                 # Priority 2: Connect to power symbols if component has any for this net
@@ -1427,6 +1426,5 @@ class ElkGraphBuilder:
                     }
                     self.graph["edges"].append(edge)
                     connected_pins.add(pin_id)
-                    print(f"[Insurance] Auto-connected orphan {pin_id} to power symbol {power_id}")
 
         return self.graph

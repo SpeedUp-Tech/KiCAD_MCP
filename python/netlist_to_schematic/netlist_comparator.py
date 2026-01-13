@@ -212,6 +212,10 @@ def compare_connectivity(
         if len(skidl_pins) < 2:
             continue  # Single-pin nets are not meaningful
         
+        # Skip no-connect nets - KiCad intentionally excludes no_connect type pins from netlist
+        if net_name.startswith("NC") or net_name.startswith("NC_"):
+            continue
+        
         # Find which KiCad net(s) contain these pins
         kicad_nets_for_pins: dict[str, set[str]] = {}
         for pin in skidl_pins:
@@ -246,26 +250,13 @@ def compare_connectivity(
             errors.append(f"Net '{net_name}' (KiCad: {kicad_net_name}) has extra pins: {sorted(extra)}")
     
     passed = len(errors) == 0
-    
-    if verbose:
-        print(f"Comparison: SKiDL has {len(skidl_nets)} nets, KiCad has {len(kicad_nets)} nets")
-        if passed:
-            print("✓ Netlists match - all connections verified!")
-        else:
-            print(f"✗ Found {len(errors)} issues:")
-            for err in errors[:20]:
-                print(f"  {err}")
-            if len(errors) > 20:
-                print(f"  ... and {len(errors) - 20} more")
-    
     return passed, errors
 
 
 def verify_schematic(
     circuit,
     schematic_path: str,
-    verbose: bool = True
-) -> bool:
+) -> tuple[bool, list[str]]:
     """
     Verify that a generated schematic matches the original SKiDL circuit.
     
@@ -275,30 +266,14 @@ def verify_schematic(
     Args:
         circuit: SKiDL Circuit object
         schematic_path: Path to the generated .kicad_sch file
-        verbose: Print progress and results
         
     Returns:
-        True if netlists match, False otherwise
+        Tuple of (passed, errors) where passed is True if netlists match,
+        and errors is a list of mismatch descriptions.
     """
-    if verbose:
-        print(f"Verifying schematic: {schematic_path}")
-    
-    # Extract KiCad connectivity via netlist export
-    if verbose:
-        print("  Extracting KiCad connectivity...")
     kicad_nets = extract_kicad_connectivity(schematic_path)
-    
-    # Extract SKiDL connectivity
-    if verbose:
-        print("  Extracting SKiDL connectivity...")
     skidl_nets = extract_skidl_connectivity(circuit)
-    
-    # Compare
-    if verbose:
-        print("  Comparing netlists...")
-    passed, _ = compare_connectivity(skidl_nets, kicad_nets, verbose)
-    
-    return passed
+    return compare_connectivity(skidl_nets, kicad_nets)
 
 
 if __name__ == "__main__":

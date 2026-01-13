@@ -414,10 +414,11 @@ def generate_schematic_from_skidl_module(
         # Verify if requested
         if verify:
             from python.netlist_to_schematic.netlist_comparator import verify_schematic
-            verification_passed = verify_schematic(circuit, sch_path, verbose=True)
+            verification_passed, verification_errors = verify_schematic(circuit, sch_path)
             result["verification_passed"] = verification_passed
             if not verification_passed:
                 result["verification_warning"] = "Schematic connectivity does not fully match SKiDL netlist"
+                result["verification_errors"] = verification_errors
         
         return result
         
