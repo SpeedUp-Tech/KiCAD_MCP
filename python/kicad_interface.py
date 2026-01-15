@@ -143,7 +143,10 @@ try:
         search_spice_model,
     )
     from python.spice_tools.utils import validate_spice_model
-    from python.netlist_schematic_pipeline import generate_schematic_from_skidl_module
+    from python.netlist_schematic_pipeline import (
+        generate_schematic_from_skidl_module,
+        generate_top_schematic_from_contract,
+    )
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -304,6 +307,7 @@ class KiCADInterface:
 
             # Netlist to schematic pipeline
             "generate_schematic_from_netlist": self._handle_generate_schematic_from_netlist,
+            "generate_top_schematic_from_contract": self._handle_generate_top_schematic_from_contract,
         }
 
         logger.info("KiCAD interface initialized")
@@ -1832,6 +1836,121 @@ class KiCADInterface:
 
         except Exception as exc:
             logger.error(f"Error generating schematic from netlist: {exc}")
+            logger.error(traceback.format_exc())
+            return {"success": False, "message": str(exc)}
+
+    def _handle_generate_top_schematic_from_contract(self, params):
+        """
+        Generate a top-level hierarchical KiCad schematic from a module contract.
+
+        Args (via params dict):
+            module_sheets: Dict[str, str] mapping module_id -> module schematic path
+            signals: List[dict] (signal_id/source/sinks/direction)
+            rails: List[dict] (rail_id/primary_source_kind/primary_source_ref/consumers)
+            output_path: Output .kicad_sch file path
+            export_svg: If True, also export the schematic to SVG format
+            relative_sheet_paths: If True, rewrite absolute sheet paths relative to output_path
+            paper: Optional KiCad paper size (e.g. "A3")
+            columns: Optional grid column count
+            origin_x/origin_y: Optional top-left origin for layout
+            x_spacing/y_spacing: Optional grid spacing
+            sheet_width/sheet_height: Optional sheet symbol size
+
+        Returns:
+            Dict with success status, output path, and optional SVG path
+        """
+        logger.info("Generating top schematic from contract")
+        try:
+            module_sheets = params.get("module_sheets")
+            if module_sheets is None:
+                module_sheets = params.get("moduleSheets")
+
+            signals = params.get("signals")
+            if signals is None:
+                signals = []
+
+            rails = params.get("rails")
+            if rails is None:
+                rails = []
+
+            output_path = params.get("output_path")
+            if output_path is None:
+                output_path = params.get("outputPath")
+
+            export_svg = params.get("export_svg")
+            if export_svg is None:
+                export_svg = params.get("exportSvg")
+            if export_svg is None:
+                export_svg = False
+
+            relative_sheet_paths = params.get("relative_sheet_paths")
+            if relative_sheet_paths is None:
+                relative_sheet_paths = params.get("relativeSheetPaths")
+            if relative_sheet_paths is None:
+                relative_sheet_paths = True
+
+            if not module_sheets:
+                return {"success": False, "message": "module_sheets is required"}
+            if not output_path:
+                return {"success": False, "message": "output_path is required"}
+
+            paper = params.get("paper")
+            columns = params.get("columns")
+
+            origin_x = params.get("origin_x")
+            if origin_x is None:
+                origin_x = params.get("originX")
+
+            origin_y = params.get("origin_y")
+            if origin_y is None:
+                origin_y = params.get("originY")
+
+            x_spacing = params.get("x_spacing")
+            if x_spacing is None:
+                x_spacing = params.get("xSpacing")
+
+            y_spacing = params.get("y_spacing")
+            if y_spacing is None:
+                y_spacing = params.get("ySpacing")
+
+            sheet_width = params.get("sheet_width")
+            if sheet_width is None:
+                sheet_width = params.get("sheetWidth")
+
+            sheet_height = params.get("sheet_height")
+            if sheet_height is None:
+                sheet_height = params.get("sheetHeight")
+
+            kwargs = {
+                "module_sheets": module_sheets,
+                "signals": signals,
+                "rails": rails,
+                "output_path": output_path,
+                "export_svg": export_svg,
+                "relative_sheet_paths": relative_sheet_paths,
+            }
+            if paper is not None:
+                kwargs["paper"] = paper
+            if columns is not None:
+                kwargs["columns"] = columns
+            if origin_x is not None:
+                kwargs["origin_x"] = origin_x
+            if origin_y is not None:
+                kwargs["origin_y"] = origin_y
+            if x_spacing is not None:
+                kwargs["x_spacing"] = x_spacing
+            if y_spacing is not None:
+                kwargs["y_spacing"] = y_spacing
+            if sheet_width is not None:
+                kwargs["sheet_width"] = sheet_width
+            if sheet_height is not None:
+                kwargs["sheet_height"] = sheet_height
+
+            result = generate_top_schematic_from_contract(**kwargs)
+            return result
+
+        except Exception as exc:
+            logger.error(f"Error generating top schematic from contract: {exc}")
             logger.error(traceback.format_exc())
             return {"success": False, "message": str(exc)}
 

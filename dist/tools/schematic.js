@@ -97,6 +97,28 @@ const connectWireStyleSchema = z
 })
     .strict()
     .describe('Optional wire styling overrides. Only width and strokeType are accepted.');
+const contractSignalSchema = z
+    .object({
+    signal_id: z.string().describe('Signal pin/net name'),
+    source: z.string().describe('Source module_id'),
+    sinks: z.array(z.string()).optional().default([]).describe('Module IDs that consume the signal'),
+    direction: z
+        .enum(['source->sink', 'bidirectional'])
+        .optional()
+        .describe('Pin direction styling only; defaults to bidirectional'),
+})
+    .describe('Signal contract entry');
+const contractRailSchema = z
+    .object({
+    rail_id: z.string().describe('Rail pin/net name'),
+    primary_source_kind: z.string().optional().describe('Source kind (e.g., module, external)'),
+    primary_source_ref: z
+        .string()
+        .optional()
+        .describe('module_id when primary_source_kind == "module"'),
+    consumers: z.array(z.string()).optional().default([]).describe('Module IDs that consume the rail'),
+})
+    .describe('Rail contract entry');
 export function registerSchematicTools(server, callKicadScript) {
     logger.info('Registering schematic tools');
     server.tool('create_schematic', toolDescription('create_schematic'), {
@@ -389,6 +411,46 @@ export function registerSchematicTools(server, callKicadScript) {
             useDirectConnections,
             labelHighFanoutNets,
             highFanoutThreshold,
+        });
+        return formatToolResult(result);
+    });
+    server.tool('generate_top_schematic_from_contract', toolDescription('generate_top_schematic_from_contract'), {
+        module_sheets: z
+            .record(z.string())
+            .describe('Mapping of module_id to module schematic path for sheet symbols'),
+        signals: z.array(contractSignalSchema).optional().default([]).describe('Signal contract entries'),
+        rails: z.array(contractRailSchema).optional().default([]).describe('Rail contract entries'),
+        output_path: z.string().describe('Path for the output .kicad_sch file'),
+        export_svg: z.boolean().optional().default(false).describe('If true, also export the top schematic to SVG'),
+        relative_sheet_paths: z
+            .boolean()
+            .optional()
+            .default(true)
+            .describe('If true, rewrite absolute sheet paths relative to output_path'),
+        paper: z.string().optional().describe('Optional KiCad paper size (e.g., A3)'),
+        columns: z.number().int().optional().describe('Grid columns for module sheet layout'),
+        origin_x: z.number().optional().describe('Top-left origin X for layout'),
+        origin_y: z.number().optional().describe('Top-left origin Y for layout'),
+        x_spacing: z.number().optional().describe('Grid spacing in X'),
+        y_spacing: z.number().optional().describe('Grid spacing in Y'),
+        sheet_width: z.number().optional().describe('Sheet symbol width'),
+        sheet_height: z.number().optional().describe('Sheet symbol height'),
+    }, async ({ module_sheets, signals, rails, output_path, export_svg, relative_sheet_paths, paper, columns, origin_x, origin_y, x_spacing, y_spacing, sheet_width, sheet_height, }) => {
+        const result = await callKicadScript('generate_top_schematic_from_contract', {
+            module_sheets,
+            signals,
+            rails,
+            output_path,
+            export_svg,
+            relative_sheet_paths,
+            paper,
+            columns,
+            origin_x,
+            origin_y,
+            x_spacing,
+            y_spacing,
+            sheet_width,
+            sheet_height,
         });
         return formatToolResult(result);
     });

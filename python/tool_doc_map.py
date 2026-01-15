@@ -89,6 +89,10 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         "python/netlist_schematic_pipeline.py",
         ("generate_schematic_from_skidl_module",),
     ),
+    "generate_top_schematic_from_contract": (
+        "python/netlist_schematic_pipeline.py",
+        ("generate_top_schematic_from_contract",),
+    ),
     "build_symbol_from_template": (
         "python/kicad_interface.py",
         ("KiCADInterface", "_handle_build_symbol_from_template"),
