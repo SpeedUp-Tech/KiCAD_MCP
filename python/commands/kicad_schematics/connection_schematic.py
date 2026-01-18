@@ -1258,6 +1258,97 @@ def _refresh_label_collection(schematic: Schematic) -> None:
         logger.warning("Failed to refresh label collection: %s", exc)
 
 
+def _build_symbol_instances(schematic: Schematic) -> int:
+    """
+    Build the symbol_instances section required for KiCad to resolve reference annotations.
+    
+    KiCad 6+ stores reference designators in a root-level `symbol_instances` section.
+    Without this section, KiCad shows unannotated placeholders like "R?", "C?".
+    
+    Returns:
+        Number of symbol instances added.
+    """
+    tree = getattr(schematic, 'tree', None)
+    if not isinstance(tree, list):
+        return 0
+    
+    # Get root UUID
+    root_uuid = None
+    for entry in tree:
+        if isinstance(entry, list) and entry and _is_entry(entry, 'uuid'):
+            root_uuid = str(entry[1])
+            break
+    if not root_uuid:
+        logger.warning("Cannot build symbol_instances: root UUID not found")
+        return 0
+    
+    # Remove any existing symbol_instances section
+    for i in range(len(tree) - 1, -1, -1):
+        if isinstance(tree[i], list) and tree[i] and _is_entry(tree[i], 'symbol_instances'):
+            tree.pop(i)
+    
+    # Collect symbol UUIDs and references
+    symbol_entries: List[List[Any]] = []
+    symbols = getattr(schematic, 'symbol', None)
+    if symbols is None:
+        return 0
+    
+    for symbol in symbols:
+        try:
+            # Get symbol UUID
+            symbol_uuid = None
+            raw = getattr(symbol, 'raw', None)
+            if isinstance(raw, list):
+                for child in raw:
+                    if isinstance(child, list) and child and _is_entry(child, 'uuid'):
+                        symbol_uuid = str(child[1])
+                        break
+            
+            if not symbol_uuid:
+                continue
+            
+            # Get reference from property
+            reference = None
+            if hasattr(symbol, 'property') and hasattr(symbol.property, 'Reference'):
+                reference = getattr(symbol.property.Reference, 'value', None)
+            if not reference:
+                continue
+            
+            # Get unit (default to 1)
+            unit = 1
+            if hasattr(symbol, 'unit') and hasattr(symbol.unit, 'value'):
+                try:
+                    unit = int(symbol.unit.value)
+                except (TypeError, ValueError):
+                    unit = 1
+            
+            # Build path entry: (path "/<root_uuid>/<symbol_uuid>" (reference "R1") (unit 1))
+            path_str = f"/{root_uuid}/{symbol_uuid}"
+            path_entry = [
+                SSymbol('path'),
+                path_str,
+                [SSymbol('reference'), str(reference)],
+                [SSymbol('unit'), unit],
+            ]
+            symbol_entries.append(path_entry)
+        except Exception as exc:
+            logger.debug("Failed to process symbol for symbol_instances: %s", exc)
+            continue
+    
+    if not symbol_entries:
+        return 0
+    
+    # Build symbol_instances node
+    symbol_instances_node: List[Any] = [SSymbol('symbol_instances')]
+    symbol_instances_node.extend(symbol_entries)
+    
+    # Append at the end of the tree
+    tree.append(symbol_instances_node)
+    
+    logger.debug("Built symbol_instances with %d entries", len(symbol_entries))
+    return len(symbol_entries)
+
+
 class SchematicCompiler:
     """Utilities for materialising schematic nets into explicit labels."""
 
@@ -1282,11 +1373,14 @@ class SchematicCompiler:
             record["points"].add(point)
 
         if not nets:
+            # Still need to build symbol_instances even if there are no nets
+            symbol_instance_count = _build_symbol_instances(schematic)
             return {
                 "labelsAdded": [],
                 "totalNets": 0,
                 "generatedLabelCount": 0,
                 "skippedExistingLabels": 0,
+                "symbolInstancesAdded": symbol_instance_count,
             }
 
         created_labels: List[Dict[str, Any]] = []
@@ -1318,11 +1412,15 @@ class SchematicCompiler:
         if created_labels:
             _refresh_label_collection(schematic)
 
+        # Build symbol_instances section for KiCad reference annotation resolution
+        symbol_instance_count = _build_symbol_instances(schematic)
+
         return {
             "labelsAdded": created_labels,
             "totalNets": len(nets),
             "generatedLabelCount": len(created_labels),
             "skippedExistingLabels": len(nets) - len(created_labels),
+            "symbolInstancesAdded": symbol_instance_count,
         }
 
 
