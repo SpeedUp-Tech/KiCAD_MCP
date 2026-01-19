@@ -3,11 +3,23 @@
 from __future__ import annotations
 
 import io
+import os
 import re
 import logging
 import threading
 from pathlib import Path
 from typing import Any, Dict, List, Sequence, TYPE_CHECKING
+
+# Some environments can start with a deleted/unavailable CWD. SKiDL creates
+# log/erc files on import using relative paths, which raises FileNotFoundError
+# if the current working directory doesn't exist.
+try:
+    os.getcwd()
+except OSError:
+    try:
+        os.chdir("/tmp")
+    except OSError:
+        pass
 
 import skidl.part as skidl_part
 from skidl.tools.skidl.libs import pyspice_sklib
@@ -417,4 +429,3 @@ def validate_spice_model(
         problems.extend(behavioral_problems)
 
     return problems
-

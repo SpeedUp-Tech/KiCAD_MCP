@@ -23,6 +23,21 @@ from datetime import datetime, timezone
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
+
+# Some environments can start with a deleted/unavailable CWD. Libraries like SKiDL
+# create log/erc files on import using relative paths, which crashes if the CWD
+# doesn't exist. Ensure we have a valid working directory early.
+try:
+    os.getcwd()
+except OSError:
+    try:
+        os.chdir(PROJECT_ROOT)
+    except OSError:
+        try:
+            os.chdir("/tmp")
+        except OSError:
+            pass
+
 class JsonStdoutHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
