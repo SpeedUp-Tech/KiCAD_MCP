@@ -82,7 +82,7 @@ def generate_schematic(
             
         generate_schematic(circuit, "my_circuit.kicad_sch")
     """
-    output_file = Path(output_path)
+    output_file = Path(output_path).resolve()
     work_dir = output_file.parent
     base_name = output_file.stem
     

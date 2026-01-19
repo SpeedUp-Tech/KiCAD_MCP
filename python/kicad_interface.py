@@ -114,6 +114,15 @@ except Exception as e:
     print(json.dumps(error_response))
     sys.exit(1)
 
+# Disable SKiDL file logging BEFORE importing any SKiDL-dependent modules.
+# This prevents SKiDL from creating a log file in the current working directory,
+# which fails if that directory isn't writable.
+try:
+    from python.spice_tools.utils import disable_skidl_file_logging
+    disable_skidl_file_logging()
+except Exception:
+    pass  # Best-effort; continue even if this fails
+
 # Import command handlers
 try:
     logger.info("Importing command handlers...")

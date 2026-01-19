@@ -311,6 +311,8 @@ def run_elk_layout(elk_input: dict, work_dir: Path) -> dict:
     """Run ELK layout and return the output graph."""
     elk_runner = Path(__file__).parent / "elk" / "elk_layout_runner.cjs"
 
+    # Resolve to absolute path to ensure subprocess can find files
+    work_dir = work_dir.resolve()
     input_path = work_dir / "_rotation_opt_input.json"
     output_path = work_dir / "_rotation_opt_output.json"
 
