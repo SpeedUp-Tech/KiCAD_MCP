@@ -2,15 +2,24 @@
 Base utilities and shared functions for symbol builders.
 """
 
+import math
 from typing import Dict, Any, List, Optional
 
 # KiCad schematic grid size
 GRID_SIZE = 2.54
+DEFAULT_PIN_FONT_SIZE = 1.27
+DEFAULT_PIN_NAME_OFFSET = 1.016
+DEFAULT_TEXT_CHAR_WIDTH_RATIO = 0.6
 
 
 def snap_to_grid(value: float, grid: float = GRID_SIZE) -> float:
     """Snap a value to the nearest grid point."""
     return round(value / grid) * grid
+
+
+def ceil_to_grid(value: float, grid: float = GRID_SIZE) -> float:
+    """Ceil a value to the next grid point (useful for minimum clearances)."""
+    return math.ceil(value / grid) * grid
 
 
 def format_float(value: float) -> str:
@@ -177,6 +186,23 @@ def wrap_symbol(name: str, graphics: List[str], properties: List[str],
     lines.append(')')
     
     return '\n'.join(lines)
+
+
+def estimate_text_width_mm(
+    text: str,
+    font_size: float = DEFAULT_PIN_FONT_SIZE,
+    char_width_ratio: float = DEFAULT_TEXT_CHAR_WIDTH_RATIO,
+) -> float:
+    """
+    Estimate rendered text width in mm.
+
+    KiCad symbols use a stroke font whose glyph widths vary; this is a simple
+    approximation that's good enough for sizing symbol bodies to reduce
+    pin-name overlaps.
+    """
+    if not text or text == "~":
+        return 0.0
+    return len(text) * font_size * char_width_ratio
 
 
 def get_common_properties(params: Dict[str, Any], symbol_name: str,

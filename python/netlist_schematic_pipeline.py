@@ -12,6 +12,7 @@ Pipeline stages:
 import json
 import os
 import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, Iterable
 from uuid import uuid4
@@ -27,6 +28,34 @@ from python.netlist_to_schematic.rotation_optimizer import optimize_rotations
 from python.commands.kicad_schematics.grid_utils import snap_to_grid
 from python.commands.kicad_schematics.harness_utils import get_root_uuid, rebuild_sheet_instances_at_end
 from python.commands.kicad_schematics.schematic import SchematicManager
+
+
+@contextmanager
+def _safe_working_dir(preferred: Path):
+    """Ensure a valid working directory exists during SKiDL imports."""
+
+    previous = None
+    try:
+        previous = os.getcwd()
+    except OSError:
+        previous = None
+
+    fallback_dirs = [preferred, Path(__file__).resolve().parents[1], Path("/tmp")]
+    for candidate in fallback_dirs:
+        try:
+            os.chdir(candidate)
+            break
+        except OSError:
+            continue
+
+    try:
+        yield
+    finally:
+        if previous is not None:
+            try:
+                os.chdir(previous)
+            except OSError:
+                pass
 
 
 def generate_schematic(
@@ -651,11 +680,29 @@ def generate_schematic_from_skidl_module(
             verify=True
         )
     """
-    import importlib.util
-    import inspect
-    from skidl import Circuit, Net
-    
     try:
+        if skidl_module_path:
+            path = Path(skidl_module_path).expanduser()
+            if not path.is_absolute():
+                path = Path(__file__).resolve().parents[1] / path
+            safe_dir = path.parent
+        else:
+            safe_dir = Path(__file__).resolve().parents[1]
+    except Exception:
+        safe_dir = Path(__file__).resolve().parents[1]
+    guard = _safe_working_dir(safe_dir)
+    try:
+        guard.__enter__()
+        try:
+            from python.spice_tools.utils import disable_skidl_file_logging
+            disable_skidl_file_logging()
+        except Exception:
+            pass
+
+        import importlib.util
+        import inspect
+        from skidl import Circuit, Net
+
         # Load the SKiDL module
         spec = importlib.util.spec_from_file_location("skidl_module", skidl_module_path)
         if spec is None or spec.loader is None:
@@ -757,6 +804,11 @@ def generate_schematic_from_skidl_module(
             "message": str(e),
             "traceback": traceback.format_exc()
         }
+    finally:
+        try:
+            guard.__exit__(None, None, None)
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":

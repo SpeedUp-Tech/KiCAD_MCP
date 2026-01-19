@@ -166,11 +166,25 @@
         "body_width": {
           "type": "number",
           "default": 10.0,
-          "description": "Width of the IC body in mm."
+          "description": "Minimum width of the IC body in mm. The builder may increase it to reduce pin-name overlaps and avoid very tall/narrow symbols."
         },
         "body_height": {
           "type": "number",
           "description": "Height of the IC body in mm. Auto-calculated from pin count if omitted."
+        },
+        "pin_names_offset": {
+          "type": "number",
+          "default": 1.016,
+          "description": "Pin name offset in mm (KiCad default is 40 mil = 1.016mm)."
+        },
+        "pin_name_font_size": {
+          "type": "number",
+          "default": 1.27,
+          "description": "Pin name font size in mm (KiCad default is 50 mil = 1.27mm)."
+        },
+        "max_aspect_ratio": {
+          "type": "number",
+          "description": "Maximum body aspect ratio (height/width). Lower values create wider symbols; higher values allow taller/narrower symbols."
         }
       }
     },
@@ -281,6 +295,26 @@
           "enum": ["left", "right"],
           "default": "right",
           "description": "Side where pins exit the connector body."
+        },
+        "body_width": {
+          "type": "number",
+          "default": 5.08,
+          "description": "Minimum connector body width in mm. The builder may increase it to fit pin names and avoid very tall/narrow symbols."
+        },
+        "pin_names_offset": {
+          "type": "number",
+          "default": 1.016,
+          "description": "Pin name offset in mm (KiCad default is 40 mil = 1.016mm)."
+        },
+        "pin_name_font_size": {
+          "type": "number",
+          "default": 1.27,
+          "description": "Pin name font size in mm (KiCad default is 50 mil = 1.27mm)."
+        },
+        "max_aspect_ratio": {
+          "type": "number",
+          "default": 4.0,
+          "description": "Maximum body aspect ratio (height/width). Lower values create wider symbols; higher values allow taller/narrower symbols."
         }
       }
     },

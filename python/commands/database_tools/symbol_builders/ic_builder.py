@@ -9,7 +9,8 @@ from typing import Dict, Any, List
 
 from .base import (
     format_float, build_property, build_pin, build_rectangle,
-    build_circle, wrap_symbol, get_common_properties, snap_to_grid
+    build_circle, wrap_symbol, get_common_properties, snap_to_grid,
+    ceil_to_grid, estimate_text_width_mm, DEFAULT_PIN_FONT_SIZE, DEFAULT_PIN_NAME_OFFSET
 )
 
 
@@ -25,8 +26,9 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
                 - number (str): Pin number
                 - type (str): Pin electrical type (input, output, power_in, etc.)
                 - orientation (str): left, right, up, down (optional, auto-assigned)
-            - body_width (float): Box width (default: 10.0)
+            - body_width (float): Minimum box width (default: 10.0, may auto-grow)
             - body_height (float): Box height (default: auto-calculated)
+            - pin_names_offset (float): Global pin name offset (default: 1.016)
             - footprint (str): Footprint reference
             - properties (dict): Additional properties
     
@@ -38,8 +40,10 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
         raise KeyError("'name' is required for IC symbol")
     
     pins_input = params.get("pins", [])
-    body_width = float(params.get("body_width", 10.0))
+    min_body_width = float(params.get("body_width", 10.0))
     body_height = params.get("body_height")
+    pin_names_offset = float(params.get("pin_names_offset", DEFAULT_PIN_NAME_OFFSET))
+    pin_name_font_size = float(params.get("pin_name_font_size", DEFAULT_PIN_FONT_SIZE))
     
     # Process pins - assign orientations if not specified
     pins = _process_pins(pins_input)
@@ -69,11 +73,23 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
     else:
         half_h = snap_to_grid(body_height / 2)
 
-    if top_pins or bottom_pins:
-        min_half_w = horiz_start_x + margin
-        half_w = max(snap_to_grid(body_width / 2), min_half_w)
-    else:
-        half_w = snap_to_grid(body_width / 2)
+    # Determine minimum width constraints (always grid-aligned, never rounded down)
+    min_half_w_user = ceil_to_grid(min_body_width / 2)
+    min_half_w_pins = horiz_start_x + margin if (top_pins or bottom_pins) else 0.0
+    min_half_w_text = _estimate_min_half_width_for_pin_names(
+        left_pins=left_pins,
+        right_pins=right_pins,
+        pin_name_font_size=pin_name_font_size,
+        pin_names_offset=pin_names_offset,
+        pin_spacing=pin_spacing,
+    )
+
+    # Keep a reasonable aspect ratio so high pin-count symbols aren't extremely narrow
+    default_max_aspect_ratio = 2.5 if (left_pins and right_pins) else 4.0
+    max_aspect_ratio = float(params.get("max_aspect_ratio", default_max_aspect_ratio))
+    min_half_w_aspect = ceil_to_grid(half_h / max_aspect_ratio) if max_aspect_ratio > 0 else 0.0
+
+    half_w = max(min_half_w_user, min_half_w_pins, min_half_w_text, min_half_w_aspect)
     
     graphics = []
     
@@ -142,7 +158,33 @@ def build_ic_symbol(params: Dict[str, Any]) -> str:
     # Build properties
     properties = get_common_properties(params, name, default_reference="U")
     
-    return wrap_symbol(name, graphics, properties)
+    return wrap_symbol(name, graphics, properties, pin_names_offset=pin_names_offset)
+
+
+def _estimate_min_half_width_for_pin_names(
+    left_pins: List[Dict[str, Any]],
+    right_pins: List[Dict[str, Any]],
+    pin_name_font_size: float,
+    pin_names_offset: float,
+    pin_spacing: float,
+) -> float:
+    left_max = max(
+        (estimate_text_width_mm(p.get("name", ""), pin_name_font_size) for p in left_pins),
+        default=0.0,
+    )
+    right_max = max(
+        (estimate_text_width_mm(p.get("name", ""), pin_name_font_size) for p in right_pins),
+        default=0.0,
+    )
+
+    if left_pins and right_pins:
+        clearance = pin_spacing
+        return ceil_to_grid((left_max + right_max + clearance) / 2 + pin_names_offset)
+
+    max_side = max(left_max, right_max)
+    if max_side <= 0:
+        return 0.0
+    return ceil_to_grid((max_side / 2) + pin_names_offset)
 
 
 def _process_pins(pins_input: List[Dict]) -> List[Dict]:
