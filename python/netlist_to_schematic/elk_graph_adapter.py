@@ -176,7 +176,7 @@ class ElkGraphBuilder:
                 "elk.hierarchyHandling": "INCLUDE_CHILDREN",
                 "elk.layered.edgeRouting": "ORTHOGONAL",
                 "elk.layered.unnecessaryBendpoints": "false",
-                "elk.layered.mergeEdges": "true",
+                "elk.layered.mergeEdges": "false",
                 # Crossing minimization configuration
                 "elk.layered.thoroughness": "20",
                 "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",

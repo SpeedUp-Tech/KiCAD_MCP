@@ -416,6 +416,59 @@ def append_forced_component_net_labels(
     used_label_ids = {entry.get("id") for entry in net_labels if isinstance(entry, dict) and entry.get("id")}
     used_chain_ids = {entry.get("id") for entry in layout_chains if isinstance(entry, dict) and entry.get("id")}
 
+    # If a (component, net) already has a label node connected, don't add another
+    # one. This prevents duplicate labels (same net name) being wired to the same
+    # pin when the base logic already introduced an interface/high-fanout label.
+    label_id_to_net: dict[str, str] = {}
+    for entry in net_labels:
+        if not isinstance(entry, dict):
+            continue
+        label_id = entry.get("id")
+        if not isinstance(label_id, str) or not label_id.strip():
+            continue
+        net_name = entry.get("net_name", label_id)
+        if not isinstance(net_name, str) or not net_name.strip():
+            continue
+        label_id_to_net[label_id.strip()] = net_name.strip()
+
+    existing_labeled_endpoints: set[tuple[str, str]] = set()
+    label_ids = set(label_id_to_net.keys())
+
+    def _record_label_connection(node_id: str, ref: str) -> None:
+        net_name = label_id_to_net.get(node_id)
+        if not net_name:
+            return
+        ref = str(ref).strip()
+        if not ref:
+            return
+        existing_labeled_endpoints.add((ref, net_name))
+
+    for conn in direct_connections:
+        if not isinstance(conn, dict):
+            continue
+        node_id = conn.get("node")
+        ref = conn.get("component")
+        if not isinstance(node_id, str) or not isinstance(ref, str):
+            continue
+        node_id = node_id.strip()
+        ref = ref.strip()
+        if node_id in label_ids:
+            _record_label_connection(node_id, ref)
+
+    for chain in layout_chains:
+        if not isinstance(chain, dict):
+            continue
+        path = chain.get("path")
+        if not isinstance(path, list) or len(path) < 2:
+            continue
+        for left, right in zip(path, path[1:]):
+            if not isinstance(left, str) or not isinstance(right, str):
+                continue
+            if left in label_ids and right not in label_ids:
+                _record_label_connection(left, right)
+            elif right in label_ids and left not in label_ids:
+                _record_label_connection(right, left)
+
     pin_side_map = _pin_sides(circuit, SymbolGeometryFetcher())
 
     def choose_side(ref: str, pin_nums: list[str]) -> str | None:
@@ -497,6 +550,8 @@ def append_forced_component_net_labels(
 
     for ref, net_name in sorted(requested, key=lambda item: (_ref_sort_key(item[0]), item[1])):
         if net_name in power_net_names:
+            continue
+        if (ref, net_name) in existing_labeled_endpoints:
             continue
         pins = pins_by_ref_net.get((ref, net_name), [])
         if not pins:
