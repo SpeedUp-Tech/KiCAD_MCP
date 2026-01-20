@@ -72,16 +72,18 @@ class SymbolGeometryFetcher:
                 - "pins": {pin_num: {"x": float, "y": float, "rot": float, "conn_x": float, "conn_y": float}}
                 - "bbox": {"min_x", "max_x", "min_y", "max_y"}
                 
-        Note: The pin 'at' position is where the pin starts inside the symbol body.
-        The actual wire connection point is at the END of the pin, calculated as:
-        conn_x = x + length * cos(angle_rad)  # for angle 0, extends right
-        conn_y = y + length * sin(angle_rad)  # for angle 90, extends up
+        Note: In KiCad symbol libraries, the pin 'at' position is the *wire connection point*.
+        The pin extends inward toward the symbol body by 'length'. The body-side endpoint is:
+        conn_x = x + length * cos(angle_rad)
+        conn_y = y + length * sin(angle_rad)
         
         KiCad angles: 0=right, 90=up, 180=left, 270=down
         """
         import math
         pins = {}
         sexp = ' '.join(sexp.split())
+
+        body_bbox = self._parse_sexp_body_bbox(sexp)
         
         # Regex for pins: (pin type shape (at X Y R) (length L) ... (number "N")
         # The pattern needs to capture: at position, length, and pin number
@@ -90,46 +92,200 @@ class SymbolGeometryFetcher:
             re.DOTALL
         )
         matches = pattern.findall(sexp)
-        
-        if not matches:
-            return {
-                "pins": {}, 
-                "bbox": {"min_x": -2.54, "max_x": 2.54, "min_y": -2.54, "max_y": 2.54}
-            }
 
         xs = []
         ys = []
         
-        for x_str, y_str, rot_str, length_str, num in matches:
-            x, y, rot, length = float(x_str), float(y_str), float(rot_str), float(length_str)
-            
-            # Calculate the actual connection point at the end of the pin
-            # KiCad angles: 0=right, 90=up, 180=left, 270=down
-            angle_rad = math.radians(rot)
-            conn_x = x + length * math.cos(angle_rad)
-            conn_y = y + length * math.sin(angle_rad)
-            
-            pins[num] = {
-                "x": x, 
-                "y": y, 
-                "rot": rot,
-                "length": length,
-                "conn_x": conn_x,  # Actual wire connection point
-                "conn_y": conn_y
-            }
-            # Use connection point for bounding box (where wires attach)
-            xs.append(conn_x)
-            ys.append(conn_y)
-            
-        return {
-            "pins": pins,
-            "bbox": {
+        if matches:
+            for x_str, y_str, rot_str, length_str, num in matches:
+                x, y, rot, length = float(x_str), float(y_str), float(rot_str), float(length_str)
+
+                # Calculate the pin endpoint inside the body (useful as a fallback bbox).
+                # KiCad angles: 0=right, 90=up, 180=left, 270=down
+                angle_rad = math.radians(rot)
+                conn_x = x + length * math.cos(angle_rad)
+                conn_y = y + length * math.sin(angle_rad)
+
+                pins[num] = {
+                    "x": x,
+                    "y": y,
+                    "rot": rot,
+                    "length": length,
+                    "conn_x": conn_x,
+                    "conn_y": conn_y,
+                }
+                xs.append(conn_x)
+                ys.append(conn_y)
+
+        fallback_bbox = None
+        if xs and ys:
+            fallback_bbox = {
                 "min_x": min(xs),
                 "max_x": max(xs),
                 "min_y": min(ys),
-                "max_y": max(ys)
+                "max_y": max(ys),
             }
-        }
+
+        bbox = body_bbox or fallback_bbox or {"min_x": -2.54, "max_x": 2.54, "min_y": -2.54, "max_y": 2.54}
+
+        return {"pins": pins, "bbox": bbox}
+
+    def _parse_sexp_body_bbox(self, sexp: str) -> dict[str, float] | None:
+        """
+        Extract the graphical body bounding box from a KiCad symbol S-expression.
+
+        This is the bbox ELK should treat as the obstacle for routing (symbol body).
+        It intentionally ignores properties/text to avoid inflating the bbox.
+        """
+        try:
+            import sexpdata
+        except Exception:
+            return None
+
+        def is_symbol(obj: object, name: str) -> bool:
+            return isinstance(obj, sexpdata.Symbol) and obj.value() == name
+
+        def as_float(value: object) -> float | None:
+            if isinstance(value, (int, float)):
+                return float(value)
+            try:
+                return float(str(value))
+            except Exception:
+                return None
+
+        def find_child(node: list[object], head: str) -> list[object] | None:
+            for item in node[1:]:
+                if isinstance(item, list) and item and is_symbol(item[0], head):
+                    return item
+            return None
+
+        def iter_xy_points(node: object) -> list[tuple[float, float]]:
+            points: list[tuple[float, float]] = []
+            if not isinstance(node, list) or not node:
+                return points
+
+            head = node[0]
+
+            if is_symbol(head, "rectangle"):
+                start = find_child(node, "start")
+                end = find_child(node, "end")
+                if start and len(start) >= 3 and end and len(end) >= 3:
+                    x1, y1 = as_float(start[1]), as_float(start[2])
+                    x2, y2 = as_float(end[1]), as_float(end[2])
+                    if None not in (x1, y1, x2, y2):
+                        points.extend([(x1, y1), (x2, y2)])
+                return points
+
+            if is_symbol(head, "circle"):
+                center = find_child(node, "center")
+                radius_node = find_child(node, "radius")
+                if center and len(center) >= 3 and radius_node and len(radius_node) >= 2:
+                    cx, cy = as_float(center[1]), as_float(center[2])
+                    radius = as_float(radius_node[1])
+                    if None not in (cx, cy, radius):
+                        points.extend([(cx - radius, cy - radius), (cx + radius, cy + radius)])
+                return points
+
+            if is_symbol(head, "polyline"):
+                pts = find_child(node, "pts")
+                if pts:
+                    for item in pts[1:]:
+                        if isinstance(item, list) and len(item) >= 3 and is_symbol(item[0], "xy"):
+                            x, y = as_float(item[1]), as_float(item[2])
+                            if None not in (x, y):
+                                points.append((x, y))
+                return points
+
+            if is_symbol(head, "arc"):
+                start = find_child(node, "start")
+                mid = find_child(node, "mid")
+                end = find_child(node, "end")
+
+                def read_point(lst: list[object] | None) -> tuple[float, float] | None:
+                    if not lst or len(lst) < 3:
+                        return None
+                    x, y = as_float(lst[1]), as_float(lst[2])
+                    if None in (x, y):
+                        return None
+                    return (x, y)
+
+                p_start = read_point(start)
+                p_mid = read_point(mid)
+                p_end = read_point(end)
+                if not (p_start and p_mid and p_end):
+                    return points
+
+                # Exact bbox for a circular arc through (start, mid, end).
+                (x1, y1), (x2, y2), (x3, y3) = p_start, p_mid, p_end
+                det = 2 * (x1 * (y2 - y3) + x2 * (y3 - y1) + x3 * (y1 - y2))
+                if abs(det) < 1e-9:
+                    points.extend([p_start, p_mid, p_end])
+                    return points
+
+                ux = (
+                    (x1 * x1 + y1 * y1) * (y2 - y3)
+                    + (x2 * x2 + y2 * y2) * (y3 - y1)
+                    + (x3 * x3 + y3 * y3) * (y1 - y2)
+                ) / det
+                uy = (
+                    (x1 * x1 + y1 * y1) * (x3 - x2)
+                    + (x2 * x2 + y2 * y2) * (x1 - x3)
+                    + (x3 * x3 + y3 * y3) * (x2 - x1)
+                ) / det
+                radius = math.hypot(x1 - ux, y1 - uy)
+
+                def angle(x: float, y: float) -> float:
+                    a = math.atan2(y - uy, x - ux)
+                    return a if a >= 0 else (a + 2 * math.pi)
+
+                a_start = angle(x1, y1)
+                a_mid = angle(x2, y2)
+                a_end = angle(x3, y3)
+
+                def in_sweep_ccw(a: float, start_a: float, end_a: float) -> bool:
+                    if start_a <= end_a:
+                        return start_a <= a <= end_a
+                    return a >= start_a or a <= end_a
+
+                # Decide sweep direction such that mid lies on the path.
+                ccw = in_sweep_ccw(a_mid, a_start, a_end)
+
+                def in_sweep(a: float) -> bool:
+                    if ccw:
+                        return in_sweep_ccw(a, a_start, a_end)
+                    # CW is the complement of CCW path.
+                    return not in_sweep_ccw(a, a_start, a_end)
+
+                points.extend([p_start, p_end])
+                for cardinal in (0.0, math.pi / 2, math.pi, 3 * math.pi / 2):
+                    if in_sweep(cardinal):
+                        points.append((ux + radius * math.cos(cardinal), uy + radius * math.sin(cardinal)))
+                return points
+
+            return points
+
+        try:
+            root = sexpdata.loads(sexp)
+        except Exception:
+            return None
+
+        points: list[tuple[float, float]] = []
+
+        def walk(node: object) -> None:
+            if isinstance(node, list):
+                if node and isinstance(node[0], sexpdata.Symbol):
+                    points.extend(iter_xy_points(node))
+                for item in node:
+                    walk(item)
+
+        walk(root)
+
+        if not points:
+            return None
+
+        xs = [p[0] for p in points]
+        ys = [p[1] for p in points]
+        return {"min_x": min(xs), "max_x": max(xs), "min_y": min(ys), "max_y": max(ys)}
 
 
 class ElkGraphBuilder:
@@ -166,12 +322,12 @@ class ElkGraphBuilder:
                 "elk.algorithm": "layered",
                 "elk.direction": "RIGHT",
                 "elk.randomSeed": "1",  # Fixed seed for deterministic layout
-                "elk.spacing.nodeNode": "1.27",
+                "elk.spacing.nodeNode": "2.54",
                 "elk.spacing.edgeEdge": "2.54",
                 "elk.spacing.edgeNode": "1.27",
                 "elk.layered.spacing.baseValue": "2.54",
-                "elk.layered.spacing.edgeNodeBetweenLayers": "1.27",
-                "elk.layered.spacing.nodeNodeBetweenLayers": "1.27",
+                "elk.layered.spacing.edgeNodeBetweenLayers": "2.54",
+                "elk.layered.spacing.nodeNodeBetweenLayers": "2.54",
                 "elk.padding": "[top=0,left=0,bottom=0,right=0]",
                 "elk.hierarchyHandling": "INCLUDE_CHILDREN",
                 "elk.layered.edgeRouting": "ORTHOGONAL",
@@ -1108,7 +1264,7 @@ class ElkGraphBuilder:
             # Default R and C to 270° (vertical) if no explicit rotation specified
             # This aligns their pins vertically with the horizontal ELK flow direction
             if rotation == 0 and symbol_name in ("R"):
-                rotation = 270
+                rotation = 90
             if rotation != 0:
                 # Rotate pin positions
                 rotated_pins = {}
