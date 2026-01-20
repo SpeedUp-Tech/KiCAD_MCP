@@ -82,7 +82,6 @@ def generate_skidl_netlist_json(params: Dict[str, Any]) -> Dict[str, Any]:
             from skidl import Circuit, Net  # Lazy import to avoid heavy module load at import time.
 
             circuit = Circuit()
-            circuit.no_files = True
 
             interface_nets: Dict[str, Net] = {}
             with circuit:

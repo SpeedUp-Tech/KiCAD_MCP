@@ -398,7 +398,48 @@ export function registerSchematicTools(server, callKicadScript) {
             .optional()
             .default(3)
             .describe('Minimum number of connected component refs for a net to be treated as high-fanout (used when labelHighFanoutNets=true)'),
-    }, async ({ skidlModulePath, subcircuitName, outputPath, logicHintsPath, exportSvg, verify, optimizeRotation, keepIntermediate, useDirectConnections, labelHighFanoutNets, highFanoutThreshold, }) => {
+        autoCutProblemNets: z
+            .boolean()
+            .optional()
+            .default(false)
+            .describe('If true, run auto-cut (analyze layout then cut wires/nets into labels and re-layout)'),
+        autoCutStrategy: z
+            .enum(['net', 'edge'])
+            .optional()
+            .default('net')
+            .describe("Auto-cut strategy: 'net' labelizes whole nets; 'edge' cuts selected connections by labeling endpoints"),
+        autoCutIterations: z
+            .number()
+            .int()
+            .min(1)
+            .optional()
+            .default(1)
+            .describe('Max auto-cut iterations (used when autoCutProblemNets=true)'),
+        autoCutMaxNets: z
+            .number()
+            .int()
+            .min(1)
+            .optional()
+            .default(8)
+            .describe("Max items per auto-cut iteration (nets for strategy='net', edges for strategy='edge')"),
+        autoCutMinCrossings: z
+            .number()
+            .int()
+            .min(0)
+            .optional()
+            .default(1)
+            .describe('Minimum crossings threshold for auto-cut selection'),
+        autoCutMinMaxLengthMm: z
+            .number()
+            .nullable()
+            .optional()
+            .describe('Optional min max-length (mm) threshold for auto-cut; null/omitted derives from layout distribution'),
+        autoCutMinMaxBacktrackMm: z
+            .number()
+            .nullable()
+            .optional()
+            .describe('Optional min max-backtrack (mm) threshold for auto-cut; null/omitted derives from layout distribution'),
+    }, async ({ skidlModulePath, subcircuitName, outputPath, logicHintsPath, exportSvg, verify, optimizeRotation, keepIntermediate, useDirectConnections, labelHighFanoutNets, highFanoutThreshold, autoCutProblemNets, autoCutStrategy, autoCutIterations, autoCutMaxNets, autoCutMinCrossings, autoCutMinMaxLengthMm, autoCutMinMaxBacktrackMm, }) => {
         const result = await callKicadScript('generate_schematic_from_netlist', {
             skidlModulePath,
             subcircuitName,
@@ -411,6 +452,13 @@ export function registerSchematicTools(server, callKicadScript) {
             useDirectConnections,
             labelHighFanoutNets,
             highFanoutThreshold,
+            autoCutProblemNets,
+            autoCutStrategy,
+            autoCutIterations,
+            autoCutMaxNets,
+            autoCutMinCrossings,
+            autoCutMinMaxLengthMm,
+            autoCutMinMaxBacktrackMm,
         });
         return formatToolResult(result);
     });

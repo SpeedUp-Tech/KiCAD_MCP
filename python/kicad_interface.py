@@ -1160,7 +1160,6 @@ class KiCADInterface:
                 
                 # Create a circuit context and instantiate the subcircuit
                 circuit = Circuit()
-                circuit.no_files = True  # Prevent file generation
                 
                 with circuit:
                     # Create Net instances for each interface parameter
@@ -1825,6 +1824,44 @@ class KiCADInterface:
                 params.get("labelHighFanoutNets", False)
                 or params.get("label_high_fanout_nets", False)
             )
+            auto_cut_problem_nets = (
+                params.get("autoCutProblemNets", False)
+                or params.get("auto_cut_problem_nets", False)
+            )
+            auto_cut_strategy = params.get("autoCutStrategy")
+            if auto_cut_strategy is None:
+                auto_cut_strategy = params.get("auto_cut_strategy")
+            auto_cut_iterations = params.get("autoCutIterations")
+            if auto_cut_iterations is None:
+                auto_cut_iterations = params.get("auto_cut_iterations")
+            auto_cut_max_nets = params.get("autoCutMaxNets")
+            if auto_cut_max_nets is None:
+                auto_cut_max_nets = params.get("auto_cut_max_nets")
+            auto_cut_min_crossings = params.get("autoCutMinCrossings")
+            if auto_cut_min_crossings is None:
+                auto_cut_min_crossings = params.get("auto_cut_min_crossings")
+            auto_cut_min_max_length_mm = params.get("autoCutMinMaxLengthMm")
+            if auto_cut_min_max_length_mm is None:
+                auto_cut_min_max_length_mm = params.get("auto_cut_min_max_length_mm")
+            auto_cut_min_max_backtrack_mm = params.get("autoCutMinMaxBacktrackMm")
+            if auto_cut_min_max_backtrack_mm is None:
+                auto_cut_min_max_backtrack_mm = params.get("auto_cut_min_max_backtrack_mm")
+
+            def _as_int(value, *, name: str):
+                if value is None:
+                    return None
+                try:
+                    return int(value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{name} must be an integer")
+
+            def _as_float(value, *, name: str):
+                if value is None:
+                    return None
+                try:
+                    return float(value)
+                except (TypeError, ValueError):
+                    raise ValueError(f"{name} must be a number")
             high_fanout_threshold = None
             high_fanout_threshold_param = params.get("highFanoutThreshold")
             if high_fanout_threshold_param is None:
@@ -1834,6 +1871,20 @@ class KiCADInterface:
                     high_fanout_threshold = int(high_fanout_threshold_param)
                 except (TypeError, ValueError):
                     return {"success": False, "message": "highFanoutThreshold must be an integer"}
+
+            try:
+                auto_cut_iterations = _as_int(auto_cut_iterations, name="autoCutIterations")
+                auto_cut_max_nets = _as_int(auto_cut_max_nets, name="autoCutMaxNets")
+                auto_cut_min_crossings = _as_int(auto_cut_min_crossings, name="autoCutMinCrossings")
+                auto_cut_min_max_length_mm = _as_float(auto_cut_min_max_length_mm, name="autoCutMinMaxLengthMm")
+                auto_cut_min_max_backtrack_mm = _as_float(auto_cut_min_max_backtrack_mm, name="autoCutMinMaxBacktrackMm")
+            except ValueError as exc:
+                return {"success": False, "message": str(exc)}
+
+            if auto_cut_strategy is not None:
+                auto_cut_strategy = str(auto_cut_strategy).strip().lower()
+                if auto_cut_strategy not in {"net", "edge"}:
+                    return {"success": False, "message": "autoCutStrategy must be 'net' or 'edge'"}
 
             if not skidl_module_path:
                 return {"success": False, "message": "skidlModulePath is required"}
@@ -1853,6 +1904,13 @@ class KiCADInterface:
                 keep_intermediate=keep_intermediate,
                 use_direct_connections=use_direct_connections,
                 label_high_fanout_nets=label_high_fanout_nets,
+                auto_cut_problem_nets=auto_cut_problem_nets,
+                **({"auto_cut_strategy": auto_cut_strategy} if auto_cut_strategy is not None else {}),
+                **({"auto_cut_iterations": auto_cut_iterations} if auto_cut_iterations is not None else {}),
+                **({"auto_cut_max_nets": auto_cut_max_nets} if auto_cut_max_nets is not None else {}),
+                **({"auto_cut_min_crossings": auto_cut_min_crossings} if auto_cut_min_crossings is not None else {}),
+                **({"auto_cut_min_max_length_mm": auto_cut_min_max_length_mm} if auto_cut_min_max_length_mm is not None else {}),
+                **({"auto_cut_min_max_backtrack_mm": auto_cut_min_max_backtrack_mm} if auto_cut_min_max_backtrack_mm is not None else {}),
                 **({"high_fanout_threshold": high_fanout_threshold} if high_fanout_threshold is not None else {}),
             )
             

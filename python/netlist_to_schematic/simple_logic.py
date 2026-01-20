@@ -29,6 +29,7 @@ def build_simple_logic_hints(
     special_pin_threshold: int = SPECIAL_PIN_THRESHOLD,
     label_high_fanout_nets: bool = False,
     high_fanout_threshold: int = 4,
+    force_label_net_names: Iterable[str] | None = None,
     power_symbol_map: dict[str, str] | None = None,
     use_direct_connections: bool = False,
     cluster_components: bool = False,
@@ -47,9 +48,12 @@ def build_simple_logic_hints(
     - Optionally emit direct connections instead of layout ordering.
     - Optionally split dense circuits into visual clusters by cutting
       inter-cluster nets into labels (still 100% netlist-accurate).
+    - Optionally force selected nets to be labelized (cut into labels) regardless
+      of fanout/clustering.
     """
     interface_set = {str(n) for n in (interface_nets or []) if n is not None}
     power_symbol_map = power_symbol_map or POWER_SYMBOL_MAP
+    forced_label_nets = {str(n).strip() for n in (force_label_net_names or []) if str(n).strip()}
 
     connected_pins = _connected_pins_by_ref(circuit)
     special_refs = {
@@ -181,6 +185,16 @@ def build_simple_logic_hints(
                     add_adjacency(power_id, ref, side)
             continue
 
+        if forced_label_nets and net_name in forced_label_nets:
+            label_type = "hierarchical" if is_interface else "local"
+            for ref in refs:
+                for pin_num in sorted(component_pins.get(ref, []), key=str):
+                    label_id = add_label(f"{net_name}_{ref}_p{pin_num}", net_name, label_type)
+                    side = pin_side_map.get(ref, {}).get(str(pin_num))
+                    add_connection(label_id, ref, side)
+                    add_adjacency(label_id, ref, side)
+            continue
+
         if ref_to_cluster:
             net_clusters = {ref_to_cluster.get(ref) for ref in refs}
             net_clusters.discard(None)
@@ -233,6 +247,268 @@ def build_simple_logic_hints(
             "constraints": constraints,
         }
     }
+
+
+def append_forced_net_labels(
+    logic_hints: dict,
+    circuit,
+    force_label_net_names: Iterable[str],
+    *,
+    interface_nets: Iterable[str] | None = None,
+    use_direct_connections: bool = False,
+    power_symbol_map: dict[str, str] | None = None,
+) -> dict:
+    """
+    Augment an existing logic-hints dict by forcing selected nets to be labelized.
+
+    This is useful when a caller provides custom `elk_support_fields` but still
+    wants to apply the layout-first auto-cut pass (which needs to inject labels
+    after analyzing crossings/lengths).
+    """
+
+    forced_label_nets = {str(n).strip() for n in (force_label_net_names or []) if str(n).strip()}
+    if not forced_label_nets:
+        return logic_hints
+
+    interface_set = {str(n) for n in (interface_nets or []) if n is not None}
+    power_symbol_map = power_symbol_map or POWER_SYMBOL_MAP
+    power_net_names = set(power_symbol_map.keys())
+
+    elk_fields = logic_hints.setdefault("elk_support_fields", {})
+    if not isinstance(elk_fields, dict):
+        elk_fields = {}
+        logic_hints["elk_support_fields"] = elk_fields
+
+    net_labels: list[dict] = elk_fields.setdefault("net_labels", [])
+    layout_chains: list[dict] = elk_fields.setdefault("layout_chains", [])
+    direct_connections: list[dict] = elk_fields.setdefault("direct_connections", [])
+    constraints: list[dict] = elk_fields.setdefault("constraints", [])
+
+    used_label_ids = {entry.get("id") for entry in net_labels if isinstance(entry, dict) and entry.get("id")}
+    used_chain_ids = {entry.get("id") for entry in layout_chains if isinstance(entry, dict) and entry.get("id")}
+
+    # If the caller already labelized a net explicitly, don't add more labels.
+    already_labeled_nets = {
+        str(entry.get("net_name") or entry.get("id") or "").strip()
+        for entry in net_labels
+        if isinstance(entry, dict) and (entry.get("net_name") or entry.get("id"))
+    }
+
+    pin_side_map = _pin_sides(circuit, SymbolGeometryFetcher())
+
+    def add_label(base_id: str, net_name: str, label_type: str, shape: str = "bidirectional") -> str:
+        label_id = _unique_id(_sanitize_id(base_id), used_label_ids)
+        label = {"id": label_id, "type": label_type, "net_name": net_name}
+        if label_type == "hierarchical":
+            label["shape"] = shape
+        net_labels.append(label)
+        return label_id
+
+    def add_chain(base_id: str, path: list[str]) -> str:
+        chain_id = _unique_id(_sanitize_id(f"chain_{base_id}"), used_chain_ids)
+        layout_chains.append({"id": chain_id, "path": path})
+        return chain_id
+
+    used_constraints: set[tuple[str, str, str]] = set()
+    for c in constraints:
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") != "ADJACENT":
+            continue
+        comps = c.get("components")
+        if not isinstance(comps, list) or len(comps) != 2:
+            continue
+        a, b = comps[0], comps[1]
+        if isinstance(a, str) and isinstance(b, str):
+            used_constraints.add((a, b, ""))
+
+    def add_connection(node_id: str, ref: str, side: str | None) -> None:
+        if use_direct_connections:
+            entry = {"node": node_id, "component": ref}
+            if side in {"left", "right"}:
+                entry["side"] = side
+            direct_connections.append(entry)
+            return
+        path = [node_id, ref] if side == "left" else [ref, node_id]
+        add_chain(node_id, path)
+
+    def add_adjacency(node_id: str, ref: str, side: str | None) -> None:
+        if use_direct_connections:
+            return
+        if side not in {"left", "right"}:
+            return
+        components = [node_id, ref] if side == "left" else [ref, node_id]
+        key = (components[0], components[1], "")
+        if key in used_constraints:
+            return
+        used_constraints.add(key)
+        constraints.append({"type": "ADJACENT", "components": components})
+
+    sorted_nets = sorted(getattr(circuit, "nets", []) or [], key=_net_sort_key)
+    for idx, net in enumerate(sorted_nets, start=1):
+        net_name = _normalize_net_name(getattr(net, "name", None), idx)
+        if net_name in power_net_names:
+            continue
+        if net_name not in forced_label_nets:
+            continue
+        if net_name in already_labeled_nets:
+            continue
+
+        component_pins: dict[str, list[str]] = {}
+        for pin in sorted(getattr(net, "pins", []) or [], key=_pin_sort_key):
+            ref = _pin_ref(pin)
+            num = _pin_num(pin)
+            if not ref or not num:
+                continue
+            component_pins.setdefault(ref, []).append(num)
+
+        refs = sorted(component_pins.keys(), key=_ref_sort_key)
+        if not refs:
+            continue
+
+        label_type = "hierarchical" if net_name in interface_set else "local"
+        for ref in refs:
+            for pin_num in sorted(component_pins.get(ref, []), key=str):
+                label_id = add_label(f"{net_name}_{ref}_p{pin_num}", net_name, label_type)
+                side = pin_side_map.get(ref, {}).get(str(pin_num))
+                add_connection(label_id, ref, side)
+                add_adjacency(label_id, ref, side)
+
+    return logic_hints
+
+
+def append_forced_component_net_labels(
+    logic_hints: dict,
+    circuit,
+    force_label_component_nets: Iterable[tuple[str, str]],
+    *,
+    interface_nets: Iterable[str] | None = None,
+    use_direct_connections: bool = False,
+    power_symbol_map: dict[str, str] | None = None,
+) -> dict:
+    """
+    Augment an existing logic-hints dict by forcing selected (component, net) endpoints
+    to connect via labels.
+
+    This is used by the edge-level auto-cut strategy: cut only specific wire
+    connections by adding labels at the endpoints instead of labelizing the whole net.
+    """
+
+    requested = {(str(ref).strip(), str(net).strip()) for ref, net in (force_label_component_nets or [])}
+    requested = {(ref, net) for ref, net in requested if ref and net}
+    if not requested:
+        return logic_hints
+
+    interface_set = {str(n) for n in (interface_nets or []) if n is not None}
+    power_symbol_map = power_symbol_map or POWER_SYMBOL_MAP
+    power_net_names = set(power_symbol_map.keys())
+
+    elk_fields = logic_hints.setdefault("elk_support_fields", {})
+    if not isinstance(elk_fields, dict):
+        elk_fields = {}
+        logic_hints["elk_support_fields"] = elk_fields
+
+    net_labels: list[dict] = elk_fields.setdefault("net_labels", [])
+    layout_chains: list[dict] = elk_fields.setdefault("layout_chains", [])
+    direct_connections: list[dict] = elk_fields.setdefault("direct_connections", [])
+    constraints: list[dict] = elk_fields.setdefault("constraints", [])
+
+    used_label_ids = {entry.get("id") for entry in net_labels if isinstance(entry, dict) and entry.get("id")}
+    used_chain_ids = {entry.get("id") for entry in layout_chains if isinstance(entry, dict) and entry.get("id")}
+
+    pin_side_map = _pin_sides(circuit, SymbolGeometryFetcher())
+
+    def choose_side(ref: str, pin_nums: list[str]) -> str | None:
+        sides = []
+        for pin_num in sorted({str(p) for p in pin_nums}, key=str):
+            side = pin_side_map.get(ref, {}).get(str(pin_num))
+            if side:
+                sides.append(side)
+        if not sides:
+            return None
+        left = sides.count("left")
+        right = sides.count("right")
+        if left > right:
+            return "left"
+        if right > left:
+            return "right"
+        return sides[0]
+
+    def add_label(base_id: str, net_name: str, label_type: str, shape: str = "bidirectional") -> str:
+        label_id = _unique_id(_sanitize_id(base_id), used_label_ids)
+        label = {"id": label_id, "type": label_type, "net_name": net_name}
+        if label_type == "hierarchical":
+            label["shape"] = shape
+        net_labels.append(label)
+        return label_id
+
+    def add_chain(base_id: str, path: list[str]) -> str:
+        chain_id = _unique_id(_sanitize_id(f"chain_{base_id}"), used_chain_ids)
+        layout_chains.append({"id": chain_id, "path": path})
+        return chain_id
+
+    used_constraints: set[tuple[str, str, str]] = set()
+    for c in constraints:
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") != "ADJACENT":
+            continue
+        comps = c.get("components")
+        if not isinstance(comps, list) or len(comps) != 2:
+            continue
+        a, b = comps[0], comps[1]
+        if isinstance(a, str) and isinstance(b, str):
+            used_constraints.add((a, b, ""))
+
+    def add_connection(node_id: str, ref: str, side: str | None) -> None:
+        if use_direct_connections:
+            entry = {"node": node_id, "component": ref}
+            if side in {"left", "right"}:
+                entry["side"] = side
+            direct_connections.append(entry)
+            return
+        path = [node_id, ref] if side == "left" else [ref, node_id]
+        add_chain(node_id, path)
+
+    def add_adjacency(node_id: str, ref: str, side: str | None) -> None:
+        if use_direct_connections:
+            return
+        if side not in {"left", "right"}:
+            return
+        components = [node_id, ref] if side == "left" else [ref, node_id]
+        key = (components[0], components[1], "")
+        if key in used_constraints:
+            return
+        used_constraints.add(key)
+        constraints.append({"type": "ADJACENT", "components": components})
+
+    # Build a lookup of pins per (ref, net) so we can decide if/where to place the label.
+    pins_by_ref_net: dict[tuple[str, str], list[str]] = {}
+    for idx, net in enumerate(sorted(getattr(circuit, "nets", []) or [], key=_net_sort_key), start=1):
+        net_name = _normalize_net_name(getattr(net, "name", None), idx)
+        if net_name in power_net_names:
+            continue
+        for pin in sorted(getattr(net, "pins", []) or [], key=_pin_sort_key):
+            ref = _pin_ref(pin)
+            num = _pin_num(pin)
+            if not ref or not num:
+                continue
+            pins_by_ref_net.setdefault((ref, net_name), []).append(num)
+
+    for ref, net_name in sorted(requested, key=lambda item: (_ref_sort_key(item[0]), item[1])):
+        if net_name in power_net_names:
+            continue
+        pins = pins_by_ref_net.get((ref, net_name), [])
+        if not pins:
+            continue
+
+        label_type = "hierarchical" if net_name in interface_set else "local"
+        label_id = add_label(f"{net_name}_{ref}_cut", net_name, label_type)
+        side = choose_side(ref, pins)
+        add_connection(label_id, ref, side)
+        add_adjacency(label_id, ref, side)
+
+    return logic_hints
 
 
 def _connected_pins_by_ref(circuit) -> dict[str, set[str]]:

@@ -11,6 +11,7 @@ Pipeline stages:
 
 import json
 import os
+import copy
 import subprocess
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,7 +24,18 @@ from sexpdata import Symbol
 from python.netlist_to_schematic.elk_graph_adapter import ElkGraphBuilder, SymbolGeometryFetcher
 from python.netlist_to_schematic.elk_layout import run_elk_layout
 from python.netlist_to_schematic.elk_to_kicad import run_conversion
-from python.netlist_to_schematic.simple_logic import build_simple_logic_hints
+from python.netlist_to_schematic.simple_logic import (
+    build_simple_logic_hints,
+    append_forced_component_net_labels,
+    append_forced_net_labels,
+)
+from python.netlist_to_schematic.auto_cut import (
+    analyze_edge_layout,
+    analyze_net_layout,
+    net_fanout_by_name,
+    select_problem_edges,
+    select_problem_nets,
+)
 from python.netlist_to_schematic.rotation_optimizer import optimize_rotations
 from python.commands.kicad_schematics.grid_utils import snap_to_grid
 from python.commands.kicad_schematics.harness_utils import get_root_uuid, rebuild_sheet_instances_at_end
@@ -75,6 +87,13 @@ def generate_schematic(
     cluster_max_size: int = 0,
     cluster_ignore_fanout_ge: int = 8,
     cluster_ignore_nets: set[str] | None = None,
+    auto_cut_problem_nets: bool = False,
+    auto_cut_strategy: str = "net",
+    auto_cut_iterations: int = 1,
+    auto_cut_max_nets: int = 8,
+    auto_cut_min_crossings: int = 1,
+    auto_cut_min_max_length_mm: float | None = None,
+    auto_cut_min_max_backtrack_mm: float | None = None,
 ) -> str:
     """
     Generate a KiCad schematic from a SKiDL circuit.
@@ -128,68 +147,208 @@ def generate_schematic(
     if not logic_hints.get("elk_support_fields"):
         if verbose:
             print("Using auto-generated layout hints (satellite rules).")
-        logic_hints = build_simple_logic_hints(
-            circuit,
-            interface_nets=interface_nets,
-            use_direct_connections=use_direct_connections,
-            label_high_fanout_nets=label_high_fanout_nets,
-            high_fanout_threshold=high_fanout_threshold,
-            cluster_components=cluster_components,
-            cluster_max_connections=cluster_max_connections,
-            cluster_min_size=cluster_min_size,
-            cluster_max_size=cluster_max_size,
-            cluster_ignore_fanout_ge=cluster_ignore_fanout_ge,
-            cluster_ignore_nets=cluster_ignore_nets,
-        )
-    
+        logic_hints = {}
+        auto_generated_hints = True
+    else:
+        auto_generated_hints = False
+
+    base_logic_hints = logic_hints
+    forced_label_nets: set[str] = set()
+    forced_label_component_nets: set[tuple[str, str]] = set()
+
+    def _build_logic_hints(forced_nets: set[str], forced_endpoints: set[tuple[str, str]]) -> dict:
+        if auto_generated_hints:
+            logic = build_simple_logic_hints(
+                circuit,
+                interface_nets=interface_nets,
+                use_direct_connections=use_direct_connections,
+                label_high_fanout_nets=label_high_fanout_nets,
+                high_fanout_threshold=high_fanout_threshold,
+                cluster_components=cluster_components,
+                cluster_max_connections=cluster_max_connections,
+                cluster_min_size=cluster_min_size,
+                cluster_max_size=cluster_max_size,
+                cluster_ignore_fanout_ge=cluster_ignore_fanout_ge,
+                cluster_ignore_nets=cluster_ignore_nets,
+                force_label_net_names=sorted(forced_nets),
+            )
+        else:
+            logic = copy.deepcopy(base_logic_hints)
+            append_forced_net_labels(
+                logic,
+                circuit,
+                sorted(forced_nets),
+                interface_nets=interface_nets,
+                use_direct_connections=use_direct_connections,
+            )
+
+        if forced_endpoints:
+            append_forced_component_net_labels(
+                logic,
+                circuit,
+                sorted(forced_endpoints),
+                interface_nets=interface_nets,
+                use_direct_connections=use_direct_connections,
+            )
+        return logic
+
+    def _excluded_nets_from_logic(current_logic: dict) -> set[str]:
+        elk_fields = current_logic.get("elk_support_fields", {}) or {}
+        labeled = {
+            str(nl.get("net_name", nl.get("id"))).strip()
+            for nl in elk_fields.get("net_labels", []) or []
+            if isinstance(nl, dict) and (nl.get("net_name") or nl.get("id"))
+        }
+        labeled.discard("")
+        power = set()
+        for ps in elk_fields.get("power_symbols", []) or []:
+            if not isinstance(ps, dict):
+                continue
+            ps_type = ps.get("type", "")
+            if isinstance(ps_type, str) and ":" in ps_type:
+                power.add(ps_type.split(":", 1)[1].strip())
+        power.discard("")
+        return labeled | power
+
     # Stage 1: Generate ELK graph
     if verbose:
         print("Stage 1: Generating ELK graph...")
     
     fetcher = SymbolGeometryFetcher()
     
-    # Stage 2: Run ELK layout (with optional rotation optimization)
+    # Stage 2: Run ELK layout (with optional rotation optimization + optional auto-cut iterations)
+    run_id = uuid4().hex[:8]
+    rotation_map: dict[str, int] = {}
+
     if optimize_rotation:
         if verbose:
             print("Stage 2: Optimizing rotations and running ELK layout...")
+        initial_logic = _build_logic_hints(set(), set())
         elk_output, paper_size, rotation_map = optimize_rotations(
-            circuit, logic_hints, fetcher, ElkGraphBuilder, work_dir, verbose
+            circuit, initial_logic, fetcher, ElkGraphBuilder, work_dir, verbose
         )
-        # Save the ELK output for Stage 3
-        with open(elk_output_path, "w") as f:
-            json.dump(elk_output, f, indent=2)
         if verbose:
             print(f"  Paper size: {paper_size}")
         if rotation_map and verbose:
             print(f"  Rotations applied: {rotation_map}")
     else:
-        # Standard single-run ELK layout
-        builder = ElkGraphBuilder(circuit, logic_hints, fetcher, {})
-        elk_graph = builder.build_graph()
-        
+        paper_size = "A4"
+        elk_output = {}
+
+    fanout = net_fanout_by_name(circuit)
+    last_graph: dict | None = None
+    current_logic = _build_logic_hints(forced_label_nets, forced_label_component_nets)
+
+    # If optimize_rotation produced a layout, treat it as pass 0; otherwise run pass 0 normally.
+    if not optimize_rotation:
+        builder = ElkGraphBuilder(circuit, current_logic, fetcher, rotation_map)
+        last_graph = builder.build_graph()
+
         with open(elk_input_path, "w") as f:
-            json.dump(elk_graph, f, indent=2)
-        
-        node_count = len(elk_graph.get("children", []))
-        edge_count = len(elk_graph.get("edges", []))
+            json.dump(last_graph, f, indent=2)
+
+        node_count = len(last_graph.get("children", []))
+        edge_count = len(last_graph.get("edges", []))
         if verbose:
             print(f"  Created {node_count} nodes, {edge_count} edges")
-        
+
         if verbose:
             print("Stage 2: Running clustered ELK layout...")
 
         elk_output, paper_size = run_elk_layout(
-            elk_graph,
+            last_graph,
             work_dir,
-            base_name=base_name,
+            base_name=f"{base_name}_{run_id}_p0",
             keep_intermediate=keep_intermediate,
         )
 
-        with open(elk_output_path, "w") as f:
-            json.dump(elk_output, f, indent=2)
+    # Auto-cut loop: analyze the routed layout, then labelize worst offenders and re-layout.
+    if auto_cut_problem_nets:
+        strategy = str(auto_cut_strategy or "net").strip().lower()
+        if strategy not in {"net", "edge"}:
+            raise ValueError("auto_cut_strategy must be 'net' or 'edge'")
+        for cut_idx in range(max(0, int(auto_cut_iterations))):
+            if strategy == "net":
+                excluded = _excluded_nets_from_logic(current_logic) | forced_label_nets
+                stats = analyze_net_layout(elk_output)
+                proposed = select_problem_nets(
+                    stats,
+                    exclude=excluded,
+                    fanout=fanout,
+                    max_nets=auto_cut_max_nets,
+                    min_crossings=auto_cut_min_crossings,
+                    min_max_length_mm=auto_cut_min_max_length_mm,
+                    min_max_backtrack_mm=auto_cut_min_max_backtrack_mm,
+                )
+                new_nets = [n for n in proposed if n and n not in forced_label_nets]
+                if not new_nets:
+                    break
 
-        if verbose:
-            print(f"  Layout complete (paper: {paper_size})")
+                forced_label_nets.update(new_nets)
+                if verbose:
+                    print(f"Auto-cut iteration {cut_idx + 1}: labelizing nets: {sorted(new_nets)}")
+            else:
+                edge_stats = analyze_edge_layout(elk_output)
+                proposed_edges = select_problem_edges(
+                    edge_stats,
+                    exclude_edges=set(),
+                    exclude_nets=set(),
+                    fanout=fanout,
+                    max_edges=auto_cut_max_nets,
+                    min_crossings=auto_cut_min_crossings,
+                    min_length_mm=auto_cut_min_max_length_mm,
+                    min_backtrack_mm=auto_cut_min_max_backtrack_mm,
+                )
+                new_endpoints: set[tuple[str, str]] = set()
+                for edge_id in proposed_edges:
+                    entry = edge_stats.get(edge_id)
+                    if not entry:
+                        continue
+                    net_name = entry.net_name
+                    for port in (entry.source_port, entry.target_port):
+                        if not port:
+                            continue
+                        ref = str(port).split(".", 1)[0].strip()
+                        if ref:
+                            new_endpoints.add((ref, net_name))
+
+                added = {p for p in new_endpoints if p not in forced_label_component_nets}
+                if not added:
+                    break
+                forced_label_component_nets.update(added)
+                if verbose:
+                    print(
+                        f"Auto-cut iteration {cut_idx + 1}: cutting edges: {proposed_edges}; "
+                        f"labelizing endpoints: {sorted(added)}"
+                    )
+
+            current_logic = _build_logic_hints(forced_label_nets, forced_label_component_nets)
+            builder = ElkGraphBuilder(circuit, current_logic, fetcher, rotation_map)
+            last_graph = builder.build_graph()
+
+            elk_output, paper_size = run_elk_layout(
+                last_graph,
+                work_dir,
+                base_name=f"{base_name}_{run_id}_p{cut_idx + 1}",
+                keep_intermediate=keep_intermediate,
+            )
+
+    # Persist final ELK input/output for Stage 3 conversion.
+    if last_graph is None:
+        builder = ElkGraphBuilder(circuit, current_logic, fetcher, rotation_map)
+        last_graph = builder.build_graph()
+        with open(elk_input_path, "w") as f:
+            json.dump(last_graph, f, indent=2)
+    else:
+        # Ensure elk_input_path contains the final graph when auto-cut was active.
+        with open(elk_input_path, "w") as f:
+            json.dump(last_graph, f, indent=2)
+
+    with open(elk_output_path, "w") as f:
+        json.dump(elk_output, f, indent=2)
+
+    if verbose:
+        print(f"  Layout complete (paper: {paper_size})")
     
     # Stage 3: Convert to KiCad schematic
     if verbose:
@@ -228,6 +387,13 @@ def generate_schematic_svg(
     cluster_max_size: int = 0,
     cluster_ignore_fanout_ge: int = 8,
     cluster_ignore_nets: set[str] | None = None,
+    auto_cut_problem_nets: bool = False,
+    auto_cut_strategy: str = "net",
+    auto_cut_iterations: int = 1,
+    auto_cut_max_nets: int = 8,
+    auto_cut_min_crossings: int = 1,
+    auto_cut_min_max_length_mm: float | None = None,
+    auto_cut_min_max_backtrack_mm: float | None = None,
 ) -> tuple[str, str]:
     """
     Generate both KiCad schematic and SVG export.
@@ -267,6 +433,13 @@ def generate_schematic_svg(
         cluster_max_size=cluster_max_size,
         cluster_ignore_fanout_ge=cluster_ignore_fanout_ge,
         cluster_ignore_nets=cluster_ignore_nets,
+        auto_cut_problem_nets=auto_cut_problem_nets,
+        auto_cut_strategy=auto_cut_strategy,
+        auto_cut_iterations=auto_cut_iterations,
+        auto_cut_max_nets=auto_cut_max_nets,
+        auto_cut_min_crossings=auto_cut_min_crossings,
+        auto_cut_min_max_length_mm=auto_cut_min_max_length_mm,
+        auto_cut_min_max_backtrack_mm=auto_cut_min_max_backtrack_mm,
     )
     
     svg_dir = Path(sch_path).parent / f"{Path(sch_path).stem}_svg"
@@ -630,6 +803,13 @@ def generate_schematic_from_skidl_module(
     cluster_max_size: int = 0,
     cluster_ignore_fanout_ge: int = 8,
     cluster_ignore_nets: set[str] | None = None,
+    auto_cut_problem_nets: bool = False,
+    auto_cut_strategy: str = "net",
+    auto_cut_iterations: int = 1,
+    auto_cut_max_nets: int = 8,
+    auto_cut_min_crossings: int = 1,
+    auto_cut_min_max_length_mm: float | None = None,
+    auto_cut_min_max_backtrack_mm: float | None = None,
 ) -> dict:
     """
     Generate a KiCad schematic from a SKiDL module file.
@@ -680,18 +860,40 @@ def generate_schematic_from_skidl_module(
             verify=True
         )
     """
+    guard = None
     try:
-        if skidl_module_path:
-            path = Path(skidl_module_path).expanduser()
-            if not path.is_absolute():
-                path = Path(__file__).resolve().parents[1] / path
-            safe_dir = path.parent
-        else:
-            safe_dir = Path(__file__).resolve().parents[1]
-    except Exception:
-        safe_dir = Path(__file__).resolve().parents[1]
-    guard = _safe_working_dir(safe_dir)
-    try:
+        project_root = Path(__file__).resolve().parents[1]
+        try:
+            call_cwd = Path(os.getcwd())
+        except OSError:
+            call_cwd = None
+
+        def _resolve_path_arg(path_value: str, *, name: str, must_exist: bool) -> Path:
+            raw = Path(path_value).expanduser()
+            if raw.is_absolute():
+                resolved = raw
+            else:
+                if call_cwd is None:
+                    raise FileNotFoundError(
+                        f"{name} is relative but the working directory is invalid: {path_value}"
+                    )
+                resolved = call_cwd / raw
+            if must_exist and not resolved.exists():
+                raise FileNotFoundError(f"{name} not found: {resolved}")
+            return resolved
+
+        output_file = _resolve_path_arg(output_path, name="outputPath", must_exist=False).resolve()
+        output_dir = output_file.parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        skidl_module_file = _resolve_path_arg(skidl_module_path, name="skidlModulePath", must_exist=True).resolve()
+        logic_hints_file = (
+            _resolve_path_arg(logic_hints_path, name="logicHintsPath", must_exist=True).resolve()
+            if logic_hints_path
+            else None
+        )
+
+        guard = _safe_working_dir(output_dir)
         guard.__enter__()
         try:
             from python.spice_tools.utils import disable_skidl_file_logging
@@ -701,40 +903,49 @@ def generate_schematic_from_skidl_module(
 
         import importlib.util
         import inspect
+        import sys
         from skidl import Circuit, Net
 
-        # Load the SKiDL module
-        spec = importlib.util.spec_from_file_location("skidl_module", skidl_module_path)
-        if spec is None or spec.loader is None:
-            return {
-                "success": False,
-                "message": f"Could not load module from {skidl_module_path}"
-            }
-        
-        skidl_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(skidl_module)
-        
-        # Get the subcircuit function
-        if not hasattr(skidl_module, subcircuit_name):
-            available = [n for n in dir(skidl_module) if not n.startswith("_")]
-            return {
-                "success": False,
-                "message": f"Module does not have subcircuit '{subcircuit_name}'. Available: {available}"
-            }
-        
-        subcircuit_func = getattr(skidl_module, subcircuit_name)
-        
-        # Create circuit and instantiate subcircuit
-        circuit = Circuit()
-        circuit.no_files = True
-        
-        # Introspect subcircuit to find required nets
-        sig = inspect.signature(subcircuit_func)
-        param_names = [p for p in sig.parameters if p != "tag"]
-        
-        with circuit:
-            net_args = {name: Net(name) for name in param_names}
-            subcircuit_func(**net_args, tag=subcircuit_name)
+        # Load the SKiDL module (keep module dir on sys.path during instantiation)
+        module_dir = str(skidl_module_file.parent)
+        inserted_module_dir = False
+        if module_dir not in sys.path:
+            sys.path.insert(0, module_dir)
+            inserted_module_dir = True
+        try:
+            spec = importlib.util.spec_from_file_location("skidl_module", str(skidl_module_file))
+            if spec is None or spec.loader is None:
+                return {
+                    "success": False,
+                    "message": f"Could not load module from {skidl_module_file}",
+                }
+
+            skidl_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(skidl_module)
+            # Get the subcircuit function
+            if not hasattr(skidl_module, subcircuit_name):
+                available = [n for n in dir(skidl_module) if not n.startswith("_")]
+                return {
+                    "success": False,
+                    "message": f"Module does not have subcircuit '{subcircuit_name}'. Available: {available}"
+                }
+
+            subcircuit_func = getattr(skidl_module, subcircuit_name)
+
+            # Create circuit and instantiate subcircuit
+            circuit = Circuit()
+            # circuit.no_files = True
+
+            # Introspect subcircuit to find required nets
+            sig = inspect.signature(subcircuit_func)
+            param_names = [p for p in sig.parameters if p != "tag"]
+
+            with circuit:
+                net_args = {name: Net(name) for name in param_names}
+                subcircuit_func(**net_args, tag=subcircuit_name)
+        finally:
+            if inserted_module_dir and sys.path and sys.path[0] == module_dir:
+                sys.path.pop(0)
         
         parts_count = len(circuit.parts)
         nets_count = len(circuit.nets)
@@ -743,7 +954,7 @@ def generate_schematic_from_skidl_module(
         svg_path = None
         if export_svg:
             sch_path, svg_path = generate_schematic_svg(
-                circuit, output_path, logic_hints_path,
+                circuit, str(output_file), str(logic_hints_file) if logic_hints_file else None,
                 keep_intermediate=keep_intermediate,
                 verbose=False,
                 optimize_rotation=optimize_rotation,
@@ -757,10 +968,17 @@ def generate_schematic_from_skidl_module(
                 cluster_max_size=cluster_max_size,
                 cluster_ignore_fanout_ge=cluster_ignore_fanout_ge,
                 cluster_ignore_nets=cluster_ignore_nets,
+                auto_cut_problem_nets=auto_cut_problem_nets,
+                auto_cut_strategy=auto_cut_strategy,
+                auto_cut_iterations=auto_cut_iterations,
+                auto_cut_max_nets=auto_cut_max_nets,
+                auto_cut_min_crossings=auto_cut_min_crossings,
+                auto_cut_min_max_length_mm=auto_cut_min_max_length_mm,
+                auto_cut_min_max_backtrack_mm=auto_cut_min_max_backtrack_mm,
             )
         else:
             sch_path = generate_schematic(
-                circuit, output_path, logic_hints_path,
+                circuit, str(output_file), str(logic_hints_file) if logic_hints_file else None,
                 keep_intermediate=keep_intermediate,
                 verbose=False,
                 optimize_rotation=optimize_rotation,
@@ -774,6 +992,13 @@ def generate_schematic_from_skidl_module(
                 cluster_max_size=cluster_max_size,
                 cluster_ignore_fanout_ge=cluster_ignore_fanout_ge,
                 cluster_ignore_nets=cluster_ignore_nets,
+                auto_cut_problem_nets=auto_cut_problem_nets,
+                auto_cut_strategy=auto_cut_strategy,
+                auto_cut_iterations=auto_cut_iterations,
+                auto_cut_max_nets=auto_cut_max_nets,
+                auto_cut_min_crossings=auto_cut_min_crossings,
+                auto_cut_min_max_length_mm=auto_cut_min_max_length_mm,
+                auto_cut_min_max_backtrack_mm=auto_cut_min_max_backtrack_mm,
             )
         
         result: dict = {
@@ -805,10 +1030,11 @@ def generate_schematic_from_skidl_module(
             "traceback": traceback.format_exc()
         }
     finally:
-        try:
-            guard.__exit__(None, None, None)
-        except Exception:
-            pass
+        if guard is not None:
+            try:
+                guard.__exit__(None, None, None)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
@@ -916,6 +1142,47 @@ Examples:
         help="Net name to ignore when computing clusters (repeatable; used with --cluster-components)",
     )
     parser.add_argument(
+        "--auto-cut-problem-nets",
+        action="store_true",
+        help="Run a layout-first pass, then cut crossing/long nets into labels and re-layout",
+    )
+    parser.add_argument(
+        "--auto-cut-strategy",
+        choices=["net", "edge"],
+        default="net",
+        help="Auto-cut strategy: 'net' labelizes whole nets; 'edge' cuts selected connections by labeling endpoints",
+    )
+    parser.add_argument(
+        "--auto-cut-iterations",
+        type=int,
+        default=1,
+        help="Max iterations for auto-cut re-layout (used with --auto-cut-problem-nets)",
+    )
+    parser.add_argument(
+        "--auto-cut-max-nets",
+        type=int,
+        default=8,
+        help="Max nets to labelize per auto-cut iteration (used with --auto-cut-problem-nets)",
+    )
+    parser.add_argument(
+        "--auto-cut-min-crossings",
+        type=int,
+        default=1,
+        help="Minimum crossings for a net to be auto-cut (used with --auto-cut-problem-nets)",
+    )
+    parser.add_argument(
+        "--auto-cut-min-max-length-mm",
+        type=float,
+        default=None,
+        help="Min max-edge-length (mm) for auto-cut; default is derived from layout distribution",
+    )
+    parser.add_argument(
+        "--auto-cut-min-max-backtrack-mm",
+        type=float,
+        default=None,
+        help="Min max-backtrack (mm) for auto-cut; default is derived from layout distribution",
+    )
+    parser.add_argument(
         "--verify",
         action="store_true",
         help="Verify schematic by comparing netlists with original SKiDL circuit"
@@ -943,7 +1210,6 @@ Examples:
     # Create circuit
     from skidl import Circuit, Net
     circuit = Circuit()
-    circuit.no_files = True
     
     # Introspect subcircuit to find required nets
     import inspect
@@ -973,6 +1239,13 @@ Examples:
             cluster_max_size=args.cluster_max_size,
             cluster_ignore_fanout_ge=args.cluster_ignore_fanout_ge,
             cluster_ignore_nets=set(args.cluster_ignore_net or []),
+            auto_cut_problem_nets=args.auto_cut_problem_nets,
+            auto_cut_strategy=args.auto_cut_strategy,
+            auto_cut_iterations=args.auto_cut_iterations,
+            auto_cut_max_nets=args.auto_cut_max_nets,
+            auto_cut_min_crossings=args.auto_cut_min_crossings,
+            auto_cut_min_max_length_mm=args.auto_cut_min_max_length_mm,
+            auto_cut_min_max_backtrack_mm=args.auto_cut_min_max_backtrack_mm,
         )
         print(f"\nOutput schematic: {sch_path}")
         print(f"Output SVG: {svg_path}")
@@ -991,6 +1264,13 @@ Examples:
             cluster_max_size=args.cluster_max_size,
             cluster_ignore_fanout_ge=args.cluster_ignore_fanout_ge,
             cluster_ignore_nets=set(args.cluster_ignore_net or []),
+            auto_cut_problem_nets=args.auto_cut_problem_nets,
+            auto_cut_strategy=args.auto_cut_strategy,
+            auto_cut_iterations=args.auto_cut_iterations,
+            auto_cut_max_nets=args.auto_cut_max_nets,
+            auto_cut_min_crossings=args.auto_cut_min_crossings,
+            auto_cut_min_max_length_mm=args.auto_cut_min_max_length_mm,
+            auto_cut_min_max_backtrack_mm=args.auto_cut_min_max_backtrack_mm,
         )
         print(f"\nOutput schematic: {sch_path}")
     
