@@ -154,12 +154,66 @@ class TestTopSchematicFromContract(unittest.TestCase):
         self.assertTrue(all(int(pins_b[name]["orientation"]) == 180 for name in pins_b))
 
         label_nodes = [entry for entry in tree if isinstance(entry, list) and entry and entry[0] == Symbol("label")]
-        self.assertEqual(len(label_nodes), 0, "Top sheet should not add duplicate net labels by default")
+        wire_nodes = [entry for entry in tree if isinstance(entry, list) and entry and entry[0] == Symbol("wire")]
+
+        self.assertEqual(len(label_nodes), 6)
+        self.assertEqual(len(wire_nodes), 6)
+
+        label_positions: dict[tuple[float, float], str] = {}
+        for node in label_nodes:
+            name = str(node[1])
+            at_node = next((e for e in node if isinstance(e, list) and e and e[0] == Symbol("at")), None)
+            assert at_node is not None
+            label_positions[(round(float(at_node[1]), 6), round(float(at_node[2]), 6))] = name
+
+        self.assertEqual(set(label_positions.values()), {"SCL", "EN", "VCC"})
+
+        pin_connection_positions: dict[str, set[tuple[float, float]]] = {"SCL": set(), "EN": set(), "VCC": set()}
+        for sheet in sheet_nodes:
+            origin_x, origin_y, width, height = _get_sheet_origin_and_size(sheet)
+            for entry in sheet:
+                if not (isinstance(entry, list) and entry and entry[0] == Symbol("pin")):
+                    continue
+                name = str(entry[1])
+                at_node = next((e for e in entry if isinstance(e, list) and e and e[0] == Symbol("at")), None)
+                assert at_node is not None
+                pin_y = float(at_node[2])
+                orientation = int(at_node[3])
+                if orientation == 0:
+                    pos = (round(origin_x + width, 6), round(pin_y, 6))
+                elif orientation == 180:
+                    pos = (round(origin_x, 6), round(pin_y, 6))
+                else:
+                    continue
+                pin_connection_positions[name].add(pos)
+
+        for node in wire_nodes:
+            pts_node = next((e for e in node if isinstance(e, list) and e and e[0] == Symbol("pts")), None)
+            assert pts_node is not None
+            points = []
+            for xy in pts_node[1:]:
+                if isinstance(xy, list) and len(xy) >= 3 and xy[0] == Symbol("xy"):
+                    points.append((round(float(xy[1]), 6), round(float(xy[2]), 6)))
+            self.assertEqual(len(points), 2)
+
+            start, end = points
+            if start in label_positions:
+                label_pos = start
+                pin_pos = end
+            elif end in label_positions:
+                label_pos = end
+                pin_pos = start
+            else:
+                self.fail("Wire stub does not terminate at any label position")
+
+            net_name = label_positions[label_pos]
+            self.assertIn(pin_pos, pin_connection_positions[net_name])
 
         self.assertEqual(str(Path(result["svg_dir"])), str(run_dir / "top_svg"))
         svg_paths = [Path(p) for p in result.get("svg_paths", [])]
         self.assertGreater(len(svg_paths), 0)
         self.assertTrue(any(path.name == "top.svg" for path in svg_paths))
+        self.assertTrue(Path(result["svg_path"]).exists())
 
 
 if __name__ == "__main__":

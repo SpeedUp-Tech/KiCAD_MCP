@@ -648,6 +648,7 @@ def generate_top_schematic_from_contract(
     output_path: str,
     export_svg: bool = False,
     relative_sheet_paths: bool = True,
+    connect_pins: bool = True,
     paper: str = "A3",
     columns: int = 3,
     origin_x: float = 40.0,
@@ -656,6 +657,8 @@ def generate_top_schematic_from_contract(
     y_spacing: float = 60.0,
     sheet_width: float = 50.0,
     sheet_height: float = 40.0,
+    pin_stub_length: float = 5.08,
+    pin_stub_width: float = 0.254,
 ) -> Dict[str, Any]:
     """
     Generate a top-level *hierarchical* KiCad schematic from a pre-extracted contract.
@@ -678,7 +681,9 @@ def generate_top_schematic_from_contract(
     - Sheet pins are placed on left/right:
         - rails/signals sourced by the module -> right side
         - rails/signals consumed by the module -> left side
-    - No wires or extra labels are drawn; sheet pins display the net names.
+    - By default, each sheet pin gets a short wire stub plus a net label at the stub end.
+      This ensures pins participate in a named net on the top sheet and are electrically
+      connected to other pins with the same net label.
 
     Notes:
     - This function does not read/validate module `.kicad_sch` contents; it only references paths.
@@ -713,6 +718,51 @@ def generate_top_schematic_from_contract(
             return
         if existing == "bidirectional" or direction == "bidirectional":
             side_map[name] = "bidirectional"
+
+    def _make_wire_node(
+        points: list[tuple[float, float]],
+        *,
+        width: float,
+        stroke_type: str = "default",
+    ) -> list:
+        pts_expr: list = [Symbol("pts")]
+        for x_val, y_val in points:
+            pts_expr.append([Symbol("xy"), round(float(x_val), 6), round(float(y_val), 6)])
+
+        return [
+            Symbol("wire"),
+            pts_expr,
+            [
+                Symbol("stroke"),
+                [Symbol("width"), round(float(width), 6)],
+                [Symbol("type"), Symbol(str(stroke_type))],
+            ],
+            [Symbol("uuid"), str(uuid4())],
+        ]
+
+    def _make_net_label_node(
+        name: str,
+        x: float,
+        y: float,
+        *,
+        angle: int,
+        justify: str,
+    ) -> list:
+        x_snapped = snap_to_grid(float(x))
+        y_snapped = snap_to_grid(float(y))
+
+        return [
+            Symbol("label"),
+            name,
+            [Symbol("at"), x_snapped, y_snapped, int(angle)],
+            [Symbol("fields_autoplaced")],
+            [
+                Symbol("effects"),
+                [Symbol("font"), [Symbol("size"), 1.27, 1.27]],
+                [Symbol("justify"), Symbol(str(justify))],
+            ],
+            [Symbol("uuid"), str(uuid4())],
+        ]
 
     def _create_sheet_node(
         module_id: str,
@@ -761,9 +811,45 @@ def generate_top_schematic_from_contract(
             ],
         ]
 
-        labels: list = []
+        extras: list = []
         pin_offset = 10.0
         pin_step = 5.0
+        stub_length = snap_to_grid(float(pin_stub_length))
+        stub_width = float(pin_stub_width)
+
+        def _add_stub_and_label(*, name: str, pin_y: float, side_orientation: int) -> None:
+            if not connect_pins:
+                return
+            if side_orientation == 0:
+                connection_x = x_snapped + w_snapped
+                end_x = snap_to_grid(connection_x + stub_length)
+                end_y = pin_y
+                angle = 0
+                justify = "left"
+            elif side_orientation == 180:
+                connection_x = x_snapped
+                end_x = snap_to_grid(connection_x - stub_length)
+                end_y = pin_y
+                angle = 180
+                justify = "right"
+            else:
+                return
+
+            extras.append(
+                _make_wire_node(
+                    [(connection_x, pin_y), (end_x, end_y)],
+                    width=stub_width,
+                )
+            )
+            extras.append(
+                _make_net_label_node(
+                    name,
+                    end_x,
+                    end_y,
+                    angle=angle,
+                    justify=justify,
+                )
+            )
 
         for name in sorted(left_pins):
             pin_y = snap_to_grid(y_snapped + pin_offset)
@@ -779,6 +865,7 @@ def generate_top_schematic_from_contract(
                 ],
                 [Symbol("uuid"), Symbol(str(uuid4()))],
             ])
+            _add_stub_and_label(name=name, pin_y=pin_y, side_orientation=180)
             pin_offset += pin_step
 
         for name in sorted(right_pins):
@@ -795,9 +882,10 @@ def generate_top_schematic_from_contract(
                 ],
                 [Symbol("uuid"), Symbol(str(uuid4()))],
             ])
+            _add_stub_and_label(name=name, pin_y=pin_y, side_orientation=0)
             pin_offset += pin_step
 
-        return sheet_node, sheet_uuid, labels
+        return sheet_node, sheet_uuid, extras
 
     try:
         output_file = Path(output_path)
@@ -946,8 +1034,15 @@ def generate_top_schematic_from_contract(
             if proc.returncode != 0:
                 raise RuntimeError(f"SVG export failed: {proc.stderr}")
 
-            top_svg_path = svg_dir / f"{output_file.stem}.svg"
-            result["svg_path"] = str(top_svg_path)
+            svg_paths = sorted([path.as_posix() for path in svg_dir.glob("*.svg")])
+            result["svg_dir"] = str(svg_dir)
+            result["svg_paths"] = svg_paths
+
+            expected_top = (svg_dir / f"{output_file.stem}.svg").as_posix()
+            if expected_top in svg_paths:
+                result["svg_path"] = expected_top
+            elif svg_paths:
+                result["svg_path"] = svg_paths[0]
 
         return result
     except Exception as e:
