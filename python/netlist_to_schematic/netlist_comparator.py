@@ -18,6 +18,17 @@ from pathlib import Path
 from typing import Any, Dict, FrozenSet, List, Set, Tuple
 
 
+def _is_no_connect_net(net: object) -> bool:
+    """Return True if this SKiDL net represents an explicit no-connect (NC)."""
+    try:
+        from skidl.pin import pin_drives
+
+        return getattr(net, "drive", None) == pin_drives.NOCONNECT
+    except Exception:
+        name = getattr(net, "name", "") or ""
+        return isinstance(name, str) and name.startswith("__NOCONNECT")
+
+
 def export_kicad_netlist(schematic_path: str, output_path: str | None = None) -> str:
     """
     Export netlist from KiCad schematic using kicad-cli.
@@ -121,6 +132,8 @@ def extract_skidl_connectivity(circuit) -> dict[str, set[str]]:
     nets: dict[str, set[str]] = {}
     
     for net in circuit.nets:
+        if _is_no_connect_net(net):
+            continue
         net_name = net.name
         if not net_name:
             continue
@@ -211,9 +224,7 @@ def compare_connectivity(
     for net_name, skidl_pins in skidl_nets.items():
         if len(skidl_pins) < 2:
             continue  # Single-pin nets are not meaningful
-        
-        # Skip no-connect nets - KiCad intentionally excludes no_connect type pins from netlist
-        if net_name.startswith("NC") or net_name.startswith("NC_"):
+        if net_name.startswith("__NOCONNECT"):
             continue
         
         # Find which KiCad net(s) contain these pins

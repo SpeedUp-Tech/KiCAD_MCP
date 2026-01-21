@@ -340,7 +340,10 @@ class ElkGraphBuilder:
             },
             "properties": {
                 # Store power symbol mappings for elk_to_kicad.py
-                "power_symbols": {}
+                "power_symbols": {},
+                # Port IDs (e.g., "U1.3") that are explicitly marked as no-connect in SKiDL.
+                # elk_to_kicad.py converts these into KiCad `no_connect` markers.
+                "no_connect_pins": [],
             },
             "children": [],
             "edges": []
@@ -400,6 +403,23 @@ class ElkGraphBuilder:
         self._component_net_powers = {}
         # Track power symbol side (left/right) per component net for side-aware wiring
         self._component_net_power_sides = {}
+
+    def _is_no_connect_net(self, net: object) -> bool:
+        """
+        Return True if this SKiDL net represents an explicit no-connect.
+
+        In SKiDL, `NC()` returns a *copy* of the circuit's NC net. Due to SKiDL's
+        Net.copy() implementation, that copy is a regular `Net` instance but keeps
+        `drive == pin_drives.NOCONNECT`. So drive-based detection is required.
+        """
+        try:
+            from skidl.pin import pin_drives
+
+            drive = getattr(net, "drive", None)
+            return drive == pin_drives.NOCONNECT
+        except Exception:
+            name = getattr(net, "name", "") or ""
+            return isinstance(name, str) and name.startswith("__NOCONNECT")
 
     def _determine_library(self, part) -> str:
         """Determine the library name for a part."""
@@ -1338,6 +1358,7 @@ class ElkGraphBuilder:
         BASE_MARGIN_X = 1.27  # mm (50 mil)
         BASE_MARGIN_Y = 1.27
         MIN_NODE_SIZE = 5.0
+        no_connect_pins: set[str] = set()
         
         # 1. Build Nodes (Parts) into _component_nodes
         for part in self.circuit.parts:
@@ -1517,6 +1538,10 @@ class ElkGraphBuilder:
         special_refs = self._special_refs
         for net in self.circuit.nets:
             net_name = getattr(net, "name", None) or ""
+            if self._is_no_connect_net(net):
+                for pin in net.pins:
+                    no_connect_pins.add(f"{pin.ref}.{pin.num}")
+                continue
             # Skip power nets - connections are defined via power symbol flows
             if net_name in power_net_names:
                 continue
@@ -1637,6 +1662,8 @@ class ElkGraphBuilder:
             net_name = net.name
             if not net_name:
                 continue
+            if self._is_no_connect_net(net):
+                continue
             
             for pin in net.pins:
                 pin_id = f"{pin.ref}.{pin.num}"
@@ -1698,4 +1725,5 @@ class ElkGraphBuilder:
                     self.graph["edges"].append(edge)
                     connected_pins.add(pin_id)
 
+        self.graph.setdefault("properties", {})["no_connect_pins"] = sorted(no_connect_pins)
         return self.graph

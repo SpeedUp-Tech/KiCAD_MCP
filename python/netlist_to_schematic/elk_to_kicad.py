@@ -29,7 +29,7 @@ SCALE_FACTOR = 1.0
 # - Disable the post-route fallback so we can see ELK's own bendpoints.
 # - Mark any "unsafe" grid points (would cause shorts / overlaps) in red.
 DEBUG_DISABLE_UNSAFE_FALLBACK = True
-DEBUG_MARK_UNSAFE_POINTS = True
+DEBUG_MARK_UNSAFE_POINTS = False
 DEBUG_UNSAFE_MARKER_SIZE_MM = KICAD_SCHEMATIC_GRID_MM * 0.9
 DEBUG_UNSAFE_MARKER_STROKE_MM = 0.254
 
@@ -501,6 +501,7 @@ def run_conversion(
     # Build pin position lookup table
     # Key: port_id (e.g., "U1.1"), Value: (absolute_x, absolute_y) in KiCad coordinates
     pin_positions: Dict[str, Tuple[float, float]] = {}
+    no_connect_pins = set((graph.get("properties", {}) or {}).get("no_connect_pins", []) or [])
 
     # Collect all component nodes recursively (handles clusters)
     all_nodes = _collect_component_nodes(graph.get("children", []))
@@ -567,6 +568,18 @@ def run_conversion(
             ComponentManager.add_component(schematic, comp_def)
         except Exception as e:
             logger.error(f"Failed to add component {ref}: {e}")
+
+    # Add KiCad no-connect markers for SKiDL `NC()` pins.
+    for port_id in sorted(p for p in no_connect_pins if isinstance(p, str)):
+        pos = pin_positions.get(port_id)
+        if not pos:
+            continue
+        x, y = pos
+        schematic.tree.append([
+            SSymbol("no_connect"),
+            [SSymbol("at"), snap_to_grid(x), snap_to_grid(y)],
+            [SSymbol("uuid"), str(uuid.uuid4())],
+        ])
 
     # Add Net Labels
     for node, node_x, node_y in net_label_nodes:

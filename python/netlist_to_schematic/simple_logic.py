@@ -22,6 +22,17 @@ POWER_SYMBOL_MAP = {
 }
 
 
+def _is_no_connect_net(net: object) -> bool:
+    """Return True if this SKiDL net represents an explicit no-connect (NC)."""
+    try:
+        from skidl.pin import pin_drives
+
+        return getattr(net, "drive", None) == pin_drives.NOCONNECT
+    except Exception:
+        name = getattr(net, "name", "") or ""
+        return isinstance(name, str) and name.startswith("__NOCONNECT")
+
+
 def build_simple_logic_hints(
     circuit,
     interface_nets: Iterable[str] | None = None,
@@ -151,6 +162,8 @@ def build_simple_logic_hints(
 
     sorted_nets = sorted(getattr(circuit, "nets", []) or [], key=_net_sort_key)
     for idx, net in enumerate(sorted_nets, start=1):
+        if _is_no_connect_net(net):
+            continue
         net_name = _normalize_net_name(getattr(net, "name", None), idx)
 
         component_pins: dict[str, list[str]] = {}
@@ -346,6 +359,8 @@ def append_forced_net_labels(
 
     sorted_nets = sorted(getattr(circuit, "nets", []) or [], key=_net_sort_key)
     for idx, net in enumerate(sorted_nets, start=1):
+        if _is_no_connect_net(net):
+            continue
         net_name = _normalize_net_name(getattr(net, "name", None), idx)
         if net_name in power_net_names:
             continue
@@ -538,6 +553,8 @@ def append_forced_component_net_labels(
     # Build a lookup of pins per (ref, net) so we can decide if/where to place the label.
     pins_by_ref_net: dict[tuple[str, str], list[str]] = {}
     for idx, net in enumerate(sorted(getattr(circuit, "nets", []) or [], key=_net_sort_key), start=1):
+        if _is_no_connect_net(net):
+            continue
         net_name = _normalize_net_name(getattr(net, "name", None), idx)
         if net_name in power_net_names:
             continue
