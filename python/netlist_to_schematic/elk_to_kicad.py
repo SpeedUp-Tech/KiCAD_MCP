@@ -25,6 +25,14 @@ logger = logging.getLogger(__name__)
 # KiCad 6+ uses millimeters. ELK adapter outputs millimeters.
 SCALE_FACTOR = 1.0
 
+# Debug helpers for inspecting ELK routing quality.
+# - Disable the post-route fallback so we can see ELK's own bendpoints.
+# - Mark any "unsafe" grid points (would cause shorts / overlaps) in red.
+DEBUG_DISABLE_UNSAFE_FALLBACK = True
+DEBUG_MARK_UNSAFE_POINTS = True
+DEBUG_UNSAFE_MARKER_SIZE_MM = KICAD_SCHEMATIC_GRID_MM * 0.9
+DEBUG_UNSAFE_MARKER_STROKE_MM = 0.254
+
 # Paper size dimensions (width, height in mm)
 PAPER_SIZES = {
     "A4": (297.0, 210.0),
@@ -75,6 +83,97 @@ def _segment_hits_points(
         if key in points:
             return True
     return False
+
+
+def _segment_point_keys(a: tuple[int, int], b: tuple[int, int]) -> list[tuple[int, int]]:
+    """Return all grid points on the closed segment a-b (axis aligned only)."""
+    if not _is_axis_aligned(a, b):
+        return []
+    ax, ay = a
+    bx, by = b
+    keys: list[tuple[int, int]] = []
+    if ay == by:
+        step = 1 if bx >= ax else -1
+        for x in range(ax, bx + step, step):
+            keys.append((x, ay))
+        return keys
+    step = 1 if by >= ay else -1
+    for y in range(ay, by + step, step):
+        keys.append((ax, y))
+    return keys
+
+
+def _unsafe_grid_points_for_path(
+    points: list[list[float]],
+    *,
+    forbidden: set[tuple[int, int]],
+    start_key: tuple[int, int],
+    end_key: tuple[int, int],
+) -> set[tuple[int, int]]:
+    """Return the set of forbidden grid points hit by this routed path."""
+    keys = [_grid_key(x, y) for x, y in points]
+    keys = [k for i, k in enumerate(keys) if i == 0 or k != keys[i - 1]]
+    if len(keys) < 2:
+        return set()
+
+    unsafe: set[tuple[int, int]] = set()
+
+    forbidden_internal = forbidden - {start_key, end_key}
+    unsafe |= set(keys[1:-1]) & forbidden_internal
+
+    ignore = {start_key, end_key}
+    for a, b in zip(keys, keys[1:]):
+        if not _is_axis_aligned(a, b):
+            # Non-orthogonal is considered unsafe; mark both endpoints so it's visible.
+            unsafe.add(a)
+            unsafe.add(b)
+            continue
+        for key in _segment_point_keys(a, b):
+            if key in ignore or key in {a, b}:
+                continue
+            if key in forbidden:
+                unsafe.add(key)
+
+    return unsafe
+
+
+def _add_debug_x_marker(
+    schematic: Schematic,
+    *,
+    x: float,
+    y: float,
+    size_mm: float,
+    stroke_mm: float,
+    color: tuple[int, int, int, int] = (255, 0, 0, 0),
+) -> None:
+    """Add a small red 'X' marker as a graphic polyline (non-electrical)."""
+    half = float(size_mm) / 2.0
+    x1, y1 = x - half, y - half
+    x2, y2 = x + half, y + half
+    x3, y3 = x - half, y + half
+    x4, y4 = x + half, y - half
+
+    def add_line(ax: float, ay: float, bx: float, by: float) -> None:
+        node: list[Any] = [
+            SSymbol("polyline"),
+            [
+                SSymbol("pts"),
+                [SSymbol("xy"), round(ax, 6), round(ay, 6)],
+                [SSymbol("xy"), round(bx, 6), round(by, 6)],
+            ],
+            [
+                SSymbol("stroke"),
+                [SSymbol("width"), round(float(stroke_mm), 6)],
+                [SSymbol("type"), SSymbol("solid")],
+                [SSymbol("color"), int(color[0]), int(color[1]), int(color[2]), int(color[3])],
+            ],
+            [SSymbol("fill"), [SSymbol("type"), SSymbol("none")]],
+            [SSymbol("uuid"), str(uuid.uuid4())],
+        ]
+        schematic.tree.append(node)
+
+    add_line(x1, y1, x2, y2)
+    add_line(x3, y3, x4, y4)
 
 
 def _route_manhattan_avoiding(
@@ -604,22 +703,37 @@ def run_conversion(
                 end_key = _grid_key(end_x, end_y)
                 forbidden = occupied_points | used_wire_points
 
-                if not _is_points_path_safe(points, forbidden=forbidden, start_key=start_key, end_key=end_key):
-                    routed = _route_manhattan_avoiding(
-                        (start_x, start_y),
-                        (end_x, end_y),
-                        occupied=occupied_points,
-                        used_vertices=used_wire_points,
-                    )
-                    if routed is not None:
-                        routed_points = _orthogonalize_points(routed)
-                        if _is_points_path_safe(
-                            routed_points,
-                            forbidden=forbidden,
-                            start_key=start_key,
-                            end_key=end_key,
-                        ):
-                            points = routed_points
+                safe = _is_points_path_safe(points, forbidden=forbidden, start_key=start_key, end_key=end_key)
+                if not safe:
+                    if DEBUG_MARK_UNSAFE_POINTS:
+                        unsafe_keys = _unsafe_grid_points_for_path(
+                            points, forbidden=forbidden, start_key=start_key, end_key=end_key
+                        )
+                        for gx, gy in sorted(unsafe_keys):
+                            _add_debug_x_marker(
+                                schematic,
+                                x=gx * KICAD_SCHEMATIC_GRID_MM,
+                                y=gy * KICAD_SCHEMATIC_GRID_MM,
+                                size_mm=DEBUG_UNSAFE_MARKER_SIZE_MM,
+                                stroke_mm=DEBUG_UNSAFE_MARKER_STROKE_MM,
+                            )
+
+                    if not DEBUG_DISABLE_UNSAFE_FALLBACK:
+                        routed = _route_manhattan_avoiding(
+                            (start_x, start_y),
+                            (end_x, end_y),
+                            occupied=occupied_points,
+                            used_vertices=used_wire_points,
+                        )
+                        if routed is not None:
+                            routed_points = _orthogonalize_points(routed)
+                            if _is_points_path_safe(
+                                routed_points,
+                                forbidden=forbidden,
+                                start_key=start_key,
+                                end_key=end_key,
+                            ):
+                                points = routed_points
 
                 keys = [_grid_key(x, y) for x, y in points]
                 for a, b in zip(keys, keys[1:]):
