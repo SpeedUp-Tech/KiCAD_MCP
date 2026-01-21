@@ -438,6 +438,80 @@ class ElkGraphBuilder:
             raise ValueError("Missing required 'elk_support_fields' in logic hints")
         return elk_fields
 
+    def _compute_node_margins(
+        self,
+        bbox: dict[str, float],
+        pins: dict[str, dict[str, Any]],
+        base_margin_x: float,
+        base_margin_y: float,
+    ) -> tuple[float, float, float, float, set[str]]:
+        """
+        Compute per-side margins so the ELK node rectangle can be expanded to cover pin corridors.
+
+        Rules:
+        - Only expand on sides that actually have pins.
+        - Never expand beyond the outer pin connection points (pin tips).
+        - Caller must provide bbox/pins already rotated into final orientation.
+        """
+
+        def pin_side_from_rot(rot: object) -> str | None:
+            try:
+                angle = int(round(float(rot))) % 360
+            except Exception:
+                return None
+            # Pin 'rot' points from the wire connection point INTO the symbol body.
+            # So the connection point lies on the opposite side.
+            if angle == 0:
+                return "left"
+            if angle == 180:
+                return "right"
+            if angle == 270:
+                return "top"
+            if angle == 90:
+                return "bottom"
+            return None
+
+        leftmost: float | None = None
+        rightmost: float | None = None
+        topmost: float | None = None
+        bottommost: float | None = None
+        pin_sides: set[str] = set()
+
+        for p in (pins or {}).values():
+            if not isinstance(p, dict):
+                continue
+            side = pin_side_from_rot(p.get("rot"))
+            if not side:
+                continue
+            pin_sides.add(side)
+
+            x = p.get("x")
+            y = p.get("y")
+            if side == "left" and isinstance(x, (int, float)):
+                leftmost = x if leftmost is None else min(leftmost, float(x))
+            elif side == "right" and isinstance(x, (int, float)):
+                rightmost = x if rightmost is None else max(rightmost, float(x))
+            elif side == "top" and isinstance(y, (int, float)):
+                topmost = y if topmost is None else max(topmost, float(y))
+            elif side == "bottom" and isinstance(y, (int, float)):
+                bottommost = y if bottommost is None else min(bottommost, float(y))
+
+        left_margin = float(base_margin_x)
+        right_margin = float(base_margin_x)
+        top_margin = float(base_margin_y)
+        bottom_margin = float(base_margin_y)
+
+        if leftmost is not None and leftmost < bbox["min_x"]:
+            left_margin = bbox["min_x"] - leftmost
+        if rightmost is not None and rightmost > bbox["max_x"]:
+            right_margin = rightmost - bbox["max_x"]
+        if topmost is not None and topmost > bbox["max_y"]:
+            top_margin = topmost - bbox["max_y"]
+        if bottommost is not None and bottommost < bbox["min_y"]:
+            bottom_margin = bbox["min_y"] - bottommost
+
+        return left_margin, right_margin, top_margin, bottom_margin, pin_sides
+
     def _build_power_symbol_nodes(self) -> None:
         """
         Build ELK nodes for power symbols declared in power_symbols array.
@@ -445,8 +519,8 @@ class ElkGraphBuilder:
         Power symbols are first-class nodes that participate in ELK layout,
         positioned via layout_chains just like regular components.
         """
-        MARGIN_X = 1.27
-        MARGIN_Y = 1.27
+        BASE_MARGIN_X = 1.27
+        BASE_MARGIN_Y = 1.27
         MIN_SIZE = 2.54  # Keep power symbols compact (2 grid units).
         
         elk_fields = self._get_elk_support_fields()
@@ -510,18 +584,36 @@ class ElkGraphBuilder:
                 "min_x": -2.54, "max_x": 2.54,
                 "min_y": -2.54, "max_y": 2.54
             })
-            
-            # Calculate dimensions
-            width = (bbox["max_x"] - bbox["min_x"]) + (2 * MARGIN_X)
-            height = (bbox["max_y"] - bbox["min_y"]) + (2 * MARGIN_Y)
+
+            left_m, right_m, top_m, bottom_m, pin_sides = self._compute_node_margins(
+                bbox, pins, BASE_MARGIN_X, BASE_MARGIN_Y
+            )
+            width = (bbox["max_x"] - bbox["min_x"]) + left_m + right_m
+            height = (bbox["max_y"] - bbox["min_y"]) + top_m + bottom_m
             
             if width < MIN_SIZE:
-                width = MIN_SIZE
+                extra = MIN_SIZE - width
+                if "left" not in pin_sides and "right" not in pin_sides:
+                    left_m += extra / 2
+                    right_m += extra - (extra / 2)
+                elif "left" not in pin_sides:
+                    left_m += extra
+                elif "right" not in pin_sides:
+                    right_m += extra
+                width = (bbox["max_x"] - bbox["min_x"]) + left_m + right_m
             if height < MIN_SIZE:
-                height = MIN_SIZE
+                extra = MIN_SIZE - height
+                if "top" not in pin_sides and "bottom" not in pin_sides:
+                    top_m += extra / 2
+                    bottom_m += extra - (extra / 2)
+                elif "top" not in pin_sides:
+                    top_m += extra
+                elif "bottom" not in pin_sides:
+                    bottom_m += extra
+                height = (bbox["max_y"] - bbox["min_y"]) + top_m + bottom_m
             
-            origin_offset_x = -bbox["min_x"] + MARGIN_X
-            origin_offset_y = bbox["max_y"] + MARGIN_Y
+            origin_offset_x = -bbox["min_x"] + left_m
+            origin_offset_y = bbox["max_y"] + top_m
 
             role = power_roles.get(ps_id, "both")
             
@@ -1243,8 +1335,9 @@ class ElkGraphBuilder:
         Returns:
             ELK-compatible graph dictionary ready for JSON serialization
         """
-        MARGIN_X = 1.27  # mm (50 mil)
-        MARGIN_Y = 1.27
+        BASE_MARGIN_X = 1.27  # mm (50 mil)
+        BASE_MARGIN_Y = 1.27
+        MIN_NODE_SIZE = 5.0
         
         # 1. Build Nodes (Parts) into _component_nodes
         for part in self.circuit.parts:
@@ -1264,7 +1357,7 @@ class ElkGraphBuilder:
             # Default R and C to 270° (vertical) if no explicit rotation specified
             # This aligns their pins vertically with the horizontal ELK flow direction
             if rotation == 0 and symbol_name in ("R"):
-                rotation = 90
+                rotation = 270
             if rotation != 0:
                 # Rotate pin positions
                 rotated_pins = {}
@@ -1294,18 +1387,40 @@ class ElkGraphBuilder:
                     "min_y": min(ys), "max_y": max(ys)
                 }
             
-            # ELK Node Dimensions
-            width = (bbox["max_x"] - bbox["min_x"]) + (2 * MARGIN_X)
-            height = (bbox["max_y"] - bbox["min_y"]) + (2 * MARGIN_Y)
-            
-            if width < 5:
-                width = 5.0
-            if height < 5:
-                height = 5.0
-            
+            left_m, right_m, top_m, bottom_m, pin_sides = self._compute_node_margins(
+                bbox, pins, BASE_MARGIN_X, BASE_MARGIN_Y
+            )
+
+            # ELK Node Dimensions (body bbox + per-side margins)
+            width = (bbox["max_x"] - bbox["min_x"]) + left_m + right_m
+            height = (bbox["max_y"] - bbox["min_y"]) + top_m + bottom_m
+
+            # Enforce a minimum node size without extending past pin tips.
+            if width < MIN_NODE_SIZE:
+                extra = MIN_NODE_SIZE - width
+                if "left" not in pin_sides and "right" not in pin_sides:
+                    left_m += extra / 2
+                    right_m += extra - (extra / 2)
+                elif "left" not in pin_sides:
+                    left_m += extra
+                elif "right" not in pin_sides:
+                    right_m += extra
+                width = (bbox["max_x"] - bbox["min_x"]) + left_m + right_m
+
+            if height < MIN_NODE_SIZE:
+                extra = MIN_NODE_SIZE - height
+                if "top" not in pin_sides and "bottom" not in pin_sides:
+                    top_m += extra / 2
+                    bottom_m += extra - (extra / 2)
+                elif "top" not in pin_sides:
+                    top_m += extra
+                elif "bottom" not in pin_sides:
+                    bottom_m += extra
+                height = (bbox["max_y"] - bbox["min_y"]) + top_m + bottom_m
+
             # Calculate origin offset (vector from top-left of ELK box to symbol origin)
-            origin_offset_x = -bbox["min_x"] + MARGIN_X
-            origin_offset_y = bbox["max_y"] + MARGIN_Y
+            origin_offset_x = -bbox["min_x"] + left_m
+            origin_offset_y = bbox["max_y"] + top_m
 
             # Calculate symbol center for determining port sides
             symbol_center_x = (bbox["min_x"] + bbox["max_x"]) / 2
