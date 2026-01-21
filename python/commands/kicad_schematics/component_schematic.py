@@ -258,6 +258,19 @@ def _label_offsets_for_value(rotation: float, value_text: str, hidden: bool) -> 
     )
 
 
+def _upright_text_rotation(rotation: float) -> float:
+    """
+    Map a symbol rotation to a readable text rotation.
+
+    KiCad rotations are typically multiples of 90. For readability, we avoid
+    upside-down text by folding the rotation into [0, 180).
+    """
+    try:
+        return float(rotation) % 180.0
+    except Exception:
+        return 0.0
+
+
 def _property_is_hidden(property_node: Optional[List[Any]]) -> bool:
     if not property_node:
         return False
@@ -294,6 +307,16 @@ def _update_property_position(
 
 
 def _refresh_reference_value_positions(symbol_node: List[Any], x: float, y: float, rotation: float) -> None:
+    lib_id = ""
+    for entry in symbol_node:
+        if _is_entry(entry, 'lib_id') and len(entry) > 1:
+            lib_id = _atom_to_str(entry[1])
+            break
+    symbol_name = lib_id.split(':', 1)[1] if ':' in lib_id else lib_id
+    field_rotation = rotation
+    if symbol_name.strip().upper() in {'R', 'C'}:
+        field_rotation = _upright_text_rotation(rotation)
+
     ref_node = _find_property_node(symbol_node, 'Reference')
     val_node = _find_property_node(symbol_node, 'Value')
     value_text = ''
@@ -301,8 +324,8 @@ def _refresh_reference_value_positions(symbol_node: List[Any], x: float, y: floa
         value_text = _atom_to_str(val_node[2])
     hidden = _property_is_hidden(val_node)
     ref_offset, val_offset = _label_offsets_for_value(rotation, value_text, hidden)
-    _update_property_position(ref_node, x, y, rotation, ref_offset)
-    _update_property_position(val_node, x, y, rotation, val_offset)
+    _update_property_position(ref_node, x, y, field_rotation, ref_offset)
+    _update_property_position(val_node, x, y, field_rotation, val_offset)
 
 
 def _refresh_symbol_collection(schematic: Schematic) -> None:
@@ -739,9 +762,13 @@ class ComponentManager:
         # Hide reference for power:GND symbols (e.g., #GND_1 should not be displayed)
         hide_reference = (lib_id == "power:GND")
 
+        field_rotation = rotation
+        if symbol_name.strip().upper() in {'R', 'C'}:
+            field_rotation = _upright_text_rotation(rotation)
+
         properties: List[Any] = [
-            _make_property('Reference', reference, x + ref_dx, y + ref_dy, rotation, hide=hide_reference),
-            _make_property('Value', component_value, x + val_dx, y + val_dy, rotation, hide=value_hidden),
+            _make_property('Reference', reference, x + ref_dx, y + ref_dy, field_rotation, hide=hide_reference),
+            _make_property('Value', component_value, x + val_dx, y + val_dy, field_rotation, hide=value_hidden),
             _make_property('Footprint', str(footprint), x, y, rotation, hide=True),
             _make_property('Datasheet', str(datasheet), x, y, rotation, hide=True),
         ]
