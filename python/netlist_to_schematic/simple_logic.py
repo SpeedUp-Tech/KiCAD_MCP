@@ -245,7 +245,7 @@ def build_simple_logic_hints(
 
         if non_special_refs and (special_in_net or is_interface):
             anchor_ref = non_special_refs[0]
-            branch_label_type = "hierarchical" if is_interface and not special_in_net else "local"
+            branch_label_type = "hierarchical" if is_interface else "local"
             branch_id = add_label(f"{net_name}_{anchor_ref}_branch", net_name, branch_label_type)
             side = choose_side(anchor_ref, component_pins.get(anchor_ref, []))
             add_connection(branch_id, anchor_ref, side)
