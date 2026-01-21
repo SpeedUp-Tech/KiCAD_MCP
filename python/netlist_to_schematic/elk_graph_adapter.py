@@ -334,9 +334,9 @@ class ElkGraphBuilder:
                 "elk.layered.unnecessaryBendpoints": "false",
                 "elk.layered.mergeEdges": "false",
                 # Crossing minimization configuration
-                "elk.layered.thoroughness": "20",
-                "elk.layered.crossingMinimization.strategy": "LAYER_SWEEP",
-                "elk.layered.crossingMinimization.greedySwitch.type": "TWO_SIDED"
+                "elk.layered.thoroughness": "50",
+                "elk.layered.crossingMinimization.strategy": "LAYER_MEDIAN_SWEEP",
+                "elk.layered.crossingMinimization.greedySwitchHierarchical.type": "TWO_SIDED"
             },
             "properties": {
                 # Store power symbol mappings for elk_to_kicad.py

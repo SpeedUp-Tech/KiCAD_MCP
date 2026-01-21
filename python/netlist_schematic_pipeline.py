@@ -210,6 +210,142 @@ def generate_schematic(
         power.discard("")
         return labeled | power
 
+    def _suggest_primitive_flips_from_layout(elk_layout: dict[str, Any]) -> dict[str, int]:
+        """
+        Suggest +180° flips for simple 2-pin primitives (R/C) based on a cheap geometric heuristic.
+
+        This is intentionally lightweight: it uses the already-produced ELK layout to decide which
+        individual primitives would benefit from swapping their pin sides (a 180° rotation), then
+        the caller can re-run ELK once with the updated rotation_map.
+        """
+
+        def _extract_positions(
+            laid_out: dict[str, Any],
+        ) -> tuple[dict[str, dict[str, Any]], dict[str, tuple[float, float]]]:
+            nodes: dict[str, dict[str, Any]] = {}
+            ports_global: dict[str, tuple[float, float]] = {}
+            for node in laid_out.get("children", []) or []:
+                if not isinstance(node, dict):
+                    continue
+                node_id = node.get("id")
+                if not isinstance(node_id, str):
+                    continue
+                nodes[node_id] = node
+                nx = node.get("x")
+                ny = node.get("y")
+                if not isinstance(nx, (int, float)) or not isinstance(ny, (int, float)):
+                    nx = 0.0
+                    ny = 0.0
+                for port in node.get("ports", []) or []:
+                    if not isinstance(port, dict):
+                        continue
+                    port_id = port.get("id")
+                    if not isinstance(port_id, str):
+                        continue
+                    px = port.get("x")
+                    py = port.get("y")
+                    if isinstance(px, (int, float)) and isinstance(py, (int, float)):
+                        ports_global[port_id] = (float(nx) + float(px), float(ny) + float(py))
+            return nodes, ports_global
+
+        nodes_by_id, port_pos = _extract_positions(elk_layout)
+
+        # Build port-to-port adjacency from the actual routed ELK edges.
+        # This makes the flip decision reflect the *current wiring endpoints*,
+        # including auto-cut labels and power symbols (which are not in circuit.nets).
+        adjacency: dict[str, set[str]] = {}
+        for edge in elk_layout.get("edges", []) or []:
+            if not isinstance(edge, dict):
+                continue
+            endpoints: list[str] = []
+            for ep in list(edge.get("sources", []) or []) + list(edge.get("targets", []) or []):
+                if isinstance(ep, str) and "." in ep:
+                    endpoints.append(ep)
+            if len(endpoints) < 2:
+                continue
+            for ep in endpoints:
+                others = [o for o in endpoints if o != ep]
+                if not others:
+                    continue
+                adjacency.setdefault(ep, set()).update(others)
+
+        def median_neighbor_axis(port_id: str, axis: int) -> float | None:
+            coords: list[float] = []
+            for other in adjacency.get(port_id, set()):
+                pos = port_pos.get(other)
+                if not pos:
+                    continue
+                coords.append(float(pos[axis]))
+            if not coords:
+                return None
+            coords.sort()
+            mid = len(coords) // 2
+            if len(coords) % 2:
+                return coords[mid]
+            return (coords[mid - 1] + coords[mid]) / 2.0
+
+        flips: dict[str, int] = {}
+        for part in getattr(circuit, "parts", []) or []:
+            ref = getattr(part, "ref", None)
+            if not ref or ref not in nodes_by_id:
+                continue
+            name = str(getattr(part, "name", "") or "").upper()
+            if name not in {"R", "C"}:
+                continue
+
+            # Only consider parts that effectively participate in exactly two connected pins.
+            connected_pin_ids: list[str] = []
+            seen_nums: set[str] = set()
+            for pin in getattr(part, "pins", []) or []:
+                num = getattr(pin, "num", None)
+                if num is None:
+                    continue
+                num_s = str(num)
+                if num_s in seen_nums:
+                    continue
+                seen_nums.add(num_s)
+                pin_id = f"{ref}.{num_s}"
+                if pin_id in port_pos:
+                    connected_pin_ids.append(pin_id)
+            if len(connected_pin_ids) != 2:
+                continue
+
+            pin1_id, pin2_id = connected_pin_ids
+            p1 = port_pos.get(pin1_id)
+            p2 = port_pos.get(pin2_id)
+            if not p1 or not p2:
+                continue
+
+            dx = abs(p1[0] - p2[0])
+            dy = abs(p1[1] - p2[1])
+            axis = 0 if dx >= dy else 1  # choose the dominant pin-to-pin axis
+
+            t1 = median_neighbor_axis(pin1_id, axis)
+            t2 = median_neighbor_axis(pin2_id, axis)
+            if t1 is None or t2 is None:
+                continue
+
+            # Cost = distance along the dominant axis between each pin and "where its net goes".
+            cur_cost = abs(p1[axis] - t1) + abs(p2[axis] - t2)
+            flip_cost = abs(p2[axis] - t1) + abs(p1[axis] - t2)
+
+            if flip_cost + 1e-6 >= cur_cost:
+                continue
+
+            node = nodes_by_id.get(ref, {})
+            node_props = node.get("properties", {}) if isinstance(node, dict) else {}
+            node_rot = node_props.get("rotation", None) if isinstance(node_props, dict) else None
+            try:
+                current_rotation = int(round(float(node_rot))) % 360
+            except Exception:
+                current_rotation = int(rotation_map.get(ref, 0)) % 360
+                if current_rotation == 0 and name == "R":
+                    current_rotation = 270
+
+            flips[ref] = (current_rotation + 180) % 360
+
+        return flips
+
     # Stage 1: Generate ELK graph
     if verbose:
         print("Stage 1: Generating ELK graph...")
@@ -261,6 +397,24 @@ def generate_schematic(
             base_name=f"{base_name}_{run_id}_p0",
             keep_intermediate=keep_intermediate,
         )
+
+        # Lightweight flip pass for 2-pin primitives (R/C): decide per-part +180° flips from the initial layout
+        # and re-run ELK once. This avoids the heavy combinatorial rotation optimizer.
+        suggested_flips = _suggest_primitive_flips_from_layout(elk_output)
+        if suggested_flips:
+            rotation_map.update(suggested_flips)
+            if verbose:
+                print(f"Stage 2: Flipping {len(suggested_flips)} primitives and re-running ELK layout...")
+                print(f"  Flipped refs: {sorted(suggested_flips)}")
+
+            builder = ElkGraphBuilder(circuit, current_logic, fetcher, rotation_map)
+            last_graph = builder.build_graph()
+            elk_output, paper_size = run_elk_layout(
+                last_graph,
+                work_dir,
+                base_name=f"{base_name}_{run_id}_flip",
+                keep_intermediate=keep_intermediate,
+            )
 
     # Auto-cut loop: analyze the routed layout, then labelize worst offenders and re-layout.
     if auto_cut_problem_nets:
@@ -332,6 +486,27 @@ def generate_schematic(
                 base_name=f"{base_name}_{run_id}_p{cut_idx + 1}",
                 keep_intermediate=keep_intermediate,
             )
+
+            # After auto-cut relayout, re-run the lightweight primitive flip pass once more.
+            # This can further reduce detours/crossings introduced by newly inserted labels.
+            suggested_flips = _suggest_primitive_flips_from_layout(elk_output)
+            # Avoid flip-flopping: only apply flips for refs that don't already have an explicit rotation.
+            suggested_flips = {ref: rot for ref, rot in suggested_flips.items() if ref not in rotation_map}
+            if suggested_flips:
+                rotation_map.update(suggested_flips)
+                if verbose:
+                    print(
+                        f"Auto-cut iteration {cut_idx + 1}: flipping {len(suggested_flips)} primitives and re-running ELK..."
+                    )
+
+                builder = ElkGraphBuilder(circuit, current_logic, fetcher, rotation_map)
+                last_graph = builder.build_graph()
+                elk_output, paper_size = run_elk_layout(
+                    last_graph,
+                    work_dir,
+                    base_name=f"{base_name}_{run_id}_p{cut_idx + 1}_flip",
+                    keep_intermediate=keep_intermediate,
+                )
 
     # Persist final ELK input/output for Stage 3 conversion.
     if last_graph is None:
