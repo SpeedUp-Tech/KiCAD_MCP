@@ -202,7 +202,7 @@ def _extract_components(schematic: Schematic) -> List[Dict[str, Any]]:
                 footprint = getattr(getattr(symbol.property, 'Footprint', None), 'value', '')
 
                 lib_id_lower = lib_id.lower() if lib_id else ''
-                is_power_symbol = 'power' in lib_id_lower
+                is_power_symbol = lib_id_lower.startswith('power:')
 
                 # Treat all power-library symbols (including PWR_FLAG) as labels instead of components
                 if is_power_symbol:
@@ -364,7 +364,7 @@ def _extract_labels(schematic: Schematic) -> Dict[str, List[Dict[str, Any]]]:
             try:
                 lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '')
                 lib_id_lower = lib_id.lower() if lib_id else ''
-                is_power_symbol = 'power' in lib_id_lower
+                is_power_symbol = lib_id_lower.startswith('power:')
                 is_power_flag = 'pwr_flag' in lib_id_lower
 
                 if not is_power_symbol:
@@ -445,7 +445,7 @@ def _build_connection_map(schematic: Schematic, components: List[Dict[str, Any]]
 
                 lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '')
                 lib_id_lower = lib_id.lower() if lib_id else ''
-                is_power_symbol = 'power' in lib_id_lower
+                is_power_symbol = lib_id_lower.startswith('power:')
                 is_power_flag = 'pwr_flag' in lib_id_lower
                 if is_power_symbol and not is_power_flag:
                     # Power symbols don't expose real pins; skip for pin endpoints

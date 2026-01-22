@@ -321,17 +321,17 @@ class ElkGraphBuilder:
             "layoutOptions": {
                 "elk.algorithm": "layered",
                 "elk.direction": "RIGHT",
-                "elk.randomSeed": "1",  # Fixed seed for deterministic layout
+                "elk.randomSeed": "42",  # Fixed seed for deterministic layout
                 "elk.spacing.nodeNode": "2.54",
                 "elk.spacing.edgeEdge": "2.54",
                 "elk.spacing.edgeNode": "1.27",
                 "elk.layered.spacing.baseValue": "2.54",
-                "elk.layered.spacing.edgeNodeBetweenLayers": "2.54",
+                "elk.layered.spacing.edgeNodeBetweenLayers": "1.27",
                 "elk.layered.spacing.nodeNodeBetweenLayers": "2.54",
                 "elk.padding": "[top=0,left=0,bottom=0,right=0]",
                 "elk.hierarchyHandling": "INCLUDE_CHILDREN",
                 "elk.layered.edgeRouting": "ORTHOGONAL",
-                "elk.layered.unnecessaryBendpoints": "false",
+                "elk.layered.unnecessaryBendpoints": "True",
                 "elk.layered.mergeEdges": "false",
                 # Crossing minimization configuration
                 "elk.layered.thoroughness": "50",

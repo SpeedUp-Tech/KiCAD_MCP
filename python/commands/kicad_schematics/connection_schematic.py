@@ -244,7 +244,7 @@ def _collect_net_context(schematic: Schematic) -> Dict[str, Any]:
                     continue
 
                 lib_id = getattr(getattr(symbol, 'lib_id', None), 'value', '') or ''
-                if lib_id and 'power' in lib_id.lower():
+                if lib_id and lib_id.strip().lower().startswith('power:'):
                     continue
 
                 if hasattr(symbol, 'pin'):
@@ -1606,44 +1606,62 @@ def _symbol_body_bbox_from_lib(schematic: Schematic, sym: Symbol) -> Optional[Tu
 
 
 def _collect_symbol_bboxes(schematic: Schematic) -> List[Tuple[Tuple[float, float, float, float], Symbol]]:
-    """Compute each symbol body's axis-aligned bbox from library geometry.
+    """Compute each symbol's axis-aligned bbox for routing obstacles.
 
-    Fallback to pin-extents only if library geometry is unavailable. Power symbols are skipped.
+    Uses the symbol body bbox from library geometry when available, then expands
+    it outward on the sides with pins so that pin connection points ("pin tips")
+    are included. KiCad `power:*` symbols are skipped.
     """
     boxes: List[Tuple[Tuple[float, float, float, float], Symbol]] = []
     try:
         if hasattr(schematic, 'symbol') and schematic.symbol is not None:
             for sym in schematic.symbol:
-                # Skip power symbols as obstacles
+                # Skip KiCad power symbols as obstacles (e.g., power:GND). Do not
+                # skip normal components from libraries that merely include the
+                # word "power" in their library name (e.g., Power_Management_ICs:*).
                 try:
                     lib_id = getattr(getattr(sym, 'lib_id', None), 'value', '') or ''
-                    if lib_id and 'power' in lib_id.lower():
+                    if lib_id and lib_id.strip().lower().startswith('power:'):
                         continue
                 except Exception:
                     pass
 
+                pin_pts: List[Tuple[float, float]] = []
+                try:
+                    for pin in _iter_symbol_pins(sym):
+                        try:
+                            _ensure_pin_metadata(schematic, sym, pin)
+                        except Exception:
+                            pass
+                        loc = _get_pin_location(pin)
+                        if loc is None:
+                            continue
+                        try:
+                            pin_pts.append((float(loc.x), float(loc.y)))
+                        except Exception:
+                            continue
+                except Exception:
+                    pin_pts = []
+
                 rect = _symbol_body_bbox_from_lib(schematic, sym)
                 if rect is None:
                     # Fallback: derive bbox from pins
-                    pts: List[Tuple[float, float]] = []
-                    if hasattr(sym, 'pin') and sym.pin is not None:
-                        for pin in _iter_symbol_pins(sym):
-                            loc = _get_pin_location(pin)
-                            if loc is not None:
-                                try:
-                                    pts.append((float(loc.x), float(loc.y)))
-                                except Exception:
-                                    continue
-                    if not pts:
+                    if not pin_pts:
                         continue
-                    xs = [p[0] for p in pts]
-                    ys = [p[1] for p in pts]
+                    xs = [p[0] for p in pin_pts]
+                    ys = [p[1] for p in pin_pts]
                     rect = (min(xs), min(ys), max(xs), max(ys))
-                # Use bbox as-is without expansion
-                xmin_expanded = rect[0]
-                ymin_expanded = rect[1]
-                xmax_expanded = rect[2]
-                ymax_expanded = rect[3]
+
+                xmin_expanded, ymin_expanded, xmax_expanded, ymax_expanded = rect
+                for px, py in pin_pts:
+                    if px < xmin_expanded:
+                        xmin_expanded = px
+                    if px > xmax_expanded:
+                        xmax_expanded = px
+                    if py < ymin_expanded:
+                        ymin_expanded = py
+                    if py > ymax_expanded:
+                        ymax_expanded = py
                 boxes.append(((xmin_expanded, ymin_expanded, xmax_expanded, ymax_expanded), sym))
     except Exception:
         pass
