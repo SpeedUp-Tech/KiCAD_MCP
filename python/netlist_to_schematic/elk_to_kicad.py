@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import uuid
+from collections import defaultdict
 from heapq import heappop, heappush
 from pathlib import Path
 from typing import Union, Dict, Any, Tuple, List
@@ -28,7 +29,7 @@ SCALE_FACTOR = 1.0
 # Debug helpers for inspecting ELK routing quality.
 # - Disable the post-route fallback so we can see ELK's own bendpoints.
 # - Mark any "unsafe" grid points (would cause shorts / overlaps) in red.
-DEBUG_DISABLE_UNSAFE_FALLBACK = True
+DEBUG_DISABLE_UNSAFE_FALLBACK = False
 DEBUG_MARK_UNSAFE_POINTS = False
 DEBUG_UNSAFE_MARKER_SIZE_MM = KICAD_SCHEMATIC_GRID_MM * 0.9
 DEBUG_UNSAFE_MARKER_STROKE_MM = 0.254
@@ -50,6 +51,33 @@ def _grid_key(x: float, y: float, grid: float = KICAD_SCHEMATIC_GRID_MM) -> tupl
 
 def _is_axis_aligned(a: tuple[int, int], b: tuple[int, int]) -> bool:
     return a[0] == b[0] or a[1] == b[1]
+
+def _canonical_unit_edge(a: tuple[int, int], b: tuple[int, int]) -> tuple[tuple[int, int], tuple[int, int]]:
+    return (a, b) if a <= b else (b, a)
+
+
+def _segment_unit_edges(a: tuple[int, int], b: tuple[int, int]) -> list[tuple[tuple[int, int], tuple[int, int]]]:
+    """Return all unit grid edges along the closed segment a-b (axis aligned only)."""
+    if not _is_axis_aligned(a, b):
+        return []
+    ax, ay = a
+    bx, by = b
+    edges: list[tuple[tuple[int, int], tuple[int, int]]] = []
+    if ay == by:
+        step = 1 if bx >= ax else -1
+        x = ax
+        while x != bx:
+            nxt = (x + step, ay)
+            edges.append(_canonical_unit_edge((x, ay), nxt))
+            x += step
+        return edges
+    step = 1 if by >= ay else -1
+    y = ay
+    while y != by:
+        nxt = (ax, y + step)
+        edges.append(_canonical_unit_edge((ax, y), nxt))
+        y += step
+    return edges
 
 
 def _segment_hits_points(
@@ -106,11 +134,15 @@ def _segment_point_keys(a: tuple[int, int], b: tuple[int, int]) -> list[tuple[in
 def _unsafe_grid_points_for_path(
     points: list[list[float]],
     *,
-    forbidden: set[tuple[int, int]],
+    net_name: str,
+    occupied: set[tuple[int, int]],
+    wire_points: dict[tuple[int, int], set[str]],
+    wire_vertices: dict[tuple[int, int], set[str]],
+    wire_edges: dict[tuple[tuple[int, int], tuple[int, int]], set[str]],
     start_key: tuple[int, int],
     end_key: tuple[int, int],
 ) -> set[tuple[int, int]]:
-    """Return the set of forbidden grid points hit by this routed path."""
+    """Return the set of unsafe grid points hit by this routed path."""
     keys = [_grid_key(x, y) for x, y in points]
     keys = [k for i, k in enumerate(keys) if i == 0 or k != keys[i - 1]]
     if len(keys) < 2:
@@ -118,21 +150,35 @@ def _unsafe_grid_points_for_path(
 
     unsafe: set[tuple[int, int]] = set()
 
-    forbidden_internal = forbidden - {start_key, end_key}
-    unsafe |= set(keys[1:-1]) & forbidden_internal
+    occupied_internal = occupied - {start_key, end_key}
+    unsafe |= set(keys[1:-1]) & occupied_internal
 
-    ignore = {start_key, end_key}
+    def has_other_net(nets: set[str] | None) -> bool:
+        return bool(nets and (nets - {net_name}))
+
+    for key in keys:
+        if has_other_net(wire_points.get(key)):
+            unsafe.add(key)
+
     for a, b in zip(keys, keys[1:]):
         if not _is_axis_aligned(a, b):
             # Non-orthogonal is considered unsafe; mark both endpoints so it's visible.
             unsafe.add(a)
             unsafe.add(b)
             continue
-        for key in _segment_point_keys(a, b):
-            if key in ignore or key in {a, b}:
-                continue
-            if key in forbidden:
+        seg_keys = _segment_point_keys(a, b)
+        for key in seg_keys:
+            if key not in {start_key, end_key} and key in occupied:
                 unsafe.add(key)
+        for key in seg_keys:
+            if key in {a, b}:
+                continue
+            if has_other_net(wire_vertices.get(key)):
+                unsafe.add(key)
+        for edge in _segment_unit_edges(a, b):
+            if has_other_net(wire_edges.get(edge)):
+                unsafe.add(edge[0])
+                unsafe.add(edge[1])
 
     return unsafe
 
@@ -180,8 +226,11 @@ def _route_manhattan_avoiding(
     start: tuple[float, float],
     end: tuple[float, float],
     *,
+    net_name: str,
     occupied: set[tuple[int, int]],
-    used_vertices: set[tuple[int, int]],
+    wire_points: dict[tuple[int, int], set[str]],
+    wire_vertices: dict[tuple[int, int], set[str]],
+    wire_edges: dict[tuple[tuple[int, int], tuple[int, int]], set[str]],
 ) -> list[list[float]] | None:
     """
     Route a short orthogonal path while avoiding accidental electrical merges.
@@ -198,24 +247,17 @@ def _route_manhattan_avoiding(
     if start_key == end_key:
         return [[start_x, start_y]]
 
-    forbidden = set(occupied) | set(used_vertices)
-
     def is_path_safe(path: list[tuple[float, float]]) -> bool:
-        keys = [_grid_key(x, y) for x, y in path]
-        keys = [k for i, k in enumerate(keys) if i == 0 or k != keys[i - 1]]
-        if len(keys) < 2:
-            return True
-        if any(not _is_axis_aligned(a, b) for a, b in zip(keys, keys[1:])):
-            return False
-
-        internal_vertices = set(keys[1:-1])
-        if internal_vertices & forbidden:
-            return False
-
-        for a, b in zip(keys, keys[1:]):
-            if _segment_hits_points(a, b, forbidden, ignore={a, b, start_key, end_key}):
-                return False
-        return True
+        return _is_points_path_safe(
+            [[x, y] for x, y in path],
+            net_name=net_name,
+            occupied=occupied,
+            wire_points=wire_points,
+            wire_vertices=wire_vertices,
+            wire_edges=wire_edges,
+            start_key=start_key,
+            end_key=end_key,
+        )
 
     direct = [(start_x, start_y), (end_x, end_y)]
     if is_path_safe(direct):
@@ -251,42 +293,73 @@ def _route_manhattan_avoiding(
             x, y = k
             return min_x <= x <= max_x and min_y <= y <= max_y
 
-        def passable(k: tuple[int, int]) -> bool:
-            if k == start_key or k == end_key:
-                return True
-            return k not in forbidden
+        def has_other_net(nets: set[str] | None) -> bool:
+            return bool(nets and (nets - {net_name}))
+
+        def passable_node(k: tuple[int, int]) -> bool:
+            if k != start_key and k != end_key and k in occupied:
+                return False
+            if has_other_net(wire_vertices.get(k)):
+                return False
+            return True
 
         def heuristic(k: tuple[int, int]) -> int:
             return abs(k[0] - end_key[0]) + abs(k[1] - end_key[1])
 
-        open_heap: list[tuple[int, int, tuple[int, int]]] = []
-        heappush(open_heap, (heuristic(start_key), 0, start_key))
-        came_from: dict[tuple[int, int], tuple[int, int]] = {}
-        g_score: dict[tuple[int, int], int] = {start_key: 0}
+        Dir = int
+        RIGHT: Dir = 0
+        LEFT: Dir = 1
+        UP: Dir = 2
+        DOWN: Dir = 3
+        DIRS: list[tuple[Dir, int, int]] = [
+            (RIGHT, 1, 0),
+            (LEFT, -1, 0),
+            (UP, 0, 1),
+            (DOWN, 0, -1),
+        ]
+        TURN_PENALTY = 0.1
+
+        start_state: tuple[int, int, Dir | None] = (start_key[0], start_key[1], None)
+        open_heap: list[tuple[float, float, tuple[int, int, Dir | None]]] = []
+        heappush(open_heap, (float(heuristic(start_key)), 0.0, start_state))
+        came_from: dict[tuple[int, int, Dir | None], tuple[int, int, Dir | None]] = {}
+        g_score: dict[tuple[int, int, Dir | None], float] = {start_state: 0.0}
 
         while open_heap:
             _, g, current = heappop(open_heap)
-            if current == end_key:
+            cx, cy, prev_dir = current
+            current_key = (cx, cy)
+            if current_key == end_key:
                 path: list[tuple[int, int]] = [end_key]
-                while path[-1] != start_key:
-                    path.append(came_from[path[-1]])
+                back = current
+                while back != start_state:
+                    back = came_from[back]
+                    path.append((back[0], back[1]))
                 path.reverse()
                 return path
 
-            if g != g_score.get(current):
+            if g > g_score.get(current, 1_000_000_000.0) + 1e-9:
                 continue
 
-            cx, cy = current
-            for nx, ny in ((cx + 1, cy), (cx - 1, cy), (cx, cy + 1), (cx, cy - 1)):
+            for dir_id, dx, dy in DIRS:
+                nx, ny = cx + dx, cy + dy
                 nxt = (nx, ny)
-                if not in_bounds(nxt) or not passable(nxt):
+                if not in_bounds(nxt) or not passable_node(nxt):
                     continue
-                tentative_g = g + 1
-                if tentative_g >= g_score.get(nxt, 1_000_000_000):
+                unit_edge = _canonical_unit_edge(current_key, nxt)
+                if has_other_net(wire_edges.get(unit_edge)):
                     continue
-                came_from[nxt] = current
-                g_score[nxt] = tentative_g
-                heappush(open_heap, (tentative_g + heuristic(nxt), tentative_g, nxt))
+                turned = prev_dir is not None and dir_id != prev_dir
+                if turned and current_key not in {start_key, end_key} and has_other_net(wire_points.get(current_key)):
+                    continue
+                step_cost = 1.0 + (TURN_PENALTY if turned else 0.0)
+                tentative_g = g + step_cost
+                nxt_state: tuple[int, int, Dir] = (nx, ny, dir_id)
+                if tentative_g >= g_score.get(nxt_state, 1_000_000_000.0):
+                    continue
+                came_from[nxt_state] = current
+                g_score[nxt_state] = tentative_g
+                heappush(open_heap, (tentative_g + float(heuristic(nxt)), tentative_g, nxt_state))
 
         return None
 
@@ -312,7 +385,17 @@ def _route_manhattan_avoiding(
                 points.append([end_x, end_y])
             else:
                 points.append([key[0] * step, key[1] * step])
-        return points
+        if _is_points_path_safe(
+            points,
+            net_name=net_name,
+            occupied=occupied,
+            wire_points=wire_points,
+            wire_vertices=wire_vertices,
+            wire_edges=wire_edges,
+            start_key=start_key,
+            end_key=end_key,
+        ):
+            return points
 
     return None
 
@@ -320,7 +403,11 @@ def _route_manhattan_avoiding(
 def _is_points_path_safe(
     points: list[list[float]],
     *,
-    forbidden: set[tuple[int, int]],
+    net_name: str,
+    occupied: set[tuple[int, int]],
+    wire_points: dict[tuple[int, int], set[str]],
+    wire_vertices: dict[tuple[int, int], set[str]],
+    wire_edges: dict[tuple[tuple[int, int], tuple[int, int]], set[str]],
     start_key: tuple[int, int],
     end_key: tuple[int, int],
 ) -> bool:
@@ -331,15 +418,34 @@ def _is_points_path_safe(
     if any(not _is_axis_aligned(a, b) for a, b in zip(keys, keys[1:])):
         return False
 
-    internal_vertices = set(keys[1:-1])
-    forbidden_internal = forbidden - {start_key, end_key}
-    if internal_vertices & forbidden_internal:
+    def has_other_net(nets: set[str] | None) -> bool:
+        return bool(nets and (nets - {net_name}))
+
+    occupied_internal = occupied - {start_key, end_key}
+    if set(keys[1:-1]) & occupied_internal:
         return False
 
-    ignore = {start_key, end_key}
-    for a, b in zip(keys, keys[1:]):
-        if _segment_hits_points(a, b, forbidden, ignore=ignore | {a, b}):
+    for key in keys:
+        if has_other_net(wire_points.get(key)):
             return False
+
+    for a, b in zip(keys, keys[1:]):
+        if not _is_axis_aligned(a, b):
+            return False
+        for edge in _segment_unit_edges(a, b):
+            if has_other_net(wire_edges.get(edge)):
+                return False
+        seg_keys = _segment_point_keys(a, b)
+        for key in seg_keys:
+            if key in {start_key, end_key}:
+                continue
+            if key in occupied:
+                return False
+        for key in seg_keys:
+            if key in {a, b}:
+                continue
+            if has_other_net(wire_vertices.get(key)):
+                return False
     return True
 
 
@@ -621,6 +727,36 @@ def run_conversion(
             if pid:
                 label_port_ids.add(pid)
 
+    port_id_to_net_name: dict[str, str] = {}
+    for node, _, _ in net_label_nodes:
+        meta = node.get("properties", {})
+        net = meta.get("net_name", node.get("id", ""))
+        if not isinstance(net, str):
+            net = str(net)
+        net = net.strip()
+        if not net:
+            continue
+        for p in node.get("ports", []):
+            pid = p.get("id")
+            if isinstance(pid, str) and pid:
+                port_id_to_net_name[pid] = net
+
+    for node, _, _ in component_nodes:
+        meta = node.get("properties", {})
+        lib = meta.get("lib", "")
+        if not isinstance(lib, str) or lib.lower() != "power":
+            continue
+        net = meta.get("value") or meta.get("symbol") or node.get("id", "")
+        if not isinstance(net, str):
+            net = str(net)
+        net = net.strip()
+        if not net:
+            continue
+        for p in node.get("ports", []):
+            pid = p.get("id")
+            if isinstance(pid, str) and pid:
+                port_id_to_net_name[pid] = net
+
     # Track which nets already have labels (from explicit net_labels in graph)
     labeled_nets: set[str] = set()
     for node, node_x, node_y in net_label_nodes:
@@ -652,7 +788,9 @@ def run_conversion(
         component_keepouts = set()
 
     occupied_points = pin_point_keys | component_keepouts
-    used_wire_points: set[tuple[int, int]] = set()
+    wire_points: dict[tuple[int, int], set[str]] = defaultdict(set)
+    wire_vertices: dict[tuple[int, int], set[str]] = defaultdict(set)
+    wire_edges: dict[tuple[tuple[int, int], tuple[int, int]], set[str]] = defaultdict(set)
 
     # Add Wires using ELK's routed sections
     # Wire endpoints must use exact pin positions from pin_positions map
@@ -678,6 +816,15 @@ def run_conversion(
         targets = edge.get("targets", [])
         source_port_id = sources[0] if sources else None
         target_port_id = targets[0] if targets else None
+
+        route_net_name = net_name
+        if not route_net_name and isinstance(source_port_id, str):
+            route_net_name = port_id_to_net_name.get(source_port_id)
+        if not route_net_name and isinstance(target_port_id, str):
+            route_net_name = port_id_to_net_name.get(target_port_id)
+        if not isinstance(route_net_name, str) or not route_net_name.strip():
+            route_net_name = edge_id
+        route_net_name = route_net_name.strip()
 
         for section in sections:
             points: List[List[float]] = []
@@ -714,13 +861,27 @@ def run_conversion(
                 points = _orthogonalize_points(points)
                 start_key = _grid_key(start_x, start_y)
                 end_key = _grid_key(end_x, end_y)
-                forbidden = occupied_points | used_wire_points
-
-                safe = _is_points_path_safe(points, forbidden=forbidden, start_key=start_key, end_key=end_key)
+                safe = _is_points_path_safe(
+                    points,
+                    net_name=route_net_name,
+                    occupied=occupied_points,
+                    wire_points=wire_points,
+                    wire_vertices=wire_vertices,
+                    wire_edges=wire_edges,
+                    start_key=start_key,
+                    end_key=end_key,
+                )
                 if not safe:
                     if DEBUG_MARK_UNSAFE_POINTS:
                         unsafe_keys = _unsafe_grid_points_for_path(
-                            points, forbidden=forbidden, start_key=start_key, end_key=end_key
+                            points,
+                            net_name=route_net_name,
+                            occupied=occupied_points,
+                            wire_points=wire_points,
+                            wire_vertices=wire_vertices,
+                            wire_edges=wire_edges,
+                            start_key=start_key,
+                            end_key=end_key,
                         )
                         for gx, gy in sorted(unsafe_keys):
                             _add_debug_x_marker(
@@ -735,31 +896,35 @@ def run_conversion(
                         routed = _route_manhattan_avoiding(
                             (start_x, start_y),
                             (end_x, end_y),
+                            net_name=route_net_name,
                             occupied=occupied_points,
-                            used_vertices=used_wire_points,
+                            wire_points=wire_points,
+                            wire_vertices=wire_vertices,
+                            wire_edges=wire_edges,
                         )
                         if routed is not None:
                             routed_points = _orthogonalize_points(routed)
                             if _is_points_path_safe(
                                 routed_points,
-                                forbidden=forbidden,
+                                net_name=route_net_name,
+                                occupied=occupied_points,
+                                wire_points=wire_points,
+                                wire_vertices=wire_vertices,
+                                wire_edges=wire_edges,
                                 start_key=start_key,
                                 end_key=end_key,
                             ):
                                 points = routed_points
 
                 keys = [_grid_key(x, y) for x, y in points]
+                keys = [k for i, k in enumerate(keys) if i == 0 or k != keys[i - 1]]
+                for key in keys:
+                    wire_vertices[key].add(route_net_name)
                 for a, b in zip(keys, keys[1:]):
-                    ax, ay = a
-                    bx, by = b
-                    if ax == bx:
-                        lo, hi = sorted((ay, by))
-                        for gy in range(lo, hi + 1):
-                            used_wire_points.add((ax, gy))
-                    elif ay == by:
-                        lo, hi = sorted((ax, bx))
-                        for gx in range(lo, hi + 1):
-                            used_wire_points.add((gx, ay))
+                    for key in _segment_point_keys(a, b):
+                        wire_points[key].add(route_net_name)
+                    for edge in _segment_unit_edges(a, b):
+                        wire_edges[edge].add(route_net_name)
                 ConnectionManager.add_wire(
                     schematic,
                     start_point=None,
