@@ -563,6 +563,43 @@ export function registerSchematicTools(
         .optional()
         .default(3)
         .describe('Minimum number of connected component refs for a net to be treated as high-fanout (used when labelHighFanoutNets=true)'),
+      clusterComponents: z
+        .boolean()
+        .optional()
+        .default(false)
+        .describe('If true, split dense circuits into visually separated clusters on one sheet'),
+      clusterMaxConnections: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .default(12)
+        .describe('Max "connection complexity" per cluster (branching + cycles; used when clusterComponents=true)'),
+      clusterMinSize: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .default(4)
+        .describe('Merge clusters smaller than this (used when clusterComponents=true)'),
+      clusterMaxSize: z
+        .number()
+        .int()
+        .min(0)
+        .optional()
+        .default(0)
+        .describe('Optional hard cap on parts per cluster; 0 disables (used when clusterComponents=true)'),
+      clusterIgnoreFanoutGe: z
+        .number()
+        .int()
+        .min(1)
+        .optional()
+        .default(8)
+        .describe('Ignore nets with fanout >= this when computing clusters (used when clusterComponents=true)'),
+      clusterIgnoreNets: z
+        .array(z.string())
+        .optional()
+        .describe('Optional list of net names to ignore when computing clusters (used when clusterComponents=true)'),
       autoCutProblemNets: z
         .boolean()
         .optional()
@@ -571,14 +608,14 @@ export function registerSchematicTools(
       autoCutStrategy: z
         .enum(['net', 'edge'])
         .optional()
-        .default('net')
+        .default('edge')
         .describe("Auto-cut strategy: 'net' labelizes whole nets; 'edge' cuts selected connections by labeling endpoints"),
       autoCutIterations: z
         .number()
         .int()
         .min(1)
         .optional()
-        .default(1)
+        .default(2)
         .describe('Max auto-cut iterations (used when autoCutProblemNets=true)'),
       autoCutMaxNets: z
         .number()
@@ -617,6 +654,12 @@ export function registerSchematicTools(
       useDirectConnections,
       labelHighFanoutNets,
       highFanoutThreshold,
+      clusterComponents,
+      clusterMaxConnections,
+      clusterMinSize,
+      clusterMaxSize,
+      clusterIgnoreFanoutGe,
+      clusterIgnoreNets,
       autoCutProblemNets,
       autoCutStrategy,
       autoCutIterations,
@@ -637,6 +680,12 @@ export function registerSchematicTools(
         useDirectConnections,
         labelHighFanoutNets,
         highFanoutThreshold,
+        clusterComponents,
+        clusterMaxConnections,
+        clusterMinSize,
+        clusterMaxSize,
+        clusterIgnoreFanoutGe,
+        clusterIgnoreNets,
         autoCutProblemNets,
         autoCutStrategy,
         autoCutIterations,

@@ -1800,6 +1800,19 @@ class KiCADInterface:
             useDirectConnections: If True, use direct label/power connections (grid-like layout)
             labelHighFanoutNets: If True, labelize high-fanout nets to reduce crossings
             highFanoutThreshold: Minimum number of connected component refs for a net to be treated as high-fanout
+            clusterComponents: If True, split dense circuits into visually separated clusters on one sheet
+            clusterMaxConnections: Max "connection complexity" per cluster (branching + cycles)
+            clusterMinSize: Merge clusters smaller than this
+            clusterMaxSize: Optional hard cap on parts per cluster (0 disables)
+            clusterIgnoreFanoutGe: Ignore nets with fanout >= this when computing clusters
+            clusterIgnoreNets: Optional list of net names to ignore when computing clusters
+            autoCutProblemNets: If True, run a layout-first pass, then cut crossing/long nets into labels
+            autoCutStrategy: Auto-cut strategy: 'net' labelizes whole nets; 'edge' cuts selected connections
+            autoCutIterations: Max iterations for auto-cut re-layout
+            autoCutMaxNets: Max nets to labelize per auto-cut iteration
+            autoCutMinCrossings: Minimum crossings for a net to be auto-cut
+            autoCutMinMaxLengthMm: Min max-edge-length (mm) for auto-cut
+            autoCutMinMaxBacktrackMm: Min max-backtrack (mm) for auto-cut
             
         Returns:
             Dict with success status, file paths, part/net counts, and verification result
@@ -1824,6 +1837,26 @@ class KiCADInterface:
                 params.get("labelHighFanoutNets", False)
                 or params.get("label_high_fanout_nets", False)
             )
+            cluster_components = (
+                params.get("clusterComponents", False)
+                or params.get("cluster_components", False)
+            )
+            cluster_max_connections = params.get("clusterMaxConnections")
+            if cluster_max_connections is None:
+                cluster_max_connections = params.get("cluster_max_connections")
+            cluster_min_size = params.get("clusterMinSize")
+            if cluster_min_size is None:
+                cluster_min_size = params.get("cluster_min_size")
+            cluster_max_size = params.get("clusterMaxSize")
+            if cluster_max_size is None:
+                cluster_max_size = params.get("cluster_max_size")
+            cluster_ignore_fanout_ge = params.get("clusterIgnoreFanoutGe")
+            if cluster_ignore_fanout_ge is None:
+                cluster_ignore_fanout_ge = params.get("cluster_ignore_fanout_ge")
+            cluster_ignore_nets_param = params.get("clusterIgnoreNets")
+            if cluster_ignore_nets_param is None:
+                cluster_ignore_nets_param = params.get("cluster_ignore_nets")
+            cluster_ignore_nets = set(cluster_ignore_nets_param) if cluster_ignore_nets_param else None
             auto_cut_problem_nets = (
                 params.get("autoCutProblemNets", False)
                 or params.get("auto_cut_problem_nets", False)
@@ -1878,6 +1911,10 @@ class KiCADInterface:
                 auto_cut_min_crossings = _as_int(auto_cut_min_crossings, name="autoCutMinCrossings")
                 auto_cut_min_max_length_mm = _as_float(auto_cut_min_max_length_mm, name="autoCutMinMaxLengthMm")
                 auto_cut_min_max_backtrack_mm = _as_float(auto_cut_min_max_backtrack_mm, name="autoCutMinMaxBacktrackMm")
+                cluster_max_connections = _as_int(cluster_max_connections, name="clusterMaxConnections")
+                cluster_min_size = _as_int(cluster_min_size, name="clusterMinSize")
+                cluster_max_size = _as_int(cluster_max_size, name="clusterMaxSize")
+                cluster_ignore_fanout_ge = _as_int(cluster_ignore_fanout_ge, name="clusterIgnoreFanoutGe")
             except ValueError as exc:
                 return {"success": False, "message": str(exc)}
 
@@ -1904,6 +1941,7 @@ class KiCADInterface:
                 keep_intermediate=keep_intermediate,
                 use_direct_connections=use_direct_connections,
                 label_high_fanout_nets=label_high_fanout_nets,
+                cluster_components=cluster_components,
                 auto_cut_problem_nets=auto_cut_problem_nets,
                 **({"auto_cut_strategy": auto_cut_strategy} if auto_cut_strategy is not None else {}),
                 **({"auto_cut_iterations": auto_cut_iterations} if auto_cut_iterations is not None else {}),
@@ -1912,6 +1950,11 @@ class KiCADInterface:
                 **({"auto_cut_min_max_length_mm": auto_cut_min_max_length_mm} if auto_cut_min_max_length_mm is not None else {}),
                 **({"auto_cut_min_max_backtrack_mm": auto_cut_min_max_backtrack_mm} if auto_cut_min_max_backtrack_mm is not None else {}),
                 **({"high_fanout_threshold": high_fanout_threshold} if high_fanout_threshold is not None else {}),
+                **({"cluster_max_connections": cluster_max_connections} if cluster_max_connections is not None else {}),
+                **({"cluster_min_size": cluster_min_size} if cluster_min_size is not None else {}),
+                **({"cluster_max_size": cluster_max_size} if cluster_max_size is not None else {}),
+                **({"cluster_ignore_fanout_ge": cluster_ignore_fanout_ge} if cluster_ignore_fanout_ge is not None else {}),
+                **({"cluster_ignore_nets": cluster_ignore_nets} if cluster_ignore_nets is not None else {}),
             )
             
             return result

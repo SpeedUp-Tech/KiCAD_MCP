@@ -1074,8 +1074,8 @@ def generate_schematic_from_skidl_module(
     cluster_ignore_fanout_ge: int = 8,
     cluster_ignore_nets: set[str] | None = None,
     auto_cut_problem_nets: bool = False,
-    auto_cut_strategy: str = "net",
-    auto_cut_iterations: int = 1,
+    auto_cut_strategy: str = "edge",
+    auto_cut_iterations: int = 2,
     auto_cut_max_nets: int = 8,
     auto_cut_min_crossings: int = 1,
     auto_cut_min_max_length_mm: float | None = None,
@@ -1109,6 +1109,13 @@ def generate_schematic_from_skidl_module(
         cluster_max_size: Optional hard cap on parts per cluster (0 disables; used with cluster_components).
         cluster_ignore_fanout_ge: Ignore nets with fanout >= this when computing clusters (used with cluster_components).
         cluster_ignore_nets: Optional set of net names to ignore when computing clusters (used with cluster_components).
+        auto_cut_problem_nets: If True, run auto-cut (analyze layout then cut crossing/long nets into labels and re-layout).
+        auto_cut_strategy: Auto-cut strategy: 'net' labelizes whole nets; 'edge' cuts selected connections by labeling endpoints.
+        auto_cut_iterations: Max auto-cut iterations (default: 2).
+        auto_cut_max_nets: Max nets/edges to labelize per auto-cut iteration (default: 8).
+        auto_cut_min_crossings: Minimum crossings threshold for auto-cut selection (default: 1).
+        auto_cut_min_max_length_mm: Optional min max-length (mm) threshold for auto-cut; None derives from layout distribution.
+        auto_cut_min_max_backtrack_mm: Optional min max-backtrack (mm) threshold for auto-cut; None derives from layout distribution.
     
     Returns:
         A dict with keys:
@@ -1127,7 +1134,9 @@ def generate_schematic_from_skidl_module(
             output_path="output/charger.kicad_sch",
             logic_hints_path="modules/charger_logic.json",
             export_svg=True,
-            verify=True
+            verify=True,
+            auto_cut_problem_nets=True,
+            auto_cut_strategy="edge"
         )
     """
     guard = None
