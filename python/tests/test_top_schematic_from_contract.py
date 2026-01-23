@@ -13,8 +13,9 @@ from sexpdata import Symbol, loads
 # Add repo root to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
+from python.commands.kicad_schematics.grid_utils import snap_to_grid
 from python.commands.kicad_schematics.schematic import SchematicManager
-from python.netlist_schematic_pipeline import generate_top_schematic_from_contract
+from python.top_schematic_from_contract import generate_top_schematic_from_contract
 
 
 class TestTopSchematicFromContract(unittest.TestCase):
@@ -214,6 +215,83 @@ class TestTopSchematicFromContract(unittest.TestCase):
         self.assertGreater(len(svg_paths), 0)
         self.assertTrue(any(path.name == "top.svg" for path in svg_paths))
         self.assertTrue(Path(result["svg_path"]).exists())
+
+    def test_adaptive_sheet_height_avoids_pins_outside(self) -> None:
+        run_dir = self.test_output_root / f"run_{uuid4().hex[:8]}"
+        modules_dir = run_dir / "modules"
+        modules_dir.mkdir(parents=True, exist_ok=True)
+
+        module_id = "MOD_A"
+        sch = SchematicManager.create_schematic(module_id, metadata={"title": module_id})
+        SchematicManager.save_schematic(sch, str(modules_dir / f"{module_id}.kicad_sch"))
+
+        module_sheets = {module_id: f"modules/{module_id}.kicad_sch"}
+
+        signals = []
+        for idx in range(20):
+            signals.append(
+                {
+                    "signal_id": f"OUT_{idx}",
+                    "source": module_id,
+                    "sinks": [],
+                    "direction": "source->sink",
+                }
+            )
+        for idx in range(10):
+            signals.append(
+                {
+                    "signal_id": f"IN_{idx}",
+                    "source": "EXTERNAL",
+                    "sinks": [module_id],
+                    "direction": "source->sink",
+                }
+            )
+
+        top_path = run_dir / "top.kicad_sch"
+        result = generate_top_schematic_from_contract(
+            module_sheets=module_sheets,
+            signals=signals,
+            rails=[],
+            output_path=str(top_path),
+            export_svg=False,
+        )
+
+        self.assertTrue(result.get("success"), msg=result.get("message"))
+        tree = loads(top_path.read_text(encoding="utf-8"))
+
+        sheet = next(
+            (
+                entry
+                for entry in tree
+                if isinstance(entry, list) and entry and entry[0] == Symbol("sheet")
+            ),
+            None,
+        )
+        self.assertIsNotNone(sheet)
+        assert sheet is not None
+
+        origin = next((e for e in sheet if isinstance(e, list) and e and e[0] == Symbol("at")), None)
+        size = next((e for e in sheet if isinstance(e, list) and e and e[0] == Symbol("size")), None)
+        self.assertIsNotNone(origin)
+        self.assertIsNotNone(size)
+        assert origin is not None and size is not None
+
+        origin_y = float(origin[2])
+        height = float(size[2])
+
+        # Contract produces 20 right-side pins and 10 left-side pins.
+        expected_min_height = snap_to_grid(10.0 + 10.0 + (20 - 1) * 5.0)
+        self.assertGreaterEqual(height, expected_min_height)
+
+        pin_ys = []
+        for entry in sheet:
+            if not (isinstance(entry, list) and entry and entry[0] == Symbol("pin")):
+                continue
+            at_node = next((e for e in entry if isinstance(e, list) and e and e[0] == Symbol("at")), None)
+            assert at_node is not None
+            pin_ys.append(float(at_node[2]))
+        self.assertGreater(len(pin_ys), 0)
+        self.assertLessEqual(max(pin_ys), origin_y + height - snap_to_grid(10.0))
 
 
 if __name__ == "__main__":

@@ -167,10 +167,8 @@ try:
         search_spice_model,
     )
     from python.spice_tools.utils import validate_spice_model
-    from python.netlist_schematic_pipeline import (
-        generate_schematic_from_skidl_module,
-        generate_top_schematic_from_contract,
-    )
+    from python.netlist_schematic_pipeline import generate_schematic_from_skidl_module
+    from python.top_schematic_from_contract import generate_top_schematic_from_contract
     logger.info("Successfully imported all command handlers")
 except ImportError as e:
     logger.error(f"Failed to import command handlers: {e}")
@@ -2014,6 +2012,10 @@ class KiCADInterface:
             if relative_sheet_paths is None:
                 relative_sheet_paths = True
 
+            show_net_labels = params.get("show_net_labels")
+            if show_net_labels is None:
+                show_net_labels = params.get("showNetLabels")
+
             if not module_sheets:
                 return {"success": False, "message": "module_sheets is required"}
             if not output_path:
@@ -2054,6 +2056,8 @@ class KiCADInterface:
                 "export_svg": export_svg,
                 "relative_sheet_paths": relative_sheet_paths,
             }
+            if show_net_labels is not None:
+                kwargs["show_net_labels"] = bool(show_net_labels)
             if paper is not None:
                 kwargs["paper"] = paper
             if columns is not None:

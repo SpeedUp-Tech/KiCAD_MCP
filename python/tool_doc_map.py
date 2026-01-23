@@ -90,7 +90,7 @@ TOOL_DOC_SOURCES: Dict[str, Tuple[str, ToolPath]] = {
         ("generate_schematic_from_skidl_module",),
     ),
     "generate_top_schematic_from_contract": (
-        "python/netlist_schematic_pipeline.py",
+        "python/top_schematic_from_contract.py",
         ("generate_top_schematic_from_contract",),
     ),
     "build_symbol_from_template": (
